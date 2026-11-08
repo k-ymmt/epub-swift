@@ -3,6 +3,9 @@
 アプリから見える型とプロトコル。名前は暫定で、実装時に変えてよい。
 利用者は自分のアプリだけなので後方互換は考えず、使いやすさを優先する。
 
+M1 時点の実装状態を「M1 実装済み」「M3 で追加」のように記す。CFI に依存する API（位置、ハイライト、選択、検索）は
+M3 で入り、それまで `ReaderSession` は spine index とページ index を公開する。
+
 ## 1. 使い方の全体像
 
 ```swift
@@ -48,12 +51,20 @@ struct BookScreen: View {
 ```swift
 public actor EPUBContainer {
     public init(url: URL) async throws
+    public init(data: Data) async throws
     public nonisolated let publication: Publication
     public nonisolated let id: PublicationID
+    public nonisolated let url: URL?
+    public nonisolated var paths: [String]
+    public nonisolated func contains(path: String) -> Bool
+    public nonisolated func mediaType(forPath path: String) -> String
     public func data(at path: String) async throws -> Data
     public func coverImageData() async throws -> Data?
+    public func contentDocument(at path: String) async throws -> ContentDocument   // 01-core §4.1 の修復込み
 }
 ```
+
+M1 実装済み。`ContentDocument` は配信するバイト列、`mediaType`、状態（`wellFormed` / `repaired` / `unrepairable`）、警告を持つ。
 
 ### 2.2 `Publication` と関連型
 
@@ -147,42 +158,68 @@ public struct ReaderTheme: Codable, Hashable, Sendable {
 
 表示状態の中心。SwiftUI からは `@Observable` として観測する。
 
+M1 実装済み:
+
 ```swift
 @MainActor @Observable
 public final class ReaderSession {
     public init(container: EPUBContainer, settings: ReaderSettings = .init())
 
     public let publication: Publication
+    public let container: EPUBContainer
     public var settings: ReaderSettings            // 変更で再レイアウトと位置復元
-    public var highlights: [Highlight]             // 変更で setHighlights
-    public private(set) var position: ReadingPosition?
-    public private(set) var pagination: BookPagination
+    public var viewportSize: CGSize                // EPUBReaderView が設定。変更で再レイアウトと位置復元
+
+    public private(set) var currentSpineIndex: Int
+    public private(set) var currentPageIndex: Int  // 章内のページ index
+    public private(set) var chapterPageCount: Int
+    public private(set) var writingMode: String    // "horizontal-tb" など。reader.js の判定値
     public private(set) var isLoading: Bool
-    public private(set) var currentSelection: SelectedText?
+    public private(set) var hasLoaded: Bool
+    public var chapterProgression: Double          // 0...1
+    public var totalProgression: Double            // 0...1。M2 の BookPagination までは章数ベースの近似
+    public var isAtStart: Bool
+    public var isAtEnd: Bool
 
     public var events: AsyncStream<ReaderEvent>
 
+    public func loadIfNeeded() async
     public func goForward() async
     public func goBackward() async
-    public func go(to position: ReadingPosition) async
-    public func go(to cfi: CFI) async
-    public func go(to entry: TOCEntry) async
-    public func go(toPage page: Int) async           // BookPagination の番号
     public func go(toSpineIndex index: Int) async
-
-    public func search(_ query: String, options: SearchOptions = .default)
-        -> AsyncThrowingStream<SearchResult, Error>
-    public func show(_ result: SearchResult) async     // 位置へ移動し一時ハイライト
-
-    public func clearSelection()
-    public func rects(for range: CFIRange) async -> [CGRect]   // ビュー座標
+    public func go(to entry: TOCEntry) async       // spine item + #fragment
+    public func go(toPageInChapter index: Int) async
 
     public func pageSnapshot(_ which: PageSnapshotTarget) async -> PageSnapshot?  // EPUBUI の演出用
+
+    @_spi(EPUBUI) public var platformView: PlatformView   // EPUBUI だけが使う。WebView を直接は出さない
 }
 ```
 
+M3 で追加（CFI 依存）:
+
+```swift
+extension ReaderSession {
+    public var highlights: [Highlight]             // 変更で setHighlights
+    public private(set) var position: ReadingPosition?
+    public private(set) var currentSelection: SelectedText?
+    public func go(to position: ReadingPosition) async
+    public func go(to cfi: CFI) async
+    public func search(_ query: String, options: SearchOptions = .default)
+        -> AsyncThrowingStream<SearchResult, Error>
+    public func show(_ result: SearchResult) async     // 位置へ移動し一時ハイライト
+    public func clearSelection()
+    public func rects(for range: CFIRange) async -> [CGRect]   // ビュー座標
+}
+```
+
+M2 で追加: `public private(set) var pagination: BookPagination` と `go(toPage:)`（`BookPagination` の番号）。
+
 `go(to:)` 系は移動が完了（`ready` 受信と位置確定）するまで待つ。ジェスチャ中の先読みは
-`pageSnapshot(.next)` で行う。
+`pageSnapshot(.next)` で行う。`PageSnapshot` は `image: CGImage`、`scale`、`size`（pt）、`spineIndex`、`pageIndex` を持つ。
+
+EPUBUI への WebView の受け渡しは `@_spi(EPUBUI)` 付きの `platformView`（`NSView` / `UIView` の typealias `PlatformView`）で行う。
+通常の `import EPUBRenderer` からは見えず、WebKit の型も出ない。
 
 ### 3.3 `BookPagination`
 
@@ -200,17 +237,28 @@ public struct BookPagination: Sendable {
 
 ```swift
 public enum ReaderEvent: Sendable {
-    case positionChanged(ReadingPosition)
-    case paginationUpdated(BookPagination)
-    case internalLink(CFI)                  // 移動はライブラリが行う。通知のみ
+    // M1 実装済み
+    case pageChanged(spineIndex: Int, pageIndex: Int, pageCount: Int)   // M3 で positionChanged に統合
     case externalLink(URL)                  // 移動しない。アプリが開く
-    case noteref(NoteContent)               // html / text / 参照先 CFI
-    case imageTapped(TappedImage)           // src / alt / 画像データ取得クロージャ / 矩形
-    case highlightTapped(Highlight.ID, rects: [CGRect])
-    case selectionChanged(SelectedText?)
     case tapped(CGPoint, zone: TapZone)     // ジェスチャをアプリが処理するとき用
     case warning(PublicationWarning)
     case error(ReaderError)
+    // M2 で追加
+    case paginationUpdated(BookPagination)
+    // M3 以降で追加
+    case positionChanged(ReadingPosition)
+    case internalLink(CFI)                  // 移動はライブラリが行う。通知のみ
+    case noteref(NoteContent)               // html / text / 参照先 CFI（M5）
+    case imageTapped(TappedImage)           // src / alt / 画像データ取得クロージャ / 矩形（M5）
+    case highlightTapped(Highlight.ID, rects: [CGRect])
+    case selectionChanged(SelectedText?)
+}
+
+public enum ReaderError: Error, Sendable {
+    case loadTimeout(spineIndex: Int)                   // ready が 10 秒以内に来ない。再試行はアプリに任せる
+    case loadFailed(spineIndex: Int, underlying: String)
+    case scriptFailed(String)                           // ブリッジ JS の失敗
+    case webContentTerminated                           // セッションは現在章を再読み込みする
 }
 
 public struct SelectedText: Sendable {
@@ -233,12 +281,12 @@ extension View {
     public func pageTransition(_ transition: some PageTransition) -> some View
     public func readerGestures(_ gestures: ReaderGestures) -> some View
     public func selectionActions(_ actions: [SelectionAction]) -> some View
-    public func onReaderEvent(_ handler: @escaping (ReaderEvent) -> Void) -> some View
+    public func onReaderEvent(_ handler: @escaping @MainActor (ReaderEvent) -> Void) -> some View
 }
 ```
 
 修飾子は SwiftUI の `Environment` で `EPUBReaderView` に届ける。既定は `.slide`、`.default` ジェスチャ、
-選択アクションなし。
+選択アクションなし。M1 実装済み（`selectionActions` は M3）。
 
 ### 4.2 `PageTransition`
 
@@ -254,15 +302,21 @@ public struct PageTransitionContext {
     public let direction: PageDirection     // forward / backward
     public let progress: Double             // 0...1。ジェスチャ追従中は指の位置、確定後はアニメーション
     public let axis: Axis                   // 横書き横方向、縦書きは右綴じで横方向（スクロール軸とは別）
+    public let layoutDirection: LayoutDirection   // 右綴じでは .rightToLeft。演出が進む向きを反転するのに使う
     public let size: CGSize
     public let isInteractive: Bool
+    public var outgoingSign: CGFloat        // direction と layoutDirection から求めた、現在ページが抜ける方向（-1 / +1）
 }
 
-public struct SlidePageTransition: PageTransition { ... }
-public struct FadePageTransition: PageTransition { ... }
-public struct NoPageTransition: PageTransition { ... }
+public struct SlidePageTransition: PageTransition { public var duration: Double = 0.28 }
+public struct FadePageTransition: PageTransition { public var duration: Double = 0.2 }
+public struct NoPageTransition: PageTransition { }
 extension PageTransition where Self == SlidePageTransition { public static var slide: Self }
+extension PageTransition where Self == FadePageTransition { public static var fade: Self }
+extension PageTransition where Self == NoPageTransition { public static var none: Self }
 ```
+
+M1 実装済み。
 
 演出は 2 枚の画像だけで描く。`progress` が 1 に到達した時点で EPUBUI が画像を外し、WebView を見せる
 （02-rendering §7.2）。
@@ -302,9 +356,11 @@ public struct SelectionAction: Identifiable, Sendable {
 `EPUBReaderView` はサイズ変更を `onGeometryChange` で受け、`ReaderSession.viewportSize` を更新する。
 セッションは現在の CFI を記録 → 再レイアウト → `pageFor(cfi)` で復元し、その間は直前のスナップショットを
 クロスフェードで見せる。macOS のウィンドウリサイズ中は 150 ms デバウンスする。
+M3 までは CFI の代わりに `reader.js` の DOM アンカーで復元する（02-rendering §5.3）。
 
 ## 5. 公開しない型
 
 `EPUBSchemeHandler`、`PaginationService`、`SpreadBuilder`、`reader.js` のメッセージ型、WKWebView の
 サブクラスは `internal`。将来のネイティブ描画への差し替え点として `internal protocol SpineRenderer` を置き、
-`ReaderSession` はそれ越しに WebView を操作する。
+`ReaderSession` はそれ越しに WebView を操作する（M1 では `WebViewSpineRenderer` が唯一の実装）。
+EPUBUI だけが必要とする WebView のホスト用ビューは `@_spi(EPUBUI)` で渡す（§3.2）。

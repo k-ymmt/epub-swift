@@ -12,4 +12,3 @@
 - [ ] iOS の狭い列幅で letter-spacing の大きな見出し（moby-dick の "TRANSCRIBER'S" など）が列からはみ出す。コンテンツ側のスタイルなので reader-after.css で `overflow-wrap` / `word-break` を当てるかどうか方針を決める。
 - [ ] Renderer の自動テストは macOS のみ。iOS 固有だった `WebViewSpineRenderer.syncNativeScroll`（UI プロセス側のスクロールクランプ対策）はシミュレータ上の手動確認だけなので、iOS で動く回帰テスト（XCTest/xcodebuild test）の置き場を決める。
 - [ ] `Examples/ReaderDemo/Sources/ReaderDemo/Books/` に `Tests/Fixtures` の epub をコピーしている（1.7 MB の重複）。SwiftPM のリソースでシンボリックリンクが使えるか確認し、使えるなら共有する。
-- [ ] 設計文書に反映すべき事実（`docs/design/` は本セッションでは編集していない）: 余白を `html` の padding + `column-gap = 2×余白` で実装したこと、iOS の UI プロセスがスクロール要求を古い contentSize でクランプすること（02-rendering §1.2）、画像遅延読み込みでページ数が後から増えるため `goForward` が文書に先に問い合わせること。詳細は共有ノート `m1-implementation-handover.md`。

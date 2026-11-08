@@ -27,6 +27,10 @@ OPF からの参照は OPF のディレクトリを基準に解決し、パー�
 - `init(url: URL) async throws`。ZIP を開き、container.xml → OPF → nav → encryption.xml の順に解析して
   `Publication` を作る。
 - `func data(at path: String) async throws -> Data`。難読化対象なら解除して返す。
+- `func contentDocument(at path: String) async throws -> ContentDocument`。spine item の XHTML を §4.1 の手順にかけ、
+  配信すべきバイト列と `mediaType`（`application/xhtml+xml` または `text/html`）、状態（`wellFormed` / `repaired` / `unrepairable`）、
+  警告を返す。`EPUBSchemeHandler` はこれを使う。
+- `init(data: Data) async throws` も持つ（テストとメモリ上の EPUB 用）。
 - 小さいエントリ（OPF、nav、CSS、XHTML）は読んだ結果を `NSCache` に入れる。画像はキャッシュしない。
 - `publicationID: PublicationID` を保持する。
 
@@ -121,6 +125,10 @@ WebKit の DOM と同じ木でなければ CFI が食い違う。WebKit には�
 
 1. `XMLParser` で整形式 XML として読む。EPUB 3 の spine item は XHTML（XML 構文）なので通常はこれで足りる。
    成功した文書は ZIP のバイト列をそのまま配信対象にし、以降の手順は行わない。
+   注意: `XMLParser` は外部 DTD を解決しないため、XHTML 1.1 の DOCTYPE を付けたまま `&nbsp;` などの名前付き実体を使う文書を
+   「未定義の実体」として拒否する。こうした文書は XHTML としては正しいが、本ライブラリでは手順 2 以降の修復経路に回り
+   （libxml2 の HTML パーサが実体を文字に解決する）、`malformedXHTML` 警告が付く。WebKit の XML パーサも同じ実体を
+   エラーにするので、修復して配信する方が表示上も正しい。
 2. 失敗したら libxml2 の HTML パーサ（`htmlReadMemory` + `HTML_PARSE_RECOVER | HTML_PARSE_NOERROR | HTML_PARSE_NOWARNING`）で読み、
    `PublicationWarning.malformedXHTML(path)` を積む。
 3. 回復した木に次の補正だけを行う。これ以外の差異は直さない。

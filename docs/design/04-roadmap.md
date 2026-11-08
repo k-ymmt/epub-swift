@@ -16,6 +16,13 @@
 
 完了条件: `moby-dick` と `childrens-literature` を開いて最後まで読め、設定変更で再レイアウトされる。
 
+**完了（2026-11-08、コミット 334a982〜9cf8351）。** 完了条件は iOS 27 Simulator と macOS 27 の `Examples/ReaderDemo` で確認した。
+実装中に設計を変えた点は各文書に反映済み（02-rendering §1.2 / §3.1 / §3.4 / §4.1 / §5.1 / §5.3、03-api §2.1 / §3.2 / §3.4 / §4.2、
+01-core §1.2 / §4.1）。位置の復元は M3 の CFI まで `reader.js` の DOM アンカーで代替している。
+積み残しは `TODO.md` に置く（UTF-16 文書への注入、接頭辞付き `<html>` の注入、パーセントデコードの重複、
+複数セッションでのコンテナ登録解除、iOS の狭い段での letter-spacing 見出しのはみ出し、iOS 上で動く Renderer テストの置き場、
+デモアプリへの fixtures 複製）。
+
 ### M2. 縦書きと事前ページ化
 
 - `writing-mode` 判定と縦書き用の多段組、右綴じのジェスチャ反転
@@ -29,7 +36,8 @@
 ### M3. 位置・選択・ハイライト・検索
 
 - `CFI` のパース・生成・比較と、`reader.js` 側の同一実装。テストベクタ
-- `ReadingPosition` の記録と復元
+- `ReadingPosition` の記録と復元。M1 の DOM アンカー（`captureAnchor` / `pageForAnchor`）を `cfiForPage` / `pageFor(cfi)` に置き換え、
+  `ReaderEvent.pageChanged` を `positionChanged` に統合する
 - 選択メニューへの `SelectionAction` 追加（iOS / macOS）
 - `Highlight` の描画（CSS Custom Highlight API）、ハイライトのタップ
 - `SearchService` と `show(_:)`
@@ -93,7 +101,7 @@ Adobe 方式の難読化は公開サンプルがないので、テスト内で I
 | 層 | 方法 | 実行環境 |
 |---|---|---|
 | EPUBCore | Swift Testing。フィクスチャを開いてモデルを検証。CFI はテストベクタ。壊れた XHTML は `Spikes/Sources/SpikeKit/Fixtures.swift` の 3 文書を `Tests/Fixtures/malformed/` に移し、修復済み XHTML が `XMLParser` で読めることと、名前空間・SVG 名の補正を検証 | `swift test`（macOS） |
-| EPUBRenderer | Swift Testing + 実 WKWebView。`@MainActor` のテストで `ready` を待つ。`reader.js` の CFI は Core と同じベクタで JS 側を検証。修復済み XHTML を読み込み、WebKit の DOM ダンプが Core の軽量 DOM と一致することを検証（スパイク 5 の比較方法を流用） | `swift test`（macOS）。WKWebView は macOS のテストプロセスで動く |
+| EPUBRenderer | Swift Testing + 実 WKWebView。`@MainActor` のテストで `ready` を待つ。`reader.js` の CFI は Core と同じベクタで JS 側を検証。修復済み XHTML を読み込み、WebKit の DOM ダンプが Core の軽量 DOM と一致することを検証（スパイク 5 の比較方法を流用） | `swift test`（macOS）。WKWebView は macOS のテストプロセスで動く。iOS 固有の挙動（スクロール同期）は M1 時点では Simulator での手動確認のみで、iOS 上で動く回帰テストの置き場は未決（`TODO.md`） |
 | EPUBUI | 手動確認用の `Examples/ReaderDemo` アプリ（M1 で作る）。自動テストは持たない | Xcode |
 
 `swift test` は M1 からリポジトリの標準コマンドとし、作業の終わりに必ず通す。

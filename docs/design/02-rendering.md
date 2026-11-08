@@ -47,6 +47,15 @@ WebView 側:
 末尾ページでも同様で、スクロール位置は文書末尾でクランプされるため、センチネル位置から求めたページ数で
 ページ i の `scrollLeft = i * pageWidth` を計算し、クランプには依存しない（05-spike-results §2.3）。
 
+実装では WebView のフレームを 3 スロットに分け、`goToPage` が「可視スロット」（0〜2）を返す。
+Swift はフレームの `origin.x` を `-visibleSlot * pageWidth` に置いてそのスロットをクリップ内に合わせる。
+先頭ページはスロット 0、末尾ページはスロット 2、それ以外はスロット 1 に置くことで、文書の両端でも前後ページを撮れる範囲を最大にする。
+
+iOS では、文書側の `scrollLeft` / `scrollTop` の設定を UI プロセスが非同期に `UIScrollView.contentOffset` へ反映し、
+その際に古い `contentSize` でクランプすることがある（画像の遅延読み込みで文書が伸びている最中に連続でめくった場合）。
+すると文書が報告するページと実際に見えている位置がずれる。`goToPage` は設定後の `scrollLeft` / `scrollTop` を戻り値に含め、
+Swift 側は iOS で `scrollView.setContentOffset(_:animated: false)` を同じ値で呼んで同期する（M1 で発見。macOS には不要）。
+
 ## 2. URL スキーム
 
 ### 2.1 URL 形式
@@ -89,6 +98,9 @@ Readium CSS の before / after の考え方を借り、自前の 2 ファイル�
 
 出版社 CSS はその間に残る。before で土台を作り、after で読者の設定を勝たせる。
 
+2 つの CSS と `reader.js` は EPUBRenderer ターゲットの `Reader/` フォルダに `.copy` リソースとして同梱する。
+フォルダ名を `Resources` にすると iOS の codesign がバンドル内の同名ディレクトリを拒否するため、この名前は使わない。
+
 ### 3.2 注入方法
 
 `EPUBSchemeHandler` が XHTML のバイト列を文字列として読み、`<head>` の直後に before の `<link>` を、
@@ -119,16 +131,27 @@ SDK の libxml2 は HTML5 の木構築規則を持たず、表や交差タグで
 横書き（`writing-mode: horizontal-tb`）:
 
 ```css
+:root {
+  --reader-column-width: calc(var(--reader-page-width) - 2 * var(--reader-margin-h));
+  --reader-column-gap: calc(2 * var(--reader-margin-h));
+}
 html {
-  width: var(--reader-page-width);     /* 可視ページの幅。見開きなら 2 ページ分 */
-  height: var(--reader-page-height);
+  box-sizing: content-box;
+  width: var(--reader-column-width);                                  /* 内容幅 = ページ幅 - 左右余白 */
+  height: calc(var(--reader-page-height) - 2 * var(--reader-margin-v));
+  padding: var(--reader-margin-v) var(--reader-margin-h);             /* 余白は html の padding */
   overflow: hidden;
-  column-width: var(--reader-column-width);   /* 1 ページ分の幅 */
-  column-gap: var(--reader-column-gap);
+  column-width: var(--reader-column-width);
+  column-gap: var(--reader-column-gap);                               /* 段間 = 左右余白 2 つ分 */
   column-fill: auto;
 }
-body { margin: 0; padding: var(--reader-margin-v) var(--reader-margin-h); }
+body { margin: 0; padding: 0; }
 ```
+
+余白は `body` の padding ではなく `html` の padding と `column-gap = 2 × 左右余白` で作る。
+`body` に padding を付けると最初の段にしか余白が付かず、2 段目以降のページは余白なしで始まる。
+`html` の padding なら全段（全ページ）に同じ余白が付き、段の幅 + 段間 = ページ幅となってページ i の
+`scrollLeft = i * pageWidth` がそのまま成り立つ（M1 で変更）。
 
 縦書き（`writing-mode: vertical-rl`）:
 
@@ -184,8 +207,10 @@ html {
 
 | 関数 | 役割 |
 |---|---|
-| `layout({pageWidth, pageHeight, columnsPerPage, margins})` | CSS 変数を更新し、`writing-mode` を判定して `{pageCount, writingMode}` を返す |
-| `goToPage(index)` | スクロール位置を設定する |
+| `layout({pageWidth, pageHeight, columnsPerPage, margins, ...})` | CSS 変数を更新し、`writing-mode` を判定して `{pageCount, writingMode}` を返す |
+| `goToPage(index)` | ページ数を測り直してから index をクランプし、スクロール位置を設定する。`{pageIndex, slot, pageCount, scrollLeft, scrollTop}` を返す（§1.2 のスロットと iOS の同期に使う） |
+| `captureAnchor(slot, margins)` / `pageForAnchor()` | M1〜M2 の暫定。可視ページ先頭のテキスト位置（`caretRangeFromPoint`）か要素を reader world 内の DOM アンカーとして保持し、再レイアウト後にそれを含むページを返す。M3 で `cfiForPage` / `pageFor(cfi)` に置き換える |
+| `pageForFragment(id)` | 文書内リンクと目次の `#fragment` が指す要素のページを返す |
 | `pageFor(cfi)` | CFI を Range に解決し、`getBoundingClientRect` からページ番号を返す |
 | `cfiForPage(index)` | そのページの先頭に見えるテキスト位置の CFI を返す（`caretRangeFromPoint` を使う） |
 | `cfiForVisibleRange()` | 現在ページの先頭と末尾の CFI 範囲を返す |
@@ -232,6 +257,11 @@ EPUBCore と同じ規則（01-core §5）で DOM を数える。WebKit の DOM �
 
 最後の段が空になる端数は `column-fill: auto` で起きないが、画像の遅延読み込みで増減するので `pageCountChanged` を監視する。
 
+Swift 側が持つ `chapterPageCount` は、この通知の到着前は古い値になりうる。そのため `goForward()` は
+「現在ページが既知のページ数の最後だから次章へ」とは判断せず、まず文書に `goToPage(current + 1)` を要求する。
+`goToPage` はその場でページ数を測り直してからクランプするので、ページが増えていれば章内で進み、
+動けなかった（戻り値の `pageIndex` が変わらない）ときだけ次の線形 spine item を読み込む（M1 で変更）。
+
 ### 5.2 書籍全体のページ番号
 
 `BookPagination` は spine 順に各章の `pageCount` を持ち、章 i のページ j を `offset(i) + j` と番号付けする。
@@ -249,6 +279,11 @@ EPUBCore と同じ規則（01-core §5）で DOM を数える。WebKit の DOM �
 
 読書位置は常に CFI（表示ページ先頭の `cfiForPage`）で持つ。設定変更、リサイズ、章の再読み込みの後は
 `pageFor(cfi)` で同じテキストが含まれるページに戻す。ページ番号は復元の手段には使わない。
+
+M1〜M2 の暫定: CFI は M3 で入るため、それまでは `reader.js` が可視ページ先頭の DOM アンカー（§4.1 `captureAnchor`）を
+保持し、同じ文書の再レイアウト後に `pageForAnchor()` で戻す。アンカーは文書の再読み込みをまたげないので、
+章の再読み込み時は章内の進捗率（`currentPageIndex / (chapterPageCount - 1)`）で近似する。
+アプリに公開する位置は M3 まで spine index とページ index（03-api §3.2）。
 
 ## 6. FXL と見開き
 
