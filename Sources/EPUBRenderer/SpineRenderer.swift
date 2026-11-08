@@ -30,6 +30,9 @@ struct GoToPageResult: Sendable {
 struct LayoutParameters: Sendable {
     var pageSize: CGSize
     var settings: ReaderSettings
+    /// Replacement for the `<style id="__reader_settings">` the scheme handler injected at load time
+    /// (`ContentInjector.rootStyle`), so that settings changes undo earlier overrides and add `@font-face` rules.
+    var rootStyle: String? = nil
 
     var dictionary: [String: Any] {
         var dict: [String: Any] = [
@@ -46,6 +49,7 @@ struct LayoutParameters: Sendable {
             ],
         ]
         dict["fontFamily"] = ContentInjector.fontFamilyCSS(settings.font) ?? ""
+        if let rootStyle { dict["rootStyle"] = rootStyle }
         return dict
     }
 }

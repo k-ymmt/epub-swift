@@ -12,10 +12,19 @@ struct ReaderPlatformView: UIViewRepresentable {
         HostView(content: session.platformView)
     }
 
-    func updateUIView(_ uiView: HostView, context: Context) {}
+    func updateUIView(_ uiView: HostView, context: Context) {
+        uiView.content = session.platformView
+    }
 
     final class HostView: UIView {
-        let content: UIView
+        var content: UIView {
+            didSet {
+                guard oldValue !== content else { return }
+                oldValue.removeFromSuperview()
+                addSubview(content)
+                setNeedsLayout()
+            }
+        }
 
         init(content: UIView) {
             self.content = content
@@ -51,12 +60,20 @@ struct ReaderPlatformView: NSViewRepresentable {
     }
 
     func updateNSView(_ nsView: HostView, context: Context) {
+        nsView.content = session.platformView
         nsView.onKey = onKey
         nsView.onScrollPhase = onScrollPhase
     }
 
     final class HostView: NSView {
-        let content: NSView
+        var content: NSView {
+            didSet {
+                guard oldValue !== content else { return }
+                oldValue.removeFromSuperview()
+                addSubview(content)
+                needsLayout = true
+            }
+        }
         var onKey: (@MainActor (ReaderKeyCommand) -> Void)?
         var onScrollPhase: (@MainActor (ScrollPhaseEvent) -> Void)?
         private var monitor: Any?

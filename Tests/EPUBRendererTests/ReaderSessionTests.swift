@@ -151,6 +151,51 @@ final class SessionHost {
         #expect(family?.contains("Helvetica") == true)
     }
 
+    @Test func fontOverrideCanBeRevertedAndCustomFontsAreDeclaredAfterLoad() async throws {
+        var settings = ReaderSettings()
+        settings.font = .system(name: "Helvetica")
+        let host = try await SessionHost(url: Self.mobyDick, settings: settings)
+        await host.session.loadIfNeeded()
+        await host.session.go(toSpineIndex: 6)
+        let overridden = try await host.js("return getComputedStyle(document.body).fontFamily") as? String
+        #expect(overridden?.contains("Helvetica") == true)
+
+        // Back to the publisher's font: the load-time `!important` rule and the variable must both go away.
+        host.session.settings.font = .publisher
+        try await host.waitUntil { !host.session.isLoading }
+        let attr = try await host.js("return document.documentElement.getAttribute('data-reader-font')")
+        #expect(attr == nil || attr is NSNull)
+        let reverted = try await host.js("return getComputedStyle(document.body).fontFamily") as? String
+        #expect(reverted?.contains("Helvetica") == false)
+        let styleText = try await host.js("return document.getElementById('__reader_settings').textContent") as? String
+        #expect(styleText?.contains("font-family: var(--reader-font-family) !important") == false)
+
+        // A custom font chosen after load gets its @font-face declaration and is served by the scheme handler.
+        let fontFile = URL(fileURLWithPath: "/System/Library/Fonts/Supplemental/Arial.ttf")
+        guard FileManager.default.fileExists(atPath: fontFile.path) else { return }
+        host.session.settings.font = .custom(FontResource(familyName: "ReaderTestFont", fileURL: fontFile))
+        try await host.waitUntil { !host.session.isLoading }
+        let declared = try await host.js("""
+            const sheet = document.getElementById('__reader_settings').sheet;
+            return Array.from(sheet.cssRules).some(r => r instanceof CSSFontFaceRule && r.style.fontFamily.includes('ReaderTestFont'));
+            """) as? Bool
+        #expect(declared == true)
+        let custom = try await host.js("return getComputedStyle(document.body).fontFamily") as? String
+        #expect(custom?.contains("ReaderTestFont") == true)
+    }
+
+    @Test func goForwardDoesNotCrossChaptersWhenThePageMoveFails() async throws {
+        let host = try await SessionHost(url: Self.mobyDick)
+        await host.session.loadIfNeeded()
+        await host.session.go(toSpineIndex: 6)
+        let spine = host.session.currentSpineIndex
+        // Break the reader script so that goToPage throws instead of answering.
+        _ = try await host.js("window.__epubReader.goToPage = () => { throw new Error('simulated failure'); }; return true")
+        await host.session.goForward()
+        #expect(host.session.currentSpineIndex == spine)
+        #expect(host.session.currentPageIndex == 0)
+    }
+
     @Test func snapshotsHaveThePageSize() async throws {
         let host = try await SessionHost(url: Self.mobyDick)
         await host.session.loadIfNeeded()

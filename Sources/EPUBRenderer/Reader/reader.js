@@ -98,8 +98,20 @@
         setVar("--reader-font-family", p.fontFamily);
         root().setAttribute("data-reader-font", "override");
       } else {
+        root().style.removeProperty("--reader-font-family");
         root().removeAttribute("data-reader-font");
       }
+    }
+    if (typeof p.rootStyle === "string") {
+      // The settings <style> injected at load time carries first-paint overrides (font-family !important,
+      // @font-face for custom fonts). Replace it so that a later change can undo or extend them.
+      let el = document.getElementById("__reader_settings");
+      if (!el) {
+        el = document.createElement("style");
+        el.id = "__reader_settings";
+        (document.head || root()).appendChild(el);
+      }
+      el.textContent = p.rootStyle;
     }
   }
 

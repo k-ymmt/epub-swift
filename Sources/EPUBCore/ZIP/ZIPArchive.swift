@@ -49,6 +49,7 @@ public final class ZIPArchive: Sendable {
         var entries: [String: ZIPEntry] = [:]
         var order: [ZIPEntry] = []
         var warnings: [String] = []
+        // Both values were checked against the archive size in locateEndOfCentralDirectory, so they fit in Int.
         var offset = Int(eocd.centralDirectoryOffset)
         let end = Int(eocd.centralDirectoryOffset + eocd.centralDirectorySize)
         guard end <= reader.count else { throw EPUBError.notAZIPArchive }
@@ -137,15 +138,20 @@ public final class ZIPArchive: Sendable {
     public func data(for entry: ZIPEntry) throws -> Data {
         if entry.isEncrypted { throw EPUBError.encryptedResource(path: entry.path) }
         let reader = ByteReader(data)
-        let local = Int(entry.localHeaderOffset)
-        guard local + 30 <= reader.count, reader.u32(local) == 0x0403_4B50 else {
+        // All offsets and sizes come from the archive: convert without trapping and bound them by the archive size
+        // before they are used in arithmetic.
+        guard let local = Int(exactly: entry.localHeaderOffset), local <= reader.count - 30,
+              reader.u32(local) == 0x0403_4B50 else {
             throw EPUBError.corruptEntry(path: entry.path)
         }
         let nameLength = Int(reader.u16(local + 26))
         let extraLength = Int(reader.u16(local + 28))
         let dataStart = local + 30 + nameLength + extraLength
-        let compressedSize = Int(entry.compressedSize)
-        guard dataStart + compressedSize <= reader.count else { throw EPUBError.corruptEntry(path: entry.path) }
+        guard dataStart <= reader.count,
+              let compressedSize = Int(exactly: entry.compressedSize), compressedSize <= reader.count - dataStart,
+              let uncompressedSize = Int(exactly: entry.uncompressedSize), uncompressedSize <= Self.maxEntrySize else {
+            throw EPUBError.corruptEntry(path: entry.path)
+        }
         let compressed = data.subdata(in: (data.startIndex + dataStart)..<(data.startIndex + dataStart + compressedSize))
         let result: Data
         switch entry.method {
@@ -154,7 +160,7 @@ public final class ZIPArchive: Sendable {
             result = compressed
         case 8:
             do {
-                result = try Inflate.decode(compressed, expectedSize: Int(entry.uncompressedSize))
+                result = try Inflate.decode(compressed, expectedSize: uncompressedSize)
             } catch {
                 throw EPUBError.corruptEntry(path: entry.path)
             }
@@ -164,6 +170,10 @@ public final class ZIPArchive: Sendable {
         guard CRC32.checksum(result) == entry.crc32 else { throw EPUBError.corruptEntry(path: entry.path) }
         return result
     }
+
+    /// Largest entry this reader will decompress. An EPUB resource beyond this is treated as corrupt rather than
+    /// letting an archive-controlled size drive the output allocation.
+    static let maxEntrySize = 1 << 30
 
     // MARK: - End of central directory
 
@@ -199,15 +209,16 @@ public final class ZIPArchive: Sendable {
             // ZIP64 end of central directory locator sits directly before the EOCD record.
             let locator = eocdOffset - 20
             guard locator >= 0, reader.u32(locator) == 0x0706_4B50 else { throw EPUBError.notAZIPArchive }
-            let zip64EOCDOffset = Int(reader.u64(locator + 8))
-            guard zip64EOCDOffset >= 0, zip64EOCDOffset + 56 <= count, reader.u32(zip64EOCDOffset) == 0x0606_4B50 else {
+            guard let zip64EOCDOffset = Int(exactly: reader.u64(locator + 8)), zip64EOCDOffset <= count - 56,
+                  reader.u32(zip64EOCDOffset) == 0x0606_4B50 else {
                 throw EPUBError.notAZIPArchive
             }
             entryCount = reader.u64(zip64EOCDOffset + 32)
             cdSize = reader.u64(zip64EOCDOffset + 40)
             cdOffset = reader.u64(zip64EOCDOffset + 48)
         }
-        guard cdOffset + cdSize <= UInt64(count) else { throw EPUBError.notAZIPArchive }
+        let (cdEnd, overflow) = cdOffset.addingReportingOverflow(cdSize)
+        guard !overflow, cdEnd <= UInt64(count) else { throw EPUBError.notAZIPArchive }
         return EndOfCentralDirectory(entryCount: entryCount, centralDirectorySize: cdSize, centralDirectoryOffset: cdOffset)
     }
 }

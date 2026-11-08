@@ -135,8 +135,8 @@ public final class ReaderSession {
             // after late image loads, and `goToPage` re-measures before clamping. Only when the document cannot move
             // forward is the next chapter loaded.
             let before = currentPageIndex
-            await goToPageInChapter(currentPageIndex + 1, clampToKnownCount: false)
-            if currentPageIndex == before, let next = nextLinearSpineIndex(after: currentSpineIndex) {
+            let moved = await goToPageInChapter(currentPageIndex + 1, clampToKnownCount: false)
+            if moved, currentPageIndex == before, let next = nextLinearSpineIndex(after: currentSpineIndex) {
                 await loadChapter(next, target: .first)
             }
         }
@@ -262,16 +262,21 @@ public final class ReaderSession {
         }
     }
 
-    private func goToPageInChapter(_ index: Int, clampToKnownCount: Bool = true) async {
-        guard hasLoaded else { return }
+    /// Returns false when the document could not be asked (not loaded, or the script call failed); the page state
+    /// is then unchanged and callers must not treat it as "already at the chapter end".
+    @discardableResult
+    private func goToPageInChapter(_ index: Int, clampToKnownCount: Bool = true) async -> Bool {
+        guard hasLoaded else { return false }
         let clamped = clampToKnownCount ? min(max(0, index), chapterPageCount - 1) : max(0, index)
         do {
             let result = try await renderer.goToPage(clamped)
             currentPageIndex = result.pageIndex
             chapterPageCount = result.pageCount
             emit(.pageChanged(spineIndex: currentSpineIndex, pageIndex: result.pageIndex, pageCount: result.pageCount))
+            return true
         } catch {
             emit(.error(.scriptFailed(error.localizedDescription)))
+            return false
         }
     }
 
@@ -333,7 +338,7 @@ public final class ReaderSession {
         do {
             let anchored = try await renderer.captureAnchor(slot: renderer.visibleSlot, margins: settings.pageMargins)
             let ratio = chapterPageCount > 1 ? Double(currentPageIndex) / Double(chapterPageCount - 1) : 0
-            let layout = try await renderer.applySettings(LayoutParameters(pageSize: viewportSize, settings: settings))
+            let layout = try await renderer.applySettings(LayoutParameters(pageSize: viewportSize, settings: settings, rootStyle: schemeHandler.rootStyle))
             chapterPageCount = layout.pageCount
             var targetPage = min(currentPageIndex, layout.pageCount - 1)
             if anchored, let page = try await renderer.pageForAnchor() {
