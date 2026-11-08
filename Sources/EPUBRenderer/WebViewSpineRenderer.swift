@@ -136,7 +136,21 @@ final class WebViewSpineRenderer: NSObject, SpineRenderer {
             throw ReaderError.scriptFailed("goToPage returned \(String(describing: result))")
         }
         alignSlot(slot)
-        return GoToPageResult(pageIndex: pageIndex, slot: slot, pageCount: pageCount)
+        let offset = CGPoint(x: (dict["scrollLeft"] as? Double) ?? 0, y: (dict["scrollTop"] as? Double) ?? 0)
+        syncNativeScroll(to: offset)
+        return GoToPageResult(pageIndex: pageIndex, slot: slot, pageCount: pageCount, scrollOffset: offset)
+    }
+
+    /// On iOS the document's scroll position is applied by the UI process asynchronously; during rapid page turns
+    /// while the document is still growing (late images) the request can be clamped against a stale content size
+    /// and the scroll view ends up behind the page the document reports. Setting the offset natively keeps them equal.
+    private func syncNativeScroll(to offset: CGPoint) {
+        #if canImport(UIKit)
+        let scrollView = webView.scrollView
+        let current = scrollView.contentOffset
+        guard abs(current.x - offset.x) > 0.5 || abs(current.y - offset.y) > 0.5 else { return }
+        scrollView.setContentOffset(offset, animated: false)
+        #endif
     }
 
     func captureAnchor(slot: Int, margins: PageMargins) async throws -> Bool {

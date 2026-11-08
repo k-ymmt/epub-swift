@@ -22,6 +22,8 @@ struct GoToPageResult: Sendable {
     /// this slot sits in the visible area (02-rendering §1.2).
     var slot: Int
     var pageCount: Int
+    /// Document scroll position after the move (CSS px), as read back from the document.
+    var scrollOffset: CGPoint = .zero
 }
 
 /// Layout parameters passed to `reader.js`.

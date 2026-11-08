@@ -214,3 +214,30 @@ extension TOCEntry {
         children.flatMap { [$0] + $0.descendantsFlat }
     }
 }
+
+@Suite(.serialized) @MainActor struct ReaderSessionLateLayoutTests {
+    @Test func readsChildrensLiteratureToTheEndAndKeepsPlaceOnResize() async throws {
+        let host = try await SessionHost(url: ReaderSessionTests.childrens)
+        await host.session.loadIfNeeded()
+        var pages = 0
+        while !host.session.isAtEnd, pages < 5000 {
+            let before = (host.session.currentSpineIndex, host.session.currentPageIndex)
+            await host.session.goForward()
+            let after = (host.session.currentSpineIndex, host.session.currentPageIndex)
+            #expect(before != after)
+            pages += 1
+        }
+        #expect(host.session.currentSpineIndex == 2)
+        // Images may still be loading: once they are, the count must not exceed the page we are on by more than 0.
+        try await Task.sleep(for: .milliseconds(500))
+        #expect(host.session.currentPageIndex == host.session.chapterPageCount - 1, "ended at \(host.session.currentPageIndex + 1)/\(host.session.chapterPageCount)")
+        #expect(host.session.isAtEnd)
+
+        // Shrinking the viewport (e.g. a status bar appearing) keeps the reader at the end of the chapter.
+        let countBefore = host.session.chapterPageCount
+        host.session.viewportSize = CGSize(width: 400, height: 580)
+        try await host.waitUntil { !host.session.isLoading && host.session.chapterPageCount != countBefore }
+        try await Task.sleep(for: .milliseconds(300))
+        #expect(host.session.currentPageIndex >= host.session.chapterPageCount - 3, "landed on \(host.session.currentPageIndex + 1)/\(host.session.chapterPageCount)")
+    }
+}

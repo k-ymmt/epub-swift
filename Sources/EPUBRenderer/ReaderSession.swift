@@ -131,9 +131,12 @@ public final class ReaderSession {
     /// Next page, or the first page of the next linear spine item.
     public func goForward() async {
         await run { [self] in
-            if currentPageIndex + 1 < chapterPageCount {
-                await goToPageInChapter(currentPageIndex + 1)
-            } else if let next = nextLinearSpineIndex(after: currentSpineIndex) {
+            // Ask the document for page `current + 1` even when it looks like the last page: the page count can grow
+            // after late image loads, and `goToPage` re-measures before clamping. Only when the document cannot move
+            // forward is the next chapter loaded.
+            let before = currentPageIndex
+            await goToPageInChapter(currentPageIndex + 1, clampToKnownCount: false)
+            if currentPageIndex == before, let next = nextLinearSpineIndex(after: currentSpineIndex) {
                 await loadChapter(next, target: .first)
             }
         }
@@ -259,9 +262,9 @@ public final class ReaderSession {
         }
     }
 
-    private func goToPageInChapter(_ index: Int) async {
+    private func goToPageInChapter(_ index: Int, clampToKnownCount: Bool = true) async {
         guard hasLoaded else { return }
-        let clamped = min(max(0, index), chapterPageCount - 1)
+        let clamped = clampToKnownCount ? min(max(0, index), chapterPageCount - 1) : max(0, index)
         do {
             let result = try await renderer.goToPage(clamped)
             currentPageIndex = result.pageIndex

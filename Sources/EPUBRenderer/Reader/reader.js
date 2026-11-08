@@ -118,6 +118,8 @@
   // at the ends the scroll position is clamped and the page ends up in another slot. The returned
   // `slot` tells Swift where the page is so it can offset the web view (02-rendering §1.2).
   function goToPage(index) {
+    // Re-measure first: late image/font loads may have changed the page count since the last call.
+    state.pageCount = computePageCount();
     const i = Math.max(0, Math.min(Math.floor(index), state.pageCount - 1));
     const sc = scroller();
     const pageSize = isVertical() ? state.pageHeight : state.pageWidth;
@@ -129,11 +131,13 @@
       sc.scrollTop = desired;
       // scrollTop is also clamped to the document end; the slot is derived from the actual value.
       const slot = i - Math.round(sc.scrollTop / pageSize);
-      return { pageIndex: i, slot: slot, pageCount: state.pageCount };
+      return { pageIndex: i, slot: slot, pageCount: state.pageCount, scrollLeft: sc.scrollLeft, scrollTop: sc.scrollTop };
     }
     sc.scrollLeft = desired;
     const slot = i - Math.round(sc.scrollLeft / pageSize);
-    return { pageIndex: i, slot: slot, pageCount: state.pageCount };
+    // scrollLeft/scrollTop are returned so that the native scroll view can be kept in step on iOS, where
+    // scroll requests are applied asynchronously by the UI process and may be clamped against a stale content size.
+    return { pageIndex: i, slot: slot, pageCount: state.pageCount, scrollLeft: sc.scrollLeft, scrollTop: sc.scrollTop };
   }
 
   function pageForDocumentX(x) {
@@ -180,11 +184,50 @@
         }
       }
     }
-    if (fallbackElement) {
-      state.anchor = { kind: "element", node: fallbackElement };
+    // No text at the probe points (e.g. a page with only an image or a short last page): take the first text node
+    // that has a box inside the page. Walking the text nodes is slower but only happens on relayout.
+    const inPage = firstTextInPage(originX);
+    if (inPage) {
+      state.anchor = inPage;
       return true;
     }
+    // Last resort: an element, but only one that fits in a page. A container that spans many columns
+    // (a chapter <div>) would restore to the page where it starts, far from the current page.
+    if (fallbackElement) {
+      let el = fallbackElement;
+      while (el && el !== document.body && el !== root()) {
+        const r = el.getBoundingClientRect();
+        if (r.width <= state.pageWidth + 1 && r.height <= state.pageHeight + 1) {
+          state.anchor = { kind: "element", node: el };
+          return true;
+        }
+        el = el.parentElement;
+      }
+    }
     return false;
+  }
+
+  function firstTextInPage(originX) {
+    const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
+    const r = document.createRange();
+    const right = originX + state.pageWidth;
+    let node;
+    while ((node = walker.nextNode())) {
+      if (!node.data || node.data.trim().length === 0) { continue; }
+      r.selectNodeContents(node);
+      const rects = r.getClientRects();
+      for (let k = 0; k < rects.length; k++) {
+        const rect = rects[k];
+        if (rect.width <= 0 || rect.height <= 0) { continue; }
+        if (rect.right <= originX || rect.left >= right || rect.bottom <= 0 || rect.top >= state.pageHeight) { continue; }
+        const caret = document.caretRangeFromPoint ? document.caretRangeFromPoint(Math.max(rect.left, originX) + 1, rect.top + rect.height / 2) : null;
+        if (caret && caret.startContainer === node) {
+          return { kind: "range", node: node, offset: caret.startOffset };
+        }
+        return { kind: "range", node: node, offset: 0 };
+      }
+    }
+    return null;
   }
 
   // Page index that now contains the captured anchor, or null when there is none.
