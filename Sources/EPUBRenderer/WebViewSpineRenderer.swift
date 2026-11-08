@@ -41,7 +41,7 @@ final class WebViewSpineRenderer: NSObject, SpineRenderer {
         configuration.dataDetectorTypes = []
         #endif
         let controller = WKUserContentController()
-        if let scriptURL = Bundle.module.url(forResource: "reader", withExtension: "js", subdirectory: "Resources") ?? Bundle.module.url(forResource: "reader", withExtension: "js"),
+        if let scriptURL = Bundle.module.url(forResource: "reader", withExtension: "js", subdirectory: "Reader") ?? Bundle.module.url(forResource: "reader", withExtension: "js"),
            let source = try? String(contentsOf: scriptURL, encoding: .utf8) {
             controller.addUserScript(WKUserScript(source: source, injectionTime: .atDocumentEnd, forMainFrameOnly: true, in: Self.readerWorld))
         }

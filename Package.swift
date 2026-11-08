@@ -32,7 +32,7 @@ let package = Package(
         .target(
             name: "EPUBRenderer",
             dependencies: ["EPUBCore"],
-            resources: [.copy("Resources")],
+            resources: [.copy("Reader")],
             swiftSettings: swiftSettings
         ),
         // SwiftUI views, gestures, page transitions.

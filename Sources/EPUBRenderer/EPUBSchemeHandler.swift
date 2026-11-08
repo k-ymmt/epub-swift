@@ -128,7 +128,7 @@ final class EPUBSchemeHandler: NSObject, WKURLSchemeHandler {
         switch components[1] {
         case "css":
             let name = (components[2] as NSString).deletingPathExtension
-            if let fileURL = bundle.url(forResource: name, withExtension: "css", subdirectory: "Resources") ?? bundle.url(forResource: name, withExtension: "css"),
+            if let fileURL = bundle.url(forResource: name, withExtension: "css", subdirectory: "Reader") ?? bundle.url(forResource: name, withExtension: "css"),
                let data = try? Data(contentsOf: fileURL) {
                 finish(task, taskID: taskID, response: Self.response(url: url, mediaType: "text/css", length: data.count), data: data)
             } else {
