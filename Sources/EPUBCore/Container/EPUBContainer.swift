@@ -20,7 +20,8 @@ public actor EPUBContainer {
         c.totalCostLimit = 16 * 1024 * 1024
         return c
     }()
-    private var contentDocuments: [String: ContentDocument] = [:]
+    /// Prepared spine documents; seeded at open (the character counts need the parse anyway).
+    private var contentDocuments: [String: ContentDocument]
 
     public init(url: URL) async throws {
         let loaded = try await Task.detached(priority: .userInitiated) {
@@ -32,6 +33,7 @@ public actor EPUBContainer {
         self.archive = loaded.archive
         self.obfuscations = loaded.obfuscations
         self.unsupportedEncryptedPaths = loaded.unsupportedEncryptedPaths
+        self.contentDocuments = loaded.contentDocuments
     }
 
     /// Opens an EPUB held in memory (tests, documents received as data).
@@ -45,6 +47,7 @@ public actor EPUBContainer {
         self.archive = loaded.archive
         self.obfuscations = loaded.obfuscations
         self.unsupportedEncryptedPaths = loaded.unsupportedEncryptedPaths
+        self.contentDocuments = loaded.contentDocuments
     }
 
     /// Container paths of every file in the ZIP.
@@ -111,6 +114,7 @@ public actor EPUBContainer {
         var publication: Publication
         var obfuscations: [String: FontObfuscation] = [:]
         var unsupportedEncryptedPaths: Set<String> = []
+        var contentDocuments: [String: ContentDocument] = [:]
     }
 
     enum Loader {
@@ -171,6 +175,25 @@ public actor EPUBContainer {
                 toc = NavigationParser.fallbackTOC(readingOrder: parsed.readingOrder)
             }
 
+            // Spine documents: prepare them once (repair if needed) and count their text for the page-count estimate
+            // (02-rendering §5.2). The prepared documents seed the container's cache so serving does not repeat the work.
+            var contentDocuments: [String: ContentDocument] = [:]
+            var readingOrder: [SpineItem] = []
+            readingOrder.reserveCapacity(parsed.readingOrder.count)
+            for item in parsed.readingOrder {
+                var characterCount: Int?
+                if item.mediaType == XHTMLRepair.xhtmlMediaType || item.path.hasSuffix(".xhtml") || item.path.hasSuffix(".html"),
+                   archive.contains(item.path), let data = try? archive.data(at: item.path) {
+                    let prepared = XHTMLRepair.prepareAndParse(data, path: item.path)
+                    contentDocuments[item.path] = prepared.document
+                    if let tree = prepared.tree { characterCount = TextLength.characterCount(of: tree) }
+                }
+                readingOrder.append(SpineItem(
+                    id: item.id, index: item.index, path: item.path, mediaType: item.mediaType, isLinear: item.isLinear,
+                    layout: item.layout, spreadPosition: item.spreadPosition, characterCount: characterCount
+                ))
+            }
+
             // META-INF/encryption.xml: font obfuscation is undone transparently by `data(at:)`; other
             // algorithms (DRM) are recorded as warnings and their resources cannot be read.
             var encryption = EncryptionParser.Result()
@@ -183,7 +206,7 @@ public actor EPUBContainer {
                 id: PublicationID(),
                 metadata: parsed.metadata,
                 manifest: parsed.manifest,
-                readingOrder: parsed.readingOrder,
+                readingOrder: readingOrder,
                 toc: toc,
                 pageList: pageList,
                 landmarks: landmarks,
@@ -195,7 +218,13 @@ public actor EPUBContainer {
                 navigationDocumentPath: parsed.navigationDocumentPath,
                 warnings: warnings
             )
-            return Loaded(archive: archive, publication: publication, obfuscations: encryption.obfuscations, unsupportedEncryptedPaths: encryption.unsupported)
+            return Loaded(
+                archive: archive,
+                publication: publication,
+                obfuscations: encryption.obfuscations,
+                unsupportedEncryptedPaths: encryption.unsupported,
+                contentDocuments: contentDocuments
+            )
         }
     }
 }

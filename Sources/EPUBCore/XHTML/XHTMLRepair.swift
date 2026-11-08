@@ -37,14 +37,20 @@ public enum XHTMLRepair {
 
     /// Prepares the bytes of a spine item for serving.
     public static func prepare(_ data: Data, path: String) -> ContentDocument {
-        if XMLDocument.isWellFormed(data) {
-            return ContentDocument(path: path, data: data, mediaType: xhtmlMediaType, state: .wellFormed, warnings: [])
+        prepareAndParse(data, path: path).document
+    }
+
+    /// `prepare` plus the parsed tree of the bytes that will be served (nil for the `text/html` fallback), so that
+    /// callers who need the DOM (character counts, search) do not parse twice.
+    public static func prepareAndParse(_ data: Data, path: String) -> (document: ContentDocument, tree: XMLDocument?) {
+        if let tree = try? XMLDocument(data: data) {
+            return (ContentDocument(path: path, data: data, mediaType: xhtmlMediaType, state: .wellFormed, warnings: []), tree)
         }
         let warning = PublicationWarning.malformedXHTML(path: path)
-        if let repaired = repair(data), XMLDocument.isWellFormed(repaired) {
-            return ContentDocument(path: path, data: repaired, mediaType: xhtmlMediaType, state: .repaired, warnings: [warning])
+        if let repaired = repair(data), let tree = try? XMLDocument(data: repaired) {
+            return (ContentDocument(path: path, data: repaired, mediaType: xhtmlMediaType, state: .repaired, warnings: [warning]), tree)
         }
-        return ContentDocument(path: path, data: data, mediaType: htmlMediaType, state: .unrepairable, warnings: [warning])
+        return (ContentDocument(path: path, data: data, mediaType: htmlMediaType, state: .unrepairable, warnings: [warning]), nil)
     }
 
     /// Recovers `data` with libxml2's HTML parser and serializes the tree as XML. Returns nil if the parser
