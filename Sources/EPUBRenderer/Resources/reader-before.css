@@ -1,0 +1,77 @@
+/* EPUB-Swift reader-before.css
+   Injected at the start of <head>, before the publisher's stylesheets (docs/design/02-rendering.md §3).
+   Pagination base: the root element is one page tall and lays its content out in page-wide columns.
+   Page i is shown by scrolling the root to i * page-width. The values of the variables are overwritten
+   by reader.js (`layout`) and by the <style> the scheme handler injects for the current settings. */
+
+:root {
+  --reader-page-width: 390px;
+  --reader-page-height: 700px;
+  --reader-margin-h: 24px;
+  --reader-margin-v: 20px;
+  --reader-column-width: calc(var(--reader-page-width) - 2 * var(--reader-margin-h));
+  --reader-column-gap: calc(2 * var(--reader-margin-h));
+  --reader-font-size: 1;
+  --reader-line-height: 1.6;
+  --reader-fg: #1c1c1e;
+  --reader-bg: #ffffff;
+  --reader-link: #0a5bd6;
+  --reader-font-family: -apple-system, system-ui, sans-serif;
+}
+
+html {
+  box-sizing: content-box;
+  margin: 0;
+  /* Content box = one page minus the margins; the margins are the root's padding so that every
+     column (page) gets them. The column gap equals two horizontal margins, so the column stride
+     is exactly one page width. */
+  width: var(--reader-column-width);
+  height: calc(var(--reader-page-height) - 2 * var(--reader-margin-v));
+  padding: var(--reader-margin-v) var(--reader-margin-h);
+  overflow: hidden;
+  column-width: var(--reader-column-width);
+  column-gap: var(--reader-column-gap);
+  column-fill: auto;
+  -webkit-text-size-adjust: 100%;
+  text-size-adjust: 100%;
+}
+
+body {
+  margin: 0;
+  padding: 0;
+  min-height: 0;
+}
+
+img, svg, video, canvas, object {
+  max-width: 100%;
+  max-height: calc(var(--reader-page-height) - 2 * var(--reader-margin-v));
+  object-fit: contain;
+  break-inside: avoid;
+}
+
+img {
+  height: auto;
+}
+
+table {
+  max-width: 100%;
+}
+
+pre {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+ruby {
+  ruby-align: center;
+}
+
+/* End-of-document sentinel added by reader.js. Its position gives the page count (02-rendering §5.1). */
+#__reader_end {
+  display: inline-block;
+  width: 0;
+  height: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}

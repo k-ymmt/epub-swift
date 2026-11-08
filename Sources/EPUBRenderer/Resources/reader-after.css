@@ -1,0 +1,46 @@
+/* EPUB-Swift reader-after.css
+   Injected at the end of <head>, after the publisher's stylesheets (docs/design/02-rendering.md §3).
+   Reader settings win over the publisher here. */
+
+html {
+  font-size: calc(100% * var(--reader-font-size)) !important;
+  color: var(--reader-fg);
+  background-color: var(--reader-bg) !important;
+}
+
+body {
+  color: var(--reader-fg) !important;
+  background-color: transparent !important;
+  background-image: none !important;
+  line-height: var(--reader-line-height) !important;
+}
+
+body, p, li, dd, dt, blockquote, div, figcaption, td, th,
+h1, h2, h3, h4, h5, h6 {
+  line-height: var(--reader-line-height) !important;
+}
+
+a, a:link, a:visited {
+  color: var(--reader-link) !important;
+}
+
+/* Font override (ReaderSettings.font != .publisher). reader.js sets the attribute. */
+html[data-reader-font="override"] body,
+html[data-reader-font="override"] body * {
+  font-family: var(--reader-font-family) !important;
+}
+
+/* Dark theme: force text color on descendants too (publisher colors are usually tuned for white). */
+html[data-reader-theme="dark"] {
+  color-scheme: dark;
+}
+
+html[data-reader-theme="dark"] body *:not(a) {
+  color: var(--reader-fg) !important;
+}
+
+html[data-reader-theme="dark"] img,
+html[data-reader-theme="dark"] svg,
+html[data-reader-theme="dark"] video {
+  filter: brightness(0.85);
+}

@@ -1,0 +1,251 @@
+import Foundation
+
+/// The parsed structure of an opened EPUB (docs/design/01-core.md §3).
+public struct Publication: Sendable {
+    public let id: PublicationID
+    public let metadata: Metadata
+    /// Every manifest item, in document order. Use `manifestItem(withID:)` / `manifestItem(atPath:)` to look up.
+    public let manifest: [ManifestItem]
+    /// Spine order. Items with `linear="no"` are included with `isLinear == false`.
+    public let readingOrder: [SpineItem]
+    public let toc: [TOCEntry]
+    public let pageList: [TOCEntry]
+    public let landmarks: [TOCEntry]
+    /// Book-level default (`rendition:layout`).
+    public let layout: RenditionLayout
+    public let spread: RenditionSpread
+    public let pageProgression: PageProgression
+    /// Container path of the manifest item with `properties="cover-image"`, if any.
+    public let coverImagePath: String?
+    /// Container path of the OPF. Relative hrefs in the OPF resolve against its directory.
+    public let packageDocumentPath: String
+    /// Container path of the nav document, if one was declared.
+    public let navigationDocumentPath: String?
+    public let warnings: [PublicationWarning]
+
+    private let manifestByID: [String: Int]
+    private let manifestByPath: [String: Int]
+    private let spineByPath: [String: Int]
+
+    public init(
+        id: PublicationID,
+        metadata: Metadata,
+        manifest: [ManifestItem],
+        readingOrder: [SpineItem],
+        toc: [TOCEntry],
+        pageList: [TOCEntry],
+        landmarks: [TOCEntry],
+        layout: RenditionLayout,
+        spread: RenditionSpread,
+        pageProgression: PageProgression,
+        coverImagePath: String?,
+        packageDocumentPath: String,
+        navigationDocumentPath: String?,
+        warnings: [PublicationWarning]
+    ) {
+        self.id = id
+        self.metadata = metadata
+        self.manifest = manifest
+        self.readingOrder = readingOrder
+        self.toc = toc
+        self.pageList = pageList
+        self.landmarks = landmarks
+        self.layout = layout
+        self.spread = spread
+        self.pageProgression = pageProgression
+        self.coverImagePath = coverImagePath
+        self.packageDocumentPath = packageDocumentPath
+        self.navigationDocumentPath = navigationDocumentPath
+        self.warnings = warnings
+        var byID: [String: Int] = [:]
+        var byPath: [String: Int] = [:]
+        for (i, item) in manifest.enumerated() {
+            if byID[item.id] == nil { byID[item.id] = i }
+            if byPath[item.path] == nil { byPath[item.path] = i }
+        }
+        manifestByID = byID
+        manifestByPath = byPath
+        var spineByPath: [String: Int] = [:]
+        for item in readingOrder where spineByPath[item.path] == nil {
+            spineByPath[item.path] = item.index
+        }
+        self.spineByPath = spineByPath
+    }
+
+    public func manifestItem(withID id: String) -> ManifestItem? {
+        manifestByID[id].map { manifest[$0] }
+    }
+
+    public func manifestItem(atPath path: String) -> ManifestItem? {
+        manifestByPath[ContainerPath.normalize(path)].map { manifest[$0] }
+    }
+
+    /// Spine index of the item served at `path` (container path), if the path is a spine item.
+    public func spineIndex(ofPath path: String) -> Int? {
+        spineByPath[ContainerPath.normalize(path)]
+    }
+
+    /// Spine items that take part in the reading order (`linear != "no"`).
+    public var linearReadingOrder: [SpineItem] {
+        readingOrder.filter(\.isLinear)
+    }
+}
+
+public struct Metadata: Sendable, Hashable {
+    public var title: String
+    /// Additional titles (subtitle, collection, ...) in document order, excluding `title`.
+    public var alternativeTitles: [String]
+    public var authors: [String]
+    public var language: String?
+    /// The `dc:identifier` named by `unique-identifier`, or the first one.
+    public var identifier: String?
+    public var publisher: String?
+    public var modified: Date?
+    /// Every `meta[property]` value by property name, plus `dc:*` elements under their qualified names
+    /// (for example `dc:date`, `dc:rights`).
+    public var rawMetadata: [String: [String]]
+
+    public init(
+        title: String = "",
+        alternativeTitles: [String] = [],
+        authors: [String] = [],
+        language: String? = nil,
+        identifier: String? = nil,
+        publisher: String? = nil,
+        modified: Date? = nil,
+        rawMetadata: [String: [String]] = [:]
+    ) {
+        self.title = title
+        self.alternativeTitles = alternativeTitles
+        self.authors = authors
+        self.language = language
+        self.identifier = identifier
+        self.publisher = publisher
+        self.modified = modified
+        self.rawMetadata = rawMetadata
+    }
+}
+
+public struct ManifestItem: Sendable, Hashable, Identifiable {
+    public let id: String
+    /// `href` as written in the OPF.
+    public let href: String
+    /// Normalized container path (resolved against the OPF directory, percent-decoded).
+    public let path: String
+    public let mediaType: String
+    /// Space-separated `properties` values (`nav`, `cover-image`, `scripted`, `svg`, `mathml`, `remote-resources`).
+    public let properties: Set<String>
+    public let fallback: String?
+    public let mediaOverlay: String?
+
+    public init(id: String, href: String, path: String, mediaType: String, properties: Set<String>, fallback: String?, mediaOverlay: String?) {
+        self.id = id
+        self.href = href
+        self.path = path
+        self.mediaType = mediaType
+        self.properties = properties
+        self.fallback = fallback
+        self.mediaOverlay = mediaOverlay
+    }
+
+    public var isNavigation: Bool { properties.contains("nav") }
+    public var isCoverImage: Bool { properties.contains("cover-image") }
+    public var isXHTML: Bool { mediaType == "application/xhtml+xml" }
+}
+
+public struct SpineItem: Sendable, Hashable, Identifiable {
+    /// `idref`
+    public let id: String
+    /// Position in the spine (0-based).
+    public let index: Int
+    /// Container path.
+    public let path: String
+    public let mediaType: String
+    public let isLinear: Bool
+    /// Book-level layout, overridden by `rendition:layout-*` on the itemref.
+    public let layout: RenditionLayout
+    public let spreadPosition: SpreadPosition?
+    /// Filled when the text is extracted (search index). Used to estimate page counts; nil before that.
+    public let characterCount: Int?
+
+    public init(id: String, index: Int, path: String, mediaType: String, isLinear: Bool, layout: RenditionLayout, spreadPosition: SpreadPosition?, characterCount: Int? = nil) {
+        self.id = id
+        self.index = index
+        self.path = path
+        self.mediaType = mediaType
+        self.isLinear = isLinear
+        self.layout = layout
+        self.spreadPosition = spreadPosition
+        self.characterCount = characterCount
+    }
+}
+
+/// An entry of the `toc`, `page-list` or `landmarks` nav.
+public struct TOCEntry: Sendable, Hashable, Identifiable {
+    public var id: String { "\(href ?? "")#\(label)@\(depthToken)" }
+    public let label: String
+    /// Container path of the target (fragment removed), resolved against the nav document. nil for headings without links.
+    public let href: String?
+    /// Spine index of the target document, if the target is a spine item.
+    public let spineIndex: Int?
+    public let fragment: String?
+    public let children: [TOCEntry]
+    private let depthToken: String
+
+    public init(label: String, href: String?, spineIndex: Int?, fragment: String?, children: [TOCEntry] = [], depthToken: String = "") {
+        self.label = label
+        self.href = href
+        self.spineIndex = spineIndex
+        self.fragment = fragment
+        self.children = children
+        self.depthToken = depthToken
+    }
+
+    /// Depth of the deepest entry in this subtree (a leaf has depth 1).
+    public var depth: Int {
+        1 + (children.map(\.depth).max() ?? 0)
+    }
+}
+
+public enum RenditionLayout: String, Sendable, Hashable {
+    case reflowable
+    case prePaginated = "pre-paginated"
+}
+
+public enum RenditionSpread: String, Sendable, Hashable {
+    case auto, none, landscape, both
+}
+
+public enum PageProgression: String, Sendable, Hashable {
+    case ltr, rtl, `default`
+}
+
+public enum SpreadPosition: String, Sendable, Hashable {
+    case left, right, center
+}
+
+public enum PublicationWarning: Sendable, Hashable {
+    case missingMimetype
+    case missingNavigation
+    case malformedXHTML(path: String)
+    case missingResource(path: String, referencedFrom: String)
+    case unsupportedEncryption(path: String, algorithm: String)
+    case unknownMediaType(path: String)
+    case duplicateManifestID(id: String)
+    /// `rendition:layout` is pre-paginated but the document declares no viewport meta (required by the FXL spec).
+    case missingViewport(path: String)
+    /// The ZIP local header disagreed with the central directory; the central directory values were used.
+    case inconsistentZIPEntry(path: String)
+}
+
+/// Thrown only when the EPUB cannot be opened at all (docs/design/00-overview.md §5.2).
+public enum EPUBError: Error, Sendable {
+    case notAZIPArchive
+    case unsupportedCompression(path: String, method: Int)
+    case corruptEntry(path: String)
+    case missingContainerXML
+    case missingPackageDocument(path: String)
+    case invalidPackage(String)
+    case missingResource(path: String)
+    case encryptedResource(path: String)
+}

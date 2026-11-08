@@ -1,32 +1,70 @@
 // swift-tools-version: 6.4
-// The swift-tools-version declares the minimum version of Swift required to build this package.
+// EPUB-Swift: a WebView-based EPUB 3 viewer library for iOS 27+ / macOS 27+.
+// Target layering is described in docs/design/00-overview.md §4.
 
 import PackageDescription
 
+let swiftSettings: [SwiftSetting] = [
+    .enableUpcomingFeature("ApproachableConcurrency"),
+]
+
 let package = Package(
     name: "EPUB-Swift",
+    platforms: [
+        .iOS("27.0"),
+        .macOS("27.0"),
+    ],
     products: [
-        // Products define the executables and libraries a package produces, making them visible to other packages.
-        .library(
-            name: "EPUB",
-            targets: ["EPUB"]
-        ),
+        // Umbrella module re-exporting EPUBCore, EPUBRenderer and EPUBUI. Apps normally import only this.
+        .library(name: "EPUB", targets: ["EPUB"]),
+        .library(name: "EPUBCore", targets: ["EPUBCore"]),
+        .library(name: "EPUBRenderer", targets: ["EPUBRenderer"]),
+        .library(name: "EPUBUI", targets: ["EPUBUI"]),
     ],
     targets: [
-        // Targets are the basic building blocks of a package, defining a module or a test suite.
-        // Targets can depend on other targets in this package and products from dependencies.
+        // Foundation / Compression / CryptoKit / libxml2 only. No UI, no WebKit.
+        // libxml2 is imported from the SDK module (`import libxml2`); no system library target.
+        .target(
+            name: "EPUBCore",
+            swiftSettings: swiftSettings
+        ),
+        // WebKit. No SwiftUI.
+        .target(
+            name: "EPUBRenderer",
+            dependencies: ["EPUBCore"],
+            resources: [.copy("Resources")],
+            swiftSettings: swiftSettings
+        ),
+        // SwiftUI views, gestures, page transitions.
+        .target(
+            name: "EPUBUI",
+            dependencies: ["EPUBCore", "EPUBRenderer"],
+            swiftSettings: swiftSettings
+        ),
         .target(
             name: "EPUB",
-            swiftSettings: [
-                .enableUpcomingFeature("ApproachableConcurrency"),
-            ],
+            dependencies: ["EPUBCore", "EPUBRenderer", "EPUBUI"],
+            swiftSettings: swiftSettings
+        ),
+        .testTarget(
+            name: "EPUBCoreTests",
+            dependencies: ["EPUBCore"],
+            swiftSettings: swiftSettings
+        ),
+        .testTarget(
+            name: "EPUBRendererTests",
+            dependencies: ["EPUBRenderer", "EPUBCore"],
+            swiftSettings: swiftSettings
+        ),
+        .testTarget(
+            name: "EPUBUITests",
+            dependencies: ["EPUBUI"],
+            swiftSettings: swiftSettings
         ),
         .testTarget(
             name: "EPUBTests",
             dependencies: ["EPUB"],
-            swiftSettings: [
-                .enableUpcomingFeature("ApproachableConcurrency"),
-            ],
+            swiftSettings: swiftSettings
         ),
     ]
 )
