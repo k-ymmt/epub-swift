@@ -39,6 +39,14 @@ WebView 側:
 
 見開き時は「ページ」を「見開き 1 面」と読み替え、フレームは見開き 3 面分になる。
 
+縦書きのフレームは高さを 3 ページ分にし、幅はページ幅に固定する（段は縦に積まれるため、幅を広げる理由がない）。
+
+フレームが 3 ページ分あるため、文書の `scrollWidth`（縦書きは `scrollHeight`）はビューポート幅の 3 ページ分が下限になり、
+2 ページ以下の章でもページ数を 3 と数えてしまう。ページ数は `scrollWidth` ではなく末尾センチネルの位置から求める（§5.1）。
+先頭ページ表示時は WebView のオフセットを 0 にし、クリップの左 1 ページ分は空白（背景色）になる。
+末尾ページでも同様で、スクロール位置は文書末尾でクランプされるため、センチネル位置から求めたページ数で
+ページ i の `scrollLeft = i * pageWidth` を計算し、クランプには依存しない（05-spike-results §2.3）。
+
 ## 2. URL スキーム
 
 ### 2.1 URL 形式
@@ -87,13 +95,24 @@ Readium CSS の before / after の考え方を借り、自前の 2 ファイル�
 `</head>` の直前に after の `<link>` を文字列挿入する。`<head>` がなければ `<html>` 直後に `<head>` ごと作る。
 JS で後から挿入する方法はカスケード順と初回描画のちらつきで劣るので採らない。
 
-同時に `<meta name="viewport">` が FXL 文書にない場合は警告する（FXL 仕様では必須）。
+同時に `<head>` へ `<meta name="viewport" content="width=device-width, initial-scale=1"/>` を注入する。
+リフロー文書は通常この meta を持たず、iOS の WKWebView はそれがないとレイアウトビューポートを 980 px にして
+多段組を縮小表示し、ページ境界が崩れる（05-spike-results §3）。文書が自前の viewport meta を持つ場合（FXL 文書）はそのまま通し、
+FXL 文書に meta がなければ警告する（FXL 仕様では必須）。
 
 ### 3.3 整形式でない XHTML
 
-EPUBCore が `malformedXHTML` を記録した spine item は、`Content-Type: text/html` で配信する。
-WebKit は XML 構文エラーを黄色いエラーページで表示するので、HTML パーサに切り替えて「可能な限り開く」。
-この場合、WebKit の DOM は EPUBCore の libxml2 HTML パーサと同じ規則で構築されるため CFI が揃う。
+WebKit は XML 構文エラーのある文書を `application/xhtml+xml` で受け取ると `parsererror` を立て、エラー箇所までしか描画しない。
+EPUBCore が `malformedXHTML` を記録した spine item は、Core が libxml2 で回復して整形式に直列化した「修復済み XHTML」
+（01-core §4.1）を、原文の代わりに `application/xhtml+xml` で配信する。WebKit は XML パーサで読むので DOM が Core の木と一致し、
+CFI が揃う。CSS 注入（§3.2）は修復済み XHTML に対して行う。
+
+Core が修復を諦めた文書（修復済み XHTML も XML として読めないもの）は、原文を `Content-Type: text/html` で配信して
+「可能な限り開く」。この文書では WebKit の DOM と Core の木が一致しないため、`reader.js` は CFI の解決で
+文字列アサーションを優先する（01-core §5.3）。検索結果やハイライトの位置が近傍にずれることは受け入れる。
+
+`text/html` で WebKit に読ませて libxml2 の HTML パーサと DOM を揃える方式は採らない。
+SDK の libxml2 は HTML5 の木構築規則を持たず、表や交差タグで要素インデックスがずれる（05-spike-results §2.5）。
 
 ### 3.4 ページ分割の CSS
 
@@ -182,7 +201,7 @@ html {
 
 | type | payload | 発火 |
 |---|---|---|
-| `ready` | `{pageCount, writingMode}` | 文書の読み込みと初回 `layout` の完了 |
+| `ready` | `{pageCount, writingMode}` | 文書の読み込みと初回 `layout` の完了。`.atDocumentEnd` の `WKUserScript` は `DOMContentLoaded` 相当（`readyState = "interactive"`）で動き、画像とフォントはまだ読み込まれていない。`reader.js` は `document.fonts.ready` と `load` を待ってから初回 `layout` を確定し `ready` を送る。それ以降の増減は `pageCountChanged` で補正する |
 | `pageCountChanged` | `{pageCount}` | 画像読み込みやフォント読み込みで高さが変わったとき |
 | `link` | `{href, isExternal}` | `a` のクリック（`preventDefault` 済み） |
 | `noteref` | `{href, html, text}` | `a[epub\:type~="noteref"]` のクリック。同一文書内なら参照先要素の `innerHTML` と `textContent` を同梱する |
@@ -203,9 +222,15 @@ EPUBCore と同じ規則（01-core §5）で DOM を数える。WebKit の DOM �
 
 ### 5.1 章内のページ
 
-`layout` の戻り値 `pageCount` は `ceil(scrollWidth / pageWidth)`（縦書きは `scrollHeight / pageHeight`）。
-WebKit は多段組の総幅を `scrollWidth` で返す。最後の段が空になる端数は `column-fill: auto` で起きないが、
-画像の遅延読み込みで増減するので `pageCountChanged` を監視する。
+`layout` は `body` の末尾に空のセンチネル要素（`<span id="__reader_end"></span>`、`display: inline-block; width: 0; height: 0`）を置き、
+その `getBoundingClientRect()` と現在のスクロール位置から文書末尾の座標を求め、
+`pageCount = floor(endX / pageWidth) + 1`（縦書きは `endY / pageHeight`）とする。
+
+`scrollWidth` は使わない。3 ページ幅のフレーム（§1.2）ではビューポート幅が下限になり、2 ページ以下の章で 3 を返す
+（05-spike-results §2.3）。縦書きの `scrollHeight` は 3 ページ高フレームでもページ高の整数倍になるが、同じ理由で短い章では
+下限に張り付くので、横書きと同じくセンチネルで統一する。
+
+最後の段が空になる端数は `column-fill: auto` で起きないが、画像の遅延読み込みで増減するので `pageCountChanged` を監視する。
 
 ### 5.2 書籍全体のページ番号
 
@@ -259,8 +284,15 @@ FXL のときだけ iOS の `scrollView.pinchGestureRecognizer` と macOS の `a
 ### 7.1 スナップショット
 
 `WKWebView.takeSnapshot(with:)` に `rect` を指定して「現在ページ」「次ページ」「前ページ」の画像を撮る。
-3 ページ幅のフレーム（§1.2）により、章内の前後ページはスクロールせずに撮れる。
-`PageSnapshot` は `CGImage` とページ番号、CFI を持ち、現在の前後 1 ページずつだけ保持する。
+3 ページ幅のフレーム（§1.2）により、章内の前後ページはスクロールせずに撮れる（macOS 約 0.4 ms、iOS 約 8 ms。05-spike-results §2.3）。
+`PageSnapshot` は `CGImage`、`scale`、ページ番号、CFI を持ち、現在の前後 1 ページずつだけ保持する。
+`WKSnapshotConfiguration.rect` と `snapshotWidth` は pt で指定し、返る画像はバッキングスケール倍のピクセルになるので、
+`scale` を持たせて EPUBUI が pt で描けるようにする。
+
+iOS の `takeSnapshot` は画面に合成された見た目を撮る（macOS は WebContent プロセスの描画結果を返す）。
+そのため iOS では、演出用の画像や他のビューを WebView に重ねる前に撮り、WebView はセーフエリア内に置いて
+ステータスバーと重ねない。ウィンドウの出現アニメーション中に撮るとぼやけるので、初回のスナップショットは
+アニメーション完了後に撮る（05-spike-results §3）。
 
 ### 7.2 めくりの手順
 
@@ -329,11 +361,12 @@ sequenceDiagram
     participant J as reader.js
     S->>W: load(epub://id/OEBPS/ch01.xhtml)
     W->>H: GET ch01.xhtml
-    H->>H: XHTML に before/after CSS を注入
+    H->>H: 原文または修復済み XHTML（§3.3）に viewport meta と before/after CSS を注入
     H-->>W: 200 application/xhtml+xml
     W->>H: GET css / fonts / images
     W->>J: DOMContentLoaded（WKUserScript）
     J->>J: writing-mode 判定、CSS 変数設定
+    J->>J: fonts.ready / load を待ち、センチネルから pageCount を算出
     J-->>S: ready {pageCount, writingMode}
     S->>J: pageFor(cfi)
     J-->>S: page index

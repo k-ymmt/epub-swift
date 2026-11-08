@@ -115,17 +115,36 @@ public struct SpineItem: Sendable, Identifiable {
 ## 4. XHTML の軽量 DOM
 
 CFI の生成・解決と検索のために、spine item の XHTML を DOM 木として持つ。
-WebKit の DOM と同じ木でなければ CFI が食い違うので、構築規則を揃える。
+WebKit の DOM と同じ木でなければ CFI が食い違う。WebKit には常に XML 構文で解析させ、Core の木と 1 対 1 に対応させる。
 
 ### 4.1 パース
 
 1. `XMLParser` で整形式 XML として読む。EPUB 3 の spine item は XHTML（XML 構文）なので通常はこれで足りる。
-2. 失敗したら libxml2 の HTML パーサ（`htmlReadMemory` + `HTML_PARSE_RECOVER | HTML_PARSE_NOERROR`）で読み、
+   成功した文書は ZIP のバイト列をそのまま配信対象にし、以降の手順は行わない。
+2. 失敗したら libxml2 の HTML パーサ（`htmlReadMemory` + `HTML_PARSE_RECOVER | HTML_PARSE_NOERROR | HTML_PARSE_NOWARNING`）で読み、
    `PublicationWarning.malformedXHTML(path)` を積む。
-   このとき WebView 側にも同じ文書を `text/html` として配信させ（02-rendering §3.3）、両者の DOM を揃える。
+3. 回復した木に次の補正だけを行う。これ以外の差異は直さない。
+   - 名前空間: HTML パーサは名前空間を扱わないので、根要素に `xmlns="http://www.w3.org/1999/xhtml"` がなければ付ける。
+     `epub:type` や `xlink:href` のような接頭辞付き属性を見つけたら、根要素に対応する `xmlns:epub` / `xmlns:xlink` を宣言する
+     （未宣言のまま配信すると WebKit が XML エラーにする）。
+   - SVG / MathML: HTML パーサは要素名と属性名を小文字化する。`foreignObject`、`viewBox`、`clipPathUnits` など
+     大文字小文字を持つ名前を既知の表で戻す。
+4. 木を `xmlSaveToBuffer(..., XML_SAVE_AS_XML)` で整形式 XML として直列化し、「修復済み XHTML」として
+   `EPUBSchemeHandler` に `application/xhtml+xml` で配信させる（02-rendering §3.3）。WebKit は XML パーサで読むので、
+   WebKit の DOM と Core の木が構造的に一致する。HTML5 の木構築規則を Swift 側で再現しない。
+5. 修復済み XHTML を `XMLParser` で読み直す。失敗した文書は修復を諦め、原文を `text/html` で配信する（02-rendering §3.3）。
+   この文書では Core の木と WebKit の DOM が一致しないため、CFI の解決は文字列アサーション（§5.3）による再解決に頼る。
 
-libxml2 は SwiftPM の system library target（`CLibXML2`、`module.modulemap` で `link "xml2"`）として
-EPUBCore から利用する。
+壊れた文書の修復は努力目標で、上の手順を上限とする。SDK の libxml2（2.9 系）は HTML5 の木構築規則
+（`tbody` の暗黙挿入、adoption agency、セクショニング要素による `p` の自動終了）を持たないため、
+`text/html` で WebKit に読ませて DOM を揃える方式は成り立たない（05-spike-results §2.5）。
+
+修復結果は決定的なので `(publicationID, path)` をキーに 1 回だけ計算し、事前ページ化キャッシュ（02-rendering §8）と同じ場所に置く。
+修復後の木に対して付いた CFI は、OS 更新で libxml2 の回復規則が変わるとずれうる。正常な文書には影響しない。
+壊れた文書については文字列アサーションで近傍に戻れることをもって受け入れる。
+
+libxml2 は SDK 付属の `libxml2` モジュールを EPUBCore から直接 `import libxml2` する。
+system library target（`CLibXML2`）は不要（05-spike-results §2.5）。
 
 ### 4.2 ノード規則
 
@@ -177,6 +196,9 @@ public struct CFIRange: Hashable, Codable, Sendable {
 - `CFIGenerator`（EPUBCore）は軽量 DOM 上のノード + オフセットから CFI を作る。検索結果に使う。
 - `CFIResolver`（EPUBCore）は CFI を軽量 DOM 上のノード + オフセットに解決する。テスト用と、
   検索スニペットの切り出しに使う。
+- 文字列アサーション（`[text]`）は生成時に常に付け、解決時はステップが指す位置のテキストと照合する。
+  一致しなければ同じ spine item 内で前後に近いテキストを探して再解決する（修復を諦めた文書と、
+  libxml2 の回復規則が変わった後の壊れた文書のための後ろ盾。§4.1）。
 - 同じアルゴリズムを `reader.js` に実装し、WebView 内では DOM `Range` と相互変換する（02-rendering §5）。
 - 両実装は同じテストベクタで検証する（`Tests/Fixtures/cfi-vectors.json`）。
 
