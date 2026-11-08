@@ -58,7 +58,7 @@ final class SessionHost {
         #expect(host.session.currentSpineIndex == 1) // cover is linear="no"; titlepage is first
         #expect(host.session.currentPageIndex == 0)
         #expect(host.session.chapterPageCount >= 1)
-        #expect(host.session.writingMode == "horizontal-tb")
+        #expect(host.session.writingMode == .horizontalTB)
 
         // Chapter 1 is long enough to have several pages at 400x600.
         await host.session.go(toSpineIndex: 6)

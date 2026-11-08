@@ -28,6 +28,7 @@ final class WebViewSpineRenderer: NSObject, SpineRenderer {
     var onProcessTerminated: (@MainActor () -> Void)?
 
     private(set) var pageSize: CGSize = .zero
+    private(set) var writingMode: WritingMode = .horizontalTB
     private(set) var visibleSlot: Int = 0
     private let messageBridge = MessageBridge()
 
@@ -83,12 +84,36 @@ final class WebViewSpineRenderer: NSObject, SpineRenderer {
         guard size != pageSize, size.width > 0, size.height > 0 else { return }
         pageSize = size
         clipView.frame = CGRect(origin: clipView.frame.origin, size: size)
-        webView.frame = CGRect(x: -CGFloat(visibleSlot) * size.width, y: 0, width: size.width * CGFloat(Self.slotCount), height: size.height)
+        layoutWebViewFrame()
+    }
+
+    func setWritingMode(_ mode: WritingMode) {
+        guard mode != writingMode else { return }
+        writingMode = mode
+        layoutWebViewFrame()
+    }
+
+    /// Three slots along the paging axis; the visible slot is pulled into the clip view (02-rendering §1.2).
+    private func layoutWebViewFrame() {
+        guard pageSize.width > 0, pageSize.height > 0 else { return }
+        if writingMode.isVertical {
+            webView.frame = CGRect(x: 0, y: -CGFloat(visibleSlot) * pageSize.height, width: pageSize.width, height: pageSize.height * CGFloat(Self.slotCount))
+        } else {
+            webView.frame = CGRect(x: -CGFloat(visibleSlot) * pageSize.width, y: 0, width: pageSize.width * CGFloat(Self.slotCount), height: pageSize.height)
+        }
     }
 
     private func alignSlot(_ slot: Int) {
         visibleSlot = max(0, min(Self.slotCount - 1, slot))
-        webView.frame.origin.x = -CGFloat(visibleSlot) * pageSize.width
+        layoutWebViewFrame()
+    }
+
+    /// Frame rectangle (in the web view's coordinates) of the page in `slot`.
+    func slotRect(_ slot: Int) -> CGRect {
+        if writingMode.isVertical {
+            return CGRect(x: 0, y: CGFloat(slot) * pageSize.height, width: pageSize.width, height: pageSize.height)
+        }
+        return CGRect(x: CGFloat(slot) * pageSize.width, y: 0, width: pageSize.width, height: pageSize.height)
     }
 
     func setBackgroundColor(_ color: ReaderColor) {
@@ -175,7 +200,7 @@ final class WebViewSpineRenderer: NSObject, SpineRenderer {
         guard let dict = result as? [String: Any], let pageCount = dict["pageCount"] as? Int else {
             throw ReaderError.scriptFailed("layout returned \(String(describing: result))")
         }
-        return LayoutResult(pageCount: max(1, pageCount), writingMode: dict["writingMode"] as? String ?? "horizontal-tb")
+        return LayoutResult(pageCount: max(1, pageCount), writingMode: WritingMode(cssValue: dict["writingMode"] as? String ?? "horizontal-tb"))
     }
 
     // MARK: - Snapshots
@@ -183,7 +208,7 @@ final class WebViewSpineRenderer: NSObject, SpineRenderer {
     func snapshot(slot: Int) async throws -> (image: CGImage, scale: CGFloat)? {
         guard pageSize.width > 0, pageSize.height > 0, !webView.isHidden else { return nil }
         let configuration = WKSnapshotConfiguration()
-        configuration.rect = CGRect(x: CGFloat(slot) * pageSize.width, y: 0, width: pageSize.width, height: pageSize.height)
+        configuration.rect = slotRect(slot)
         configuration.snapshotWidth = NSNumber(value: Double(pageSize.width))
         configuration.afterScreenUpdates = true
         let image = try await webView.takeSnapshot(configuration: configuration)

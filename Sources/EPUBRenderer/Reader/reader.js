@@ -4,7 +4,7 @@
 //
 // Swift -> JS: window.__epubReader.{layout, goToPage, captureAnchor, pageForAnchor, pageForFragment, applySettings}
 // JS -> Swift: webkit.messageHandlers.reader.postMessage({type, payload})
-//   ready {writingMode}             after `load` and `document.fonts.ready`
+//   ready {writingMode}             after `load` and `document.fonts.ready` (writingMode: computed value, e.g. "vertical-rl")
 //   pageCountChanged {pageCount}    when late image loads change the layout
 //   link {href, isExternal}         click on <a>; the default is prevented, Swift decides navigation
 //   tap {x, y}                      click/tap on anything that is not a link (viewport coordinates)
@@ -46,7 +46,8 @@
   }
 
   // writing-mode is not forced. If the publisher put it on body only, promote it to html so the
-  // column axis follows (02-rendering §3.4).
+  // column axis follows (02-rendering §3.4). The result is mirrored into a root attribute that switches
+  // reader-before.css to the vertical column rules.
   function detectWritingMode() {
     let wm = getComputedStyle(root()).writingMode || "horizontal-tb";
     if (wm === "horizontal-tb" && document.body) {
@@ -56,10 +57,12 @@
         wm = bodyWM;
       }
     }
+    const vertical = wm.indexOf("vertical") === 0 || wm.indexOf("sideways") === 0;
+    root().setAttribute("data-reader-writing-mode", vertical ? "vertical" : "horizontal");
     return wm;
   }
 
-  function isVertical() { return state.writingMode.indexOf("vertical") === 0; }
+  function isVertical() { return state.writingMode.indexOf("vertical") === 0 || state.writingMode.indexOf("sideways") === 0; }
 
   // Page count from the end sentinel's document position (not scrollWidth: in the 3-page-wide frame
   // scrollWidth never goes below the viewport width; 05-spike-results §2.3).
@@ -166,22 +169,35 @@
     return pageForDocumentX(rect.left + sc.scrollLeft);
   }
 
-  // Remember what is at the top of the page currently in `slot`, so that the same text can be found
+  // Remember what is at the start of the page currently in `slot`, so that the same text can be found
   // again after a relayout (settings change, resize). The anchor is a DOM Range held in this world;
   // it is not a position format and never leaves the page.
+  // Horizontal: the page starts at its top-left. Vertical (vertical-rl): at its top-right, and the page's
+  // slot offset is along y (the frame is three pages tall).
   function captureAnchor(slot, margins) {
     state.anchor = null;
     if (!state.pageWidth || !state.pageHeight) { return false; }
     const mh = (margins && margins.horizontal) || 0;
     const mv = (margins && margins.vertical) || 0;
-    const originX = (slot || 0) * state.pageWidth;
-    const xs = [mh + 2, mh + state.pageWidth / 4, mh + state.pageWidth / 2];
-    const ys = [mv + 2, mv + 16, mv + 48, mv + 96, mv + state.pageHeight / 3, mv + state.pageHeight / 2, state.pageHeight - mv - 8];
+    const vertical = isVertical();
+    const originX = vertical ? 0 : (slot || 0) * state.pageWidth;
+    const originY = vertical ? (slot || 0) * state.pageHeight : 0;
+    let xs, ys;
+    if (vertical) {
+      const right = state.pageWidth - mh;
+      xs = [right - 2, right - 16, right - 48, right - 96, right - state.pageWidth / 3, state.pageWidth / 2, mh + 8];
+      ys = [mv + 2, mv + state.pageHeight / 4, mv + state.pageHeight / 2];
+    } else {
+      xs = [mh + 2, mh + state.pageWidth / 4, mh + state.pageWidth / 2];
+      ys = [mv + 2, mv + 16, mv + 48, mv + 96, mv + state.pageHeight / 3, mv + state.pageHeight / 2, state.pageHeight - mv - 8];
+    }
     let fallbackElement = null;
-    for (const y of ys) {
-      for (const x of xs) {
-        const cx = originX + x;
-        const cy = y;
+    const outer = vertical ? xs : ys;
+    const inner = vertical ? ys : xs;
+    for (const o of outer) {
+      for (const i of inner) {
+        const cx = originX + (vertical ? o : i);
+        const cy = originY + (vertical ? i : o);
         const range = document.caretRangeFromPoint ? document.caretRangeFromPoint(cx, cy) : null;
         if (range && range.startContainer && range.startContainer.nodeType === Node.TEXT_NODE) {
           const text = range.startContainer.data || "";
@@ -198,7 +214,7 @@
     }
     // No text at the probe points (e.g. a page with only an image or a short last page): take the first text node
     // that has a box inside the page. Walking the text nodes is slower but only happens on relayout.
-    const inPage = firstTextInPage(originX);
+    const inPage = firstTextInPage(originX, originY);
     if (inPage) {
       state.anchor = inPage;
       return true;
@@ -219,10 +235,12 @@
     return false;
   }
 
-  function firstTextInPage(originX) {
+  function firstTextInPage(originX, originY) {
     const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
     const r = document.createRange();
     const right = originX + state.pageWidth;
+    const bottom = originY + state.pageHeight;
+    const vertical = isVertical();
     let node;
     while ((node = walker.nextNode())) {
       if (!node.data || node.data.trim().length === 0) { continue; }
@@ -231,8 +249,10 @@
       for (let k = 0; k < rects.length; k++) {
         const rect = rects[k];
         if (rect.width <= 0 || rect.height <= 0) { continue; }
-        if (rect.right <= originX || rect.left >= right || rect.bottom <= 0 || rect.top >= state.pageHeight) { continue; }
-        const caret = document.caretRangeFromPoint ? document.caretRangeFromPoint(Math.max(rect.left, originX) + 1, rect.top + rect.height / 2) : null;
+        if (rect.right <= originX || rect.left >= right || rect.bottom <= originY || rect.top >= bottom) { continue; }
+        const px = vertical ? rect.left + rect.width / 2 : Math.max(rect.left, originX) + 1;
+        const py = vertical ? Math.max(rect.top, originY) + 1 : rect.top + rect.height / 2;
+        const caret = document.caretRangeFromPoint ? document.caretRangeFromPoint(px, py) : null;
         if (caret && caret.startContainer === node) {
           return { kind: "range", node: node, offset: caret.startOffset };
         }

@@ -31,8 +31,19 @@ public final class ReaderSession {
     public private(set) var isLoading: Bool = false
     /// `true` once the first chapter is visible.
     public private(set) var hasLoaded: Bool = false
-    /// Writing mode of the current document as reported by the bridge (`horizontal-tb`, `vertical-rl`...).
-    public private(set) var writingMode: String = "horizontal-tb"
+    /// Writing mode of the current document as reported by the bridge (M2: typed; was the raw CSS string in M1).
+    public private(set) var writingMode: WritingMode = .horizontalTB
+
+    /// Whether pages progress right-to-left: `page-progression-direction="rtl"`, or a vertical-rl document when the
+    /// package does not say otherwise. EPUBUI flips tap zones, swipes and the transition direction on this
+    /// (docs/design/03-api.md §4.3).
+    public var isRightToLeft: Bool {
+        switch publication.pageProgression {
+        case .rtl: return true
+        case .ltr: return false
+        case .default: return writingMode.isRightToLeftByDefault
+        }
+    }
 
     /// Size of one visible page. Set by `EPUBReaderView`; changing it re-layouts and restores the position.
     public var viewportSize: CGSize = .zero {
@@ -79,7 +90,7 @@ public final class ReaderSession {
     @ObservationIgnored private var eventContinuations: [UUID: AsyncStream<ReaderEvent>.Continuation] = [:]
     @ObservationIgnored let renderer: any SpineRenderer
     @ObservationIgnored private let schemeHandler: EPUBSchemeHandler
-    @ObservationIgnored private var readyContinuation: CheckedContinuation<String, any Error>?
+    @ObservationIgnored private var readyContinuation: CheckedContinuation<WritingMode, any Error>?
     @ObservationIgnored private var loadGeneration = 0
     @ObservationIgnored private var relayoutTask: Task<Void, Never>?
     @ObservationIgnored private var pendingResize: Task<Void, Never>?
@@ -229,10 +240,12 @@ public final class ReaderSession {
         logger.debug("load spine \(spineIndex) \(item.path)")
         do {
             let mode = try await withReady(generation: generation) { renderer.load(url) }
-            writingMode = mode
+            // The frame's slot axis must match the document before it is measured (three pages tall for vertical writing).
+            renderer.setWritingMode(mode)
             let layout = try await renderer.layout(LayoutParameters(pageSize: viewportSize, settings: settings))
             guard generation == loadGeneration else { return }
             writingMode = layout.writingMode
+            renderer.setWritingMode(layout.writingMode)
             let pageCount = layout.pageCount
             let targetPage: Int
             switch target {
@@ -281,7 +294,7 @@ public final class ReaderSession {
     }
 
     /// Runs `start` and waits for the `ready` message (or a navigation failure / timeout).
-    private func withReady(generation: Int, _ start: () -> Void) async throws -> String {
+    private func withReady(generation: Int, _ start: () -> Void) async throws -> WritingMode {
         readyContinuation?.resume(throwing: CancellationError())
         readyContinuation = nil
         let spineIndex = currentSpineIndex
@@ -291,7 +304,7 @@ public final class ReaderSession {
             self.failPendingLoad(.loadTimeout(spineIndex: spineIndex))
         }
         defer { timeout.cancel() }
-        return try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<String, any Error>) in
+        return try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<WritingMode, any Error>) in
             self.readyContinuation = continuation
             start()
         }
@@ -373,8 +386,10 @@ public final class ReaderSession {
         case .link(let href, let isExternal):
             handleLink(href: href, isExternal: isExternal)
         case .tap(let x, let y):
-            let pageX = x - Double(renderer.visibleSlot) * viewportSize.width
-            let point = CGPoint(x: pageX, y: y)
+            // Viewport coordinates → visible page coordinates: the slot offset is along the paging axis.
+            let pageX = writingMode.isVertical ? x : x - Double(renderer.visibleSlot) * viewportSize.width
+            let pageY = writingMode.isVertical ? y - Double(renderer.visibleSlot) * viewportSize.height : y
+            let point = CGPoint(x: pageX, y: pageY)
             let zone: TapZone = viewportSize.width > 0
                 ? (pageX < viewportSize.width * 0.25 ? .leading : (pageX >= viewportSize.width * 0.75 ? .trailing : .center))
                 : .center

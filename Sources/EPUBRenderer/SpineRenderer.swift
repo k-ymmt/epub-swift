@@ -12,7 +12,7 @@ public typealias PlatformView = UIView
 /// Result of `reader.js` `layout` / `applySettings`.
 struct LayoutResult: Sendable {
     var pageCount: Int
-    var writingMode: String
+    var writingMode: WritingMode
 }
 
 /// Result of `reader.js` `goToPage`.
@@ -56,7 +56,7 @@ struct LayoutParameters: Sendable {
 
 /// Messages `reader.js` posts to Swift.
 enum BridgeMessage: Sendable {
-    case ready(writingMode: String)
+    case ready(writingMode: WritingMode)
     case pageCountChanged(Int)
     case link(href: String, isExternal: Bool)
     case tap(x: Double, y: Double)
@@ -66,7 +66,7 @@ enum BridgeMessage: Sendable {
         let payload = dict["payload"] as? [String: Any] ?? [:]
         switch type {
         case "ready":
-            self = .ready(writingMode: payload["writingMode"] as? String ?? "horizontal-tb")
+            self = .ready(writingMode: WritingMode(cssValue: payload["writingMode"] as? String ?? "horizontal-tb"))
         case "pageCountChanged":
             guard let count = payload["pageCount"] as? Int else { return nil }
             self = .pageCountChanged(count)
@@ -94,6 +94,9 @@ protocol SpineRenderer: AnyObject {
 
     /// Size of the visible page. Changing it resizes the frame; the document is re-laid out by `layout`.
     func setPageSize(_ size: CGSize)
+    /// Axis of the three page slots: horizontal writing puts them side by side (frame three pages wide), vertical
+    /// writing stacks them (frame three pages tall, one page wide; 02-rendering §1.2).
+    func setWritingMode(_ mode: WritingMode)
     func setBackgroundColor(_ color: ReaderColor)
     /// Hides the document (shown again after the first page of a load is positioned).
     func setContentHidden(_ hidden: Bool)

@@ -51,8 +51,10 @@ public struct EPUBReaderView: View {
         }
     }
 
+    /// Right-bound books (`page-progression-direction="rtl"`, vertical writing) turn pages the other way
+    /// (docs/design/03-api.md §4.3).
     private var layoutDirection: LayoutDirection {
-        session.publication.pageProgression == .rtl ? .rightToLeft : .leftToRight
+        session.isRightToLeft ? .rightToLeft : .leftToRight
     }
 
     @ViewBuilder private var platformView: some View {

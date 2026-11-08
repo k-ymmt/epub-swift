@@ -4,12 +4,15 @@
    Page i is shown by scrolling the root to i * page-width. The values of the variables are overwritten
    by reader.js (`layout`) and by the <style> the scheme handler injects for the current settings. */
 
+/* Pagination geometry. `!important` so that publisher rules on `html` (margins, max-height, padding) cannot
+   break the page stride (kusamakura sets `html { margin: auto 1em; padding: 1em 0; max-height: 28em }`). */
 :root {
   --reader-page-width: 390px;
   --reader-page-height: 700px;
   --reader-margin-h: 24px;
   --reader-margin-v: 20px;
   --reader-column-width: calc(var(--reader-page-width) - 2 * var(--reader-margin-h));
+  --reader-column-height: calc(var(--reader-page-height) - 2 * var(--reader-margin-v));
   --reader-column-gap: calc(2 * var(--reader-margin-h));
   --reader-font-size: 1;
   --reader-line-height: 1.6;
@@ -20,20 +23,33 @@
 }
 
 html {
-  box-sizing: content-box;
-  margin: 0;
+  box-sizing: content-box !important;
+  margin: 0 !important;
   /* Content box = one page minus the margins; the margins are the root's padding so that every
      column (page) gets them. The column gap equals two horizontal margins, so the column stride
      is exactly one page width. */
-  width: var(--reader-column-width);
-  height: calc(var(--reader-page-height) - 2 * var(--reader-margin-v));
-  padding: var(--reader-margin-v) var(--reader-margin-h);
-  overflow: hidden;
-  column-width: var(--reader-column-width);
-  column-gap: var(--reader-column-gap);
-  column-fill: auto;
+  width: var(--reader-column-width) !important;
+  height: var(--reader-column-height) !important;
+  min-width: 0 !important;
+  min-height: 0 !important;
+  max-width: none !important;
+  max-height: none !important;
+  padding: var(--reader-margin-v) var(--reader-margin-h) !important;
+  overflow: hidden !important;
+  column-width: var(--reader-column-width) !important;
+  column-count: auto !important;
+  column-gap: var(--reader-column-gap) !important;
+  column-fill: auto !important;
   -webkit-text-size-adjust: 100%;
   text-size-adjust: 100%;
+}
+
+/* Vertical writing (reader.js sets the attribute after reading the computed writing-mode; 02-rendering §3.4).
+   `column-width` is measured along the inline axis, which is vertical here, so the columns stack vertically:
+   one column = one page, the stride is exactly one page height, and page i is at scrollTop = i * page-height. */
+html[data-reader-writing-mode="vertical"] {
+  column-width: var(--reader-column-height) !important;
+  column-gap: calc(2 * var(--reader-margin-v)) !important;
 }
 
 body {
@@ -44,9 +60,16 @@ body {
 
 img, svg, video, canvas, object {
   max-width: 100%;
-  max-height: calc(var(--reader-page-height) - 2 * var(--reader-margin-v));
+  max-height: var(--reader-column-height);
   object-fit: contain;
   break-inside: avoid;
+}
+
+html[data-reader-writing-mode="vertical"] img,
+html[data-reader-writing-mode="vertical"] svg,
+html[data-reader-writing-mode="vertical"] video {
+  max-width: var(--reader-column-width);
+  max-height: 100%;
 }
 
 img {
