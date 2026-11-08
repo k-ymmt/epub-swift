@@ -4,7 +4,7 @@
 //
 // Swift -> JS: window.__epubReader.{layout, goToPage, captureAnchor, pageForAnchor, pageForFragment, applySettings}
 // JS -> Swift: webkit.messageHandlers.reader.postMessage({type, payload})
-//   ready {writingMode}             after `load` and `document.fonts.ready` (writingMode: computed value, e.g. "vertical-rl")
+//   ready {writingMode, href}       after `load` and `document.fonts.ready` (writingMode: computed value, e.g. "vertical-rl")
 //   pageCountChanged {pageCount}    when late image loads change the layout
 //   link {href, isExternal}         click on <a>; the default is prevented, Swift decides navigation
 //   tap {x, y}                      click/tap on anything that is not a link (viewport coordinates)
@@ -369,6 +369,7 @@
   Promise.all([whenLoaded(), fontsReady]).then(function () {
     state.readySent = true;
     watchForChanges();
-    post("ready", { writingMode: detectWritingMode(), readyState: document.readyState });
+    // href lets Swift drop a `ready` from a document that was replaced by a newer load before it finished.
+    post("ready", { writingMode: detectWritingMode(), readyState: document.readyState, href: location.href });
   });
 })();

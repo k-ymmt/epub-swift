@@ -242,12 +242,16 @@ final class SessionHost {
         }
         await host.session.loadIfNeeded()
         await host.session.goForward()
-        try await host.waitUntil { received.count >= 2 }
+        func pageChanges() -> [ReaderEvent] {
+            received.filter { if case .pageChanged = $0 { return true }; return false }
+        }
+        try await host.waitUntil { pageChanges().count >= 2 }
         collector.cancel()
-        guard case .pageChanged(let spine, let page, _) = received[1] else {
+        guard case .pageChanged(let spine, let page, _) = pageChanges()[1] else {
             Issue.record("expected pageChanged, got \(received)")
             return
         }
+        #expect(received.contains { if case .paginationUpdated = $0 { return true }; return false })
         #expect(spine == host.session.currentSpineIndex)
         #expect(page == 1)
     }

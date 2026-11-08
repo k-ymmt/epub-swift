@@ -56,7 +56,15 @@ struct LayoutParameters: Sendable {
 
 /// Messages `reader.js` posts to Swift.
 enum BridgeMessage: Sendable {
-    case ready(writingMode: WritingMode)
+    /// Whether a `ready` message's `href` is the document `load(_:)` returned for the pending load. Every load carries
+    /// a unique query, so two loads of the same chapter are told apart. A missing href is accepted.
+    static func readyMatches(href: String?, url: URL) -> Bool {
+        guard let href, let readyURL = URL(string: href) else { return true }
+        return readyURL.absoluteString == url.absoluteString
+    }
+
+    /// `href` is the document's URL, so that a late `ready` from a document replaced by a newer load can be ignored.
+    case ready(writingMode: WritingMode, href: String?)
     case pageCountChanged(Int)
     case link(href: String, isExternal: Bool)
     case tap(x: Double, y: Double)
@@ -66,7 +74,7 @@ enum BridgeMessage: Sendable {
         let payload = dict["payload"] as? [String: Any] ?? [:]
         switch type {
         case "ready":
-            self = .ready(writingMode: WritingMode(cssValue: payload["writingMode"] as? String ?? "horizontal-tb"))
+            self = .ready(writingMode: WritingMode(cssValue: payload["writingMode"] as? String ?? "horizontal-tb"), href: payload["href"] as? String)
         case "pageCountChanged":
             guard let count = payload["pageCount"] as? Int else { return nil }
             self = .pageCountChanged(count)
@@ -101,7 +109,10 @@ protocol SpineRenderer: AnyObject {
     /// Hides the document (shown again after the first page of a load is positioned).
     func setContentHidden(_ hidden: Bool)
 
-    func load(_ url: URL)
+    /// Starts loading `url`. Returns the URL actually requested: `url` plus a unique query that identifies this
+    /// load in the document's `location.href` (the `ready` message carries it back).
+    @discardableResult
+    func load(_ url: URL) -> URL
     func layout(_ parameters: LayoutParameters) async throws -> LayoutResult
     func applySettings(_ parameters: LayoutParameters) async throws -> LayoutResult
     func goToPage(_ index: Int) async throws -> GoToPageResult

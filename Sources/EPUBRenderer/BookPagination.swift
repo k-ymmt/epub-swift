@@ -53,6 +53,11 @@ public struct BookPagination: Sendable, Hashable {
         self.bySpineIndex = map
     }
 
+    /// A measured chapter contributes to the characters-per-page ratio only with at least this much text.
+    static let minimumTeachingCharacters = 500
+    static let minimumCharactersPerPage: Double = 50
+    static let maximumCharactersPerPage: Double = 10_000
+
     /// The default ratio before any chapter has been measured (02-rendering §5.2: 600 characters per horizontal page).
     public static func defaultCharactersPerPage(writingMode: WritingMode) -> Double {
         writingMode.isVertical ? 500 : 600
@@ -64,13 +69,15 @@ public struct BookPagination: Sendable, Hashable {
         var measuredCharacters = 0
         var measuredPages = 0
         for item in linear {
-            if let pages = measured[item.index], let characters = item.characterCount, pages > 0 {
+            // Chapters with hardly any text (cover, title page: an image and a few words on one or two pages) would
+            // drag the ratio down and inflate every estimate, so only text chapters teach it.
+            if let pages = measured[item.index], let characters = item.characterCount, pages > 0, characters >= minimumTeachingCharacters {
                 measuredCharacters += characters
                 measuredPages += pages
             }
         }
         let ratio: Double = measuredPages > 0 && measuredCharacters > 0
-            ? Double(measuredCharacters) / Double(measuredPages)
+            ? min(maximumCharactersPerPage, max(minimumCharactersPerPage, Double(measuredCharacters) / Double(measuredPages)))
             : max(1, defaultCharactersPerPage)
 
         var chapters: [Chapter] = []

@@ -132,8 +132,20 @@ final class WebViewSpineRenderer: NSObject, SpineRenderer {
 
     // MARK: - Loading
 
-    func load(_ url: URL) {
-        webView.load(URLRequest(url: url))
+    private var loadCounter = 0
+
+    @discardableResult
+    func load(_ url: URL) -> URL {
+        loadCounter += 1
+        // The query does not change the container path the scheme handler resolves (`url.path`) nor how relative
+        // URLs in the document resolve; it only makes this document's location.href unique so a late `ready` from
+        // an earlier load of the same chapter can be recognised and ignored. A fragment would not do: changing
+        // only the fragment of the current URL is a same-document navigation and the reader script does not run again.
+        var components = URLComponents(url: url, resolvingAgainstBaseURL: false)
+        components?.queryItems = [URLQueryItem(name: "__reader_load", value: String(loadCounter))]
+        let tagged = components?.url ?? url
+        webView.load(URLRequest(url: tagged))
+        return tagged
     }
 
     // MARK: - Bridge calls
@@ -237,10 +249,19 @@ extension WebViewSpineRenderer: WKNavigationDelegate {
     }
 
     func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: any Error) {
-        onNavigationFailed?(error)
+        reportNavigationFailure(error)
     }
 
     func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: any Error) {
+        reportNavigationFailure(error)
+    }
+
+    /// A load that was superseded by a newer `load(_:)` fails with "cancelled" / "frame load interrupted". That is
+    /// not a failure of the newer load, whose `ready` is being awaited, so it is not reported.
+    private func reportNavigationFailure(_ error: any Error) {
+        let nsError = error as NSError
+        if nsError.domain == NSURLErrorDomain, nsError.code == NSURLErrorCancelled { return }
+        if nsError.domain == "WebKitErrorDomain", nsError.code == 102 { return } // WebKitErrorFrameLoadInterruptedByPolicyChange
         onNavigationFailed?(error)
     }
 

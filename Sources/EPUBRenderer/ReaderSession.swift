@@ -2,6 +2,9 @@ import Foundation
 import Observation
 import os
 import EPUBCore
+#if canImport(UIKit)
+import UIKit
+#endif
 
 /// The reading state of one publication (docs/design/03-api.md §3.2).
 ///
@@ -45,6 +48,16 @@ public final class ReaderSession {
         }
     }
 
+    /// Page numbering across the book: measured chapters plus estimates for the rest (docs/design/03-api.md §3.3).
+    /// Updated as the pre-pagination service measures chapters; `ReaderEvent.paginationUpdated` mirrors it.
+    public private(set) var pagination: BookPagination = .empty
+
+    /// Book page index (0-based) of the visible page, or nil while nothing is loaded / for a non-linear item.
+    public var currentPage: Int? {
+        guard hasLoaded else { return nil }
+        return pagination.pageIndex(spineIndex: currentSpineIndex, pageIndex: currentPageIndex)
+    }
+
     /// Size of one visible page. Set by `EPUBReaderView`; changing it re-layouts and restores the position.
     public var viewportSize: CGSize = .zero {
         didSet {
@@ -58,8 +71,12 @@ public final class ReaderSession {
         chapterPageCount > 1 ? Double(currentPageIndex) / Double(chapterPageCount - 1) : 0
     }
 
-    /// Fraction of the book read, from spine position and page within the chapter (rough until M2 pagination).
+    /// Fraction of the book read (0...1) from `pagination` (an estimate while `pagination.isEstimated`). Falls back
+    /// to a spine-position approximation for non-linear items.
     public var totalProgression: Double {
+        if hasLoaded, let progression = pagination.progression(spineIndex: currentSpineIndex, pageIndex: currentPageIndex) {
+            return progression
+        }
         let linear = publication.linearReadingOrder
         guard !linear.isEmpty else { return 0 }
         guard let position = linear.firstIndex(where: { $0.index == currentSpineIndex }) else { return 0 }
@@ -90,7 +107,11 @@ public final class ReaderSession {
     @ObservationIgnored private var eventContinuations: [UUID: AsyncStream<ReaderEvent>.Continuation] = [:]
     @ObservationIgnored let renderer: any SpineRenderer
     @ObservationIgnored private let schemeHandler: EPUBSchemeHandler
+    @ObservationIgnored let paginationCache: PaginationCache
+    @ObservationIgnored let paginationService: PaginationService
+    @ObservationIgnored private var memoryWarningObserver: (any NSObjectProtocol)?
     @ObservationIgnored private var readyContinuation: CheckedContinuation<WritingMode, any Error>?
+    @ObservationIgnored private var pendingLoadURL: URL?
     @ObservationIgnored private var loadGeneration = 0
     @ObservationIgnored private var relayoutTask: Task<Void, Never>?
     @ObservationIgnored private var pendingResize: Task<Void, Never>?
@@ -107,6 +128,8 @@ public final class ReaderSession {
         let handler = EPUBSchemeHandler()
         self.schemeHandler = handler
         self.renderer = WebViewSpineRenderer(schemeHandler: handler)
+        self.paginationCache = PaginationCache(publicationID: container.id)
+        self.paginationService = PaginationService(container: container, schemeHandler: handler, cache: paginationCache)
         PublicationRegistry.shared.register(container)
         if case .custom(let resource) = settings.font {
             PublicationRegistry.shared.registerFont(resource, for: container.id)
@@ -127,10 +150,19 @@ public final class ReaderSession {
         renderer.setContentHidden(true)
         schemeHandler.rootStyle = ContentInjector.rootStyle(settings: settings, pageSize: .zero, publicationID: container.id)
         currentSpineIndex = publication.linearReadingOrder.first?.index ?? 0
+        paginationService.onChapterMeasured = { [weak self] _, _ in self?.rebuildPagination() }
+        rebuildPagination()
+        #if canImport(UIKit)
+        memoryWarningObserver = NotificationCenter.default.addObserver(forName: UIApplication.didReceiveMemoryWarningNotification, object: nil, queue: .main) { [weak self] _ in
+            MainActor.assumeIsolated { self?.didReceiveMemoryWarning() }
+        }
+        #endif
     }
 
-    deinit {
+    isolated deinit {
         let id = container.id
+        paginationService.cancel()
+        if let memoryWarningObserver { NotificationCenter.default.removeObserver(memoryWarningObserver) }
         Task { @MainActor in PublicationRegistry.shared.unregister(id) }
     }
 
@@ -180,8 +212,22 @@ public final class ReaderSession {
         await run { [self] in await goToPageInChapter(index) }
     }
 
-    /// Snapshot of the current, next or previous page of the current chapter for the UI's page-turn effect.
-    /// Returns nil when the target page is in another chapter (the UI substitutes the background color).
+    /// Book page `index` (0-based, `BookPagination` numbering). For a chapter whose count is still an estimate the
+    /// in-chapter page is approximate and clamped once the chapter is laid out.
+    public func go(toPage index: Int) async {
+        guard let location = pagination.location(ofPageIndex: index) else { return }
+        await run { [self] in
+            if location.spineIndex == currentSpineIndex, hasLoaded {
+                await goToPageInChapter(location.pageIndex)
+            } else {
+                await loadChapter(location.spineIndex, target: .page(location.pageIndex))
+            }
+        }
+    }
+
+    /// Snapshot of the current, next or previous page for the UI's page-turn effect. At a chapter boundary the
+    /// neighbouring chapter's first / last page comes from the pre-pagination web view (02-rendering §8.3); nil when
+    /// it has not been captured yet (the UI substitutes the background color).
     public func pageSnapshot(_ target: PageSnapshotTarget) async -> PageSnapshot? {
         guard hasLoaded, !isLoading else { return nil }
         let visibleSlot = renderer.visibleSlot
@@ -192,11 +238,19 @@ public final class ReaderSession {
             pageIndex = currentPageIndex
             slot = visibleSlot
         case .next:
-            guard currentPageIndex + 1 < chapterPageCount, visibleSlot + 1 < WebViewSpineRenderer.slotCount else { return nil }
+            if currentPageIndex + 1 >= chapterPageCount {
+                guard let next = nextLinearSpineIndex(after: currentSpineIndex) else { return nil }
+                return paginationService.snapshot(firstPageOf: next)
+            }
+            guard visibleSlot + 1 < WebViewSpineRenderer.slotCount else { return nil }
             pageIndex = currentPageIndex + 1
             slot = visibleSlot + 1
         case .previous:
-            guard currentPageIndex > 0, visibleSlot - 1 >= 0 else { return nil }
+            if currentPageIndex == 0 {
+                guard let previous = previousLinearSpineIndex(before: currentSpineIndex) else { return nil }
+                return paginationService.snapshot(lastPageOf: previous)
+            }
+            guard visibleSlot - 1 >= 0 else { return nil }
             pageIndex = currentPageIndex - 1
             slot = visibleSlot - 1
         }
@@ -236,6 +290,7 @@ public final class ReaderSession {
         isLoading = true
         renderer.setContentHidden(true)
         schemeHandler.rootStyle = ContentInjector.rootStyle(settings: settings, pageSize: viewportSize, publicationID: container.id)
+        selectLayout()
         let url = EPUBSchemeHandler.url(publicationID: container.id, path: item.path)
         logger.debug("load spine \(spineIndex) \(item.path)")
         do {
@@ -263,6 +318,8 @@ public final class ReaderSession {
             hasLoaded = true
             renderer.setContentHidden(false)
             emit(.pageChanged(spineIndex: spineIndex, pageIndex: result.pageIndex, pageCount: result.pageCount))
+            recordChapterMeasurement(spineIndex: spineIndex, pageCount: result.pageCount)
+            paginationService.setCurrentSpineIndex(spineIndex)
         } catch {
             guard generation == loadGeneration else { return }
             isLoading = false
@@ -286,6 +343,7 @@ public final class ReaderSession {
             currentPageIndex = result.pageIndex
             chapterPageCount = result.pageCount
             emit(.pageChanged(spineIndex: currentSpineIndex, pageIndex: result.pageIndex, pageCount: result.pageCount))
+            recordChapterMeasurement(spineIndex: currentSpineIndex, pageCount: result.pageCount)
             return true
         } catch {
             emit(.error(.scriptFailed(error.localizedDescription)))
@@ -294,7 +352,7 @@ public final class ReaderSession {
     }
 
     /// Runs `start` and waits for the `ready` message (or a navigation failure / timeout).
-    private func withReady(generation: Int, _ start: () -> Void) async throws -> WritingMode {
+    private func withReady(generation: Int, _ start: () -> URL) async throws -> WritingMode {
         readyContinuation?.resume(throwing: CancellationError())
         readyContinuation = nil
         let spineIndex = currentSpineIndex
@@ -306,7 +364,7 @@ public final class ReaderSession {
         defer { timeout.cancel() }
         return try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<WritingMode, any Error>) in
             self.readyContinuation = continuation
-            start()
+            self.pendingLoadURL = start()
         }
     }
 
@@ -348,6 +406,7 @@ public final class ReaderSession {
         guard hasLoaded else { isLoading = false; return }
         isLoading = true
         defer { isLoading = false }
+        selectLayout()
         do {
             let anchored = try await renderer.captureAnchor(slot: renderer.visibleSlot, margins: settings.pageMargins)
             let ratio = chapterPageCount > 1 ? Double(currentPageIndex) / Double(chapterPageCount - 1) : 0
@@ -363,21 +422,62 @@ public final class ReaderSession {
             currentPageIndex = result.pageIndex
             chapterPageCount = result.pageCount
             emit(.pageChanged(spineIndex: currentSpineIndex, pageIndex: result.pageIndex, pageCount: result.pageCount))
+            recordChapterMeasurement(spineIndex: currentSpineIndex, pageCount: result.pageCount)
         } catch {
             emit(.error(.scriptFailed(error.localizedDescription)))
         }
+    }
+
+    // MARK: - Pagination
+
+    /// Key of the layout the display web view is (about to be) using. Selecting a new key bumps the cache generation
+    /// and restarts pre-pagination for it; selecting a key seen before restores its measured counts at once.
+    private func selectLayout() {
+        guard viewportSize.width > 0, viewportSize.height > 0 else { return }
+        let key = LayoutKey(pageSize: viewportSize, settings: settings)
+        if paginationCache.select(key) {
+            paginationService.configure(pageSize: viewportSize, settings: settings, generation: paginationCache.generation, currentSpineIndex: hasLoaded ? currentSpineIndex : nil)
+            rebuildPagination()
+        }
+    }
+
+    /// The display web view's own measurement of a chapter counts as a measured value for the current layout.
+    private func recordChapterMeasurement(spineIndex: Int, pageCount: Int) {
+        if paginationCache.store(spineIndex: spineIndex, pageCount: pageCount, generation: paginationCache.generation) {
+            rebuildPagination()
+        }
+    }
+
+    private func rebuildPagination() {
+        let updated = BookPagination.make(
+            publication: publication,
+            measured: paginationCache.measured,
+            defaultCharactersPerPage: BookPagination.defaultCharactersPerPage(writingMode: writingMode)
+        )
+        guard updated != pagination else { return }
+        pagination = updated
+        emit(.paginationUpdated(updated))
+    }
+
+    /// iOS memory warning (02-rendering §8.4): stop pre-pagination for now and keep only the current layout's counts.
+    func didReceiveMemoryWarning() {
+        paginationService.pause()
+        paginationCache.dropOtherLayouts()
     }
 
     // MARK: - Bridge messages
 
     private func handle(_ message: BridgeMessage) {
         switch message {
-        case .ready(let writingMode):
+        case .ready(let writingMode, let href):
+            // A document that was replaced by a newer load can still send its `ready`; only the pending load counts.
+            guard let pendingLoadURL, BridgeMessage.readyMatches(href: href, url: pendingLoadURL) else { return }
             readyContinuation?.resume(returning: writingMode)
             readyContinuation = nil
         case .pageCountChanged(let count):
             guard hasLoaded, !isLoading, count != chapterPageCount else { return }
             chapterPageCount = max(1, count)
+            recordChapterMeasurement(spineIndex: currentSpineIndex, pageCount: chapterPageCount)
             if currentPageIndex >= chapterPageCount {
                 enqueue { [weak self] in await self?.goToPageInChapter((self?.chapterPageCount ?? 1) - 1) }
             } else {

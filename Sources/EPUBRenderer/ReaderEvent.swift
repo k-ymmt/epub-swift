@@ -12,6 +12,9 @@ public enum ReaderEvent: Sendable {
     case tapped(CGPoint, zone: TapZone)
     case warning(PublicationWarning)
     case error(ReaderError)
+    /// Book-wide page numbering changed: a chapter was measured, or the layout changed and the counts were reset
+    /// to estimates / restored from the cache (M2).
+    case paginationUpdated(BookPagination)
 }
 
 /// Horizontal third of the page a tap landed in, as classified by the UI layer's tap zones.

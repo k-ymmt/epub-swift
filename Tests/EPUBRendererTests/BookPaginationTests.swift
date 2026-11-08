@@ -41,6 +41,14 @@ import EPUBCore
         #expect(all.pageRange(ofSpineIndex: 2) == 14..<34)
     }
 
+    @Test func shortChaptersDoNotTeachTheRatio() {
+        // A 2-page cover with 20 characters must not turn 1000-character chapters into 100-page estimates.
+        let pub = publication(counts: [20, 1000, 1000])
+        let pagination = BookPagination.make(publication: pub, measured: [0: 2], defaultCharactersPerPage: 500)
+        #expect(pagination.charactersPerPage == 500)
+        #expect(pagination.chapters.map(\.pageCount) == [2, 2, 2])
+    }
+
     @Test func mapsBetweenBookPagesAndChapterLocations() {
         let pub = publication(counts: [0, 0, 0, 0], nonLinear: [1])
         let pagination = BookPagination.make(publication: pub, measured: [0: 3, 2: 5, 3: 2])
