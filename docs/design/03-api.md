@@ -65,6 +65,8 @@ public actor EPUBContainer {
 ```
 
 M1 実装済み。`ContentDocument` は配信するバイト列、`mediaType`、状態（`wellFormed` / `repaired` / `unrepairable`）、警告を持つ。
+M2: `data(at:)` は `encryption.xml` に登録されたフォントの難読化（IDPF / Adobe）を解除して返し、未対応のアルゴリズムで
+暗号化された資源には `EPUBError.encryptedResource` を投げる。`ObfuscationAlgorithm` と `FontObfuscation` も公開型。
 
 ### 2.2 `Publication` と関連型
 
@@ -173,7 +175,8 @@ public final class ReaderSession {
     public private(set) var currentSpineIndex: Int
     public private(set) var currentPageIndex: Int  // 章内のページ index
     public private(set) var chapterPageCount: Int
-    public private(set) var writingMode: String    // "horizontal-tb" など。reader.js の判定値
+    public private(set) var writingMode: WritingMode   // M2 で String から列挙型に変更（horizontalTB / verticalRL / verticalLR）
+    public var isRightToLeft: Bool                 // M2。pageProgression が rtl、または default で縦書き（vertical-rl）のとき true
     public private(set) var isLoading: Bool
     public private(set) var hasLoaded: Bool
     public var chapterProgression: Double          // 0...1
@@ -213,7 +216,19 @@ extension ReaderSession {
 }
 ```
 
-M2 で追加: `public private(set) var pagination: BookPagination` と `go(toPage:)`（`BookPagination` の番号）。
+M2 で追加（実装済み）:
+
+```swift
+extension ReaderSession {
+    public private(set) var pagination: BookPagination     // 計測が進むたびに更新。ReaderEvent.paginationUpdated と同じ値
+    public var currentPage: Int?                           // 書籍全体の 0 始まりページ index。未読み込み / 非線形の章では nil
+    public private(set) var relayoutSnapshot: PageSnapshot? // 再レイアウト中だけ非 nil（§4.5）
+    public func go(toPage index: Int) async                // BookPagination の番号で移動。推定中の章では章内ページが近似になる
+}
+```
+
+`totalProgression` は `BookPagination` のページ番号から求める。`writingMode` は `reader.js` の判定値で、
+`WritingMode(cssValue:)` が `sideways-*` を縦書きに寄せる。
 
 `go(to:)` 系は移動が完了（`ready` 受信と位置確定）するまで待つ。ジェスチャ中の先読みは
 `pageSnapshot(.next)` で行う。`PageSnapshot` は `image: CGImage`、`scale`、`size`（pt）、`spineIndex`、`pageIndex` を持つ。
@@ -223,15 +238,39 @@ EPUBUI への WebView の受け渡しは `@_spi(EPUBUI)` 付きの `platformView
 
 ### 3.3 `BookPagination`
 
+M2 実装済み（M2 で形を変更）:
+
 ```swift
-public struct BookPagination: Sendable {
+public struct BookPagination: Sendable, Hashable {
+    public struct Chapter: Sendable, Hashable {            // 線形の spine item ごと
+        public let spineIndex: Int
+        public let pageCount: Int
+        public let isEstimated: Bool
+        public let firstPage: Int                          // 書籍全体の先頭ページ index
+        public var pageRange: Range<Int>
+    }
+    public struct Location: Sendable, Hashable { public let spineIndex: Int; public let pageIndex: Int }
+
+    public let chapters: [Chapter]                         // spine 順
     public let totalPages: Int
-    public let isEstimated: Bool
-    public func pageNumber(for position: ReadingPosition) -> Int
-    public func pageRange(ofSpineIndex index: Int) -> Range<Int>
+    public let charactersPerPage: Double                   // 推定に使った比率
+    public var isEstimated: Bool                           // 1 章でも推定なら true
+    public var estimatedChapterCount: Int
+
+    public static func defaultCharactersPerPage(writingMode: WritingMode) -> Double   // 600 / 縦書き 500
+    public static func make(publication: Publication, measured: [Int: Int], defaultCharactersPerPage: Double) -> BookPagination
+    public static let empty: BookPagination
+
+    public func chapter(spineIndex: Int) -> Chapter?
+    public func pageRange(ofSpineIndex index: Int) -> Range<Int>          // 非線形・不明なら空
     public func isEstimated(spineIndex: Int) -> Bool
+    public func pageIndex(spineIndex: Int, pageIndex: Int) -> Int?        // 章内 → 書籍全体（章の範囲にクランプ）
+    public func location(ofPageIndex index: Int) -> Location?            // 書籍全体 → 章と章内ページ
+    public func progression(spineIndex: Int, pageIndex: Int) -> Double?  // 0...1
 }
 ```
+
+ページ index は全て 0 始まりで、表示には `+ 1` する。`pageNumber(for: ReadingPosition)` は M3 で CFI と一緒に加える。
 
 ### 3.4 `ReaderEvent`
 
@@ -243,8 +282,8 @@ public enum ReaderEvent: Sendable {
     case tapped(CGPoint, zone: TapZone)     // ジェスチャをアプリが処理するとき用
     case warning(PublicationWarning)
     case error(ReaderError)
-    // M2 で追加
-    case paginationUpdated(BookPagination)
+    // M2 実装済み
+    case paginationUpdated(BookPagination)  // 章の計測が進むたび。ReaderSession.pagination と同じ値
     // M3 以降で追加
     case positionChanged(ReadingPosition)
     case internalLink(CFI)                  // 移動はライブラリが行う。通知のみ
@@ -335,7 +374,9 @@ public struct ReaderGestures: Sendable {
 ```
 
 右綴じ（縦書き、`page-progression-direction="rtl"`）では右タップと右方向スワイプが「進む」になる。
-`ReaderSession.publication.pageProgression` に従って EPUBUI が反転する。
+EPUBUI は `ReaderSession.isRightToLeft` に従って `PageTransitionContext.layoutDirection` とタップゾーンの意味を反転する
+（M2 実装済み）。`isRightToLeft` は `pageProgression` が `rtl` なら true、`ltr` なら false、`default` なら
+`writingMode == .verticalRL` で決める。
 
 macOS のトラックパッドの 2 本指スワイプは `NSEvent.scrollWheel` の `phase` と `momentumPhase` から
 ドラッグ進捗に変換し、iOS のスワイプと同じ `PageTransitionContext.progress` を駆動する。
@@ -355,8 +396,17 @@ public struct SelectionAction: Identifiable, Sendable {
 
 `EPUBReaderView` はサイズ変更を `onGeometryChange` で受け、`ReaderSession.viewportSize` を更新する。
 セッションは現在の CFI を記録 → 再レイアウト → `pageFor(cfi)` で復元し、その間は直前のスナップショットを
-クロスフェードで見せる。macOS のウィンドウリサイズ中は 150 ms デバウンスする。
+クロスフェードで見せる。macOS のウィンドウリサイズ中は 150 ms デバウンスする（iOS の回転や Split View は
+1 回のサイズ変更なので即座に適用する。M2 で変更）。
 M3 までは CFI の代わりに `reader.js` の DOM アンカーで復元する（02-rendering §5.3）。
+
+M2 実装済み: セッションは再レイアウトの前に可視ページを撮って `relayoutSnapshot` に置き、WebView のページサイズ変更と
+再レイアウトは同じ操作の中で行い、位置を復元したら nil に戻す。`EPUBReaderView` は非 nil の間その画像を
+WebView の上に左上寄せで重ね、nil になったら 0.2 秒のフェードで外す。`layoutKey` も変わるので事前ページ化は
+新しいキーで再開し、以前のキーの確定値はキャッシュに残る。
+
+アプリ側の注意: `viewportSize` が数 pt でも変わるとレイアウトキーが変わり、全章の計測がやり直しになる。
+ステータスバーなど `EPUBReaderView` の周囲の UI は、表示内容（推定中インジケータなど）で高さが変わらないようにする。
 
 ## 5. 公開しない型
 

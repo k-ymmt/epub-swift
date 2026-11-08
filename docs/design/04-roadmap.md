@@ -33,6 +33,18 @@
 
 完了条件: `kusamakura-japanese-vertical-writing` を縦書きで読め、総ページ数が確定し、設定を戻すと即座に確定値に戻る。
 
+**完了（2026-11-08、コミット 4f24ca6〜8e23ff6 と、その後の文書・仕上げコミット）。** 完了条件は iOS 27 Simulator（iPhone 17 Pro）の
+`Examples/ReaderDemo` で確認した: 草枕 15 章を縦書き・右綴じで最後まで読め（263 回のめくりで 1.1 秒）、総ページ数は約 1 秒で
+確定値（270 ページ）になり、フォントサイズ 1.8 で 766 ページに再計測されたあと Reset で即座に 270 に戻る。ページジャンプも動く。
+macOS 27 は `swift test`（実 WKWebView）で縦書きのページ数・`scrollTop`・章またぎ、事前ページ化の完了、レイアウト変更の
+無効化と復元、リサイズ時のスナップショットを検証した（デモアプリの画面操作による確認は未実施）。
+実装中に設計を変えた点は各文書に「M2 で変更」として反映済み（01-core §2.4 / §3 / §7、02-rendering §3.4 / §4.2 / §5.2 / §5.3 /
+§7.1 / §8、03-api §2.1 / §3.2 / §3.3 / §3.4 / §4.3 / §4.5）。主な変更: `characterCount` は開いた時点で軽量 DOM から数える、
+`ready` は `href` を返し `load` ごとに一意なクエリを付けて古い文書の `ready` を捨てる、推定比率は 500 文字以上の章だけが教える、
+再レイアウト中は `relayoutSnapshot` を重ねる、リサイズのデバウンスは macOS のみ。
+積み残しは `TODO.md` に置く（iOS で非表示 WebView の計測が表示側と数ページずれる、非表示 WebView の `pageCountChanged` 追従、
+`characterCount` の算出を開く処理から外す選択肢、見開き時の `layoutKey`、計測 §3.3 の記録）。
+
 ### M3. 位置・選択・ハイライト・検索
 
 - `CFI` のパース・生成・比較と、`reader.js` 側の同一実装。テストベクタ
@@ -87,8 +99,8 @@ IDPF epub3-samples（https://github.com/IDPF/epub3-samples）から次を `Tests
 |---|---|
 | `childrens-literature` | 横書きリフロー、nav の階層、`page-list` |
 | `moby-dick` | 横書きリフロー、長い書籍のページ化 |
-| `kusamakura-japanese-vertical-writing` | 縦書き、ルビ、右綴じ |
-| `wasteland-otf-obf` | フォント難読化（IDPF 方式） |
+| `kusamakura-japanese-vertical-writing` | 縦書き、ルビ、右綴じ（M2 で追加。音声 mp3 は省いて 232 KB にしてあり、`missingResource` 警告が 2 件出る） |
+| `wasteland-otf-obf` | フォント難読化（IDPF 方式。M2 で追加） |
 | `cole-voyage-of-life` | FXL、`page-spread-*` |
 | `haruko-html-jpeg` | FXL 漫画、右綴じの見開き |
 | `page-blanche` | FXL、SVG |

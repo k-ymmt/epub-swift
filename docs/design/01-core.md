@@ -81,6 +81,13 @@ nav が存在しない、または読めない場合は spine の順に manifest
 
 SHA-1 は CryptoKit の `Insecure.SHA1` を使う（Apple 標準）。
 
+M2 実装済み。`encryption.xml` は `EPUBContainer` を開くときに解析し（`EncryptionParser`）、`CipherReference/@URI` は
+コンテナルートからの相対パスとしてパーセントデコードと正規化を行う。難読化の解除は `EPUBContainer.data(at:)` が
+透過的に行い、`contentDocument(at:)` やスキームハンドラから見えるのは解除済みのバイト列だけになる。
+`encryption.xml` 自体が XML として読めないときは `PublicationWarning.malformedEncryptionXML` を積み、
+暗号化なしとして続行する（M2 で追加）。鍵の派生は `ObfuscationAlgorithm.key(uniqueIdentifier:)`、
+XOR は `FontObfuscation.apply(to:)` で、どちらも公開型（テストとアプリ側の検証用）。
+
 ## 3. モデル
 
 ```swift
@@ -109,12 +116,15 @@ public struct SpineItem: Sendable, Identifiable {
     public let isLinear: Bool
     public let layout: RenditionLayout    // itemref で上書きされた値を反映
     public let spreadPosition: SpreadPosition?   // left / right / center
-    public let characterCount: Int?       // テキスト抽出後に埋まる。ページ数推定に使う
+    public let characterCount: Int?       // 開いた時点で埋まる。ページ数推定に使う
 }
 ```
 
-`characterCount` は検索インデックス構築時に埋める。構築前は nil で、ページ数推定は
-ファイルサイズを代用する。
+`characterCount` は `EPUBContainer` を開くときに全 spine item の XHTML を軽量 DOM（§4）で読み、`TextLength.characterCount`
+で数えて埋める（M2 で変更。当初は検索インデックス構築時に埋める予定だった）。`body` 配下のテキストノードの文字数で、
+`rt` / `rp`（ルビ）、`script`、`style`、`template` は除き、連続する空白は 1 文字に畳む。XHTML でない spine item や
+パースに失敗した文書は nil のまま（ページ数推定では 0 文字 = 1 ページとして扱う）。`moby-dick` 全章で約 20 ms。
+同じ走査は M3 の検索インデックスにも使う。
 
 ## 4. XHTML の軽量 DOM
 
@@ -263,6 +273,7 @@ public enum PublicationWarning: Sendable {
     case malformedXHTML(path: String)
     case missingResource(path: String, referencedFrom: String)
     case unsupportedEncryption(path: String, algorithm: String)
+    case malformedEncryptionXML                              // M2 で追加。encryption.xml が XML として読めない
     case unknownMediaType(path: String)
     case duplicateManifestID(id: String)
 }
@@ -274,5 +285,7 @@ public enum PublicationWarning: Sendable {
 - ZIP: Stored / Deflate / ZIP64 の最小ファイルをフィクスチャとして持ち、CRC を照合する。
 - OPF / nav: 各サンプルで `readingOrder.count`、`toc` の深さ、`layout` が期待どおりか。
 - 難読化: IDPF サンプルのフォント（`wasteland-otf-obf`）を解除し、OpenType のマジック `OTTO` / `0x00010000` で確認する。
+  Adobe 方式はテスト内で生成した最小 EPUB（`MiniEPUB`）にフォントを Adobe 方式で難読化して入れ、解除後のバイト列が元と一致することを見る（M2 実装済み）。
+- `characterCount`: ルビ・空白の扱いを小さな文書で検証し、`kusamakura` の各章が正の値を持つことを見る（M2 実装済み）。
 - CFI: `cfi-vectors.json` の各ケースでパース → 文字列化の往復と、DOM 上の解決位置を検証する。
 - 検索: 縦書きサンプル（`kusamakura-japanese-vertical-writing`）で全角半角を同一視した検索がヒットする。

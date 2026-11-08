@@ -153,26 +153,27 @@ body { margin: 0; padding: 0; }
 `html` の padding なら全段（全ページ）に同じ余白が付き、段の幅 + 段間 = ページ幅となってページ i の
 `scrollLeft = i * pageWidth` がそのまま成り立つ（M1 で変更）。
 
-縦書き（`writing-mode: vertical-rl`）:
+縦書き（`writing-mode: vertical-rl`。M2 で変更）:
 
 ```css
-html {
-  writing-mode: vertical-rl;
-  width: var(--reader-page-width);
-  height: var(--reader-page-height);
-  overflow: hidden;
-  column-width: var(--reader-page-height);  /* 縦書きでは column-width が縦方向のサイズになる */
-  column-gap: 0;
-  column-fill: auto;
+:root { --reader-column-height: calc(var(--reader-page-height) - 2 * var(--reader-margin-v)); }
+html[data-reader-writing-mode="vertical"] {
+  /* width / height / padding は横書きと同じ。段の軸だけが変わる */
+  column-width: var(--reader-column-height) !important;      /* 縦書きでは column-width が縦方向のサイズになる */
+  column-gap: calc(2 * var(--reader-margin-v)) !important;   /* 段間 = 上下余白 2 つ分 */
 }
 ```
 
-縦書きの多段組は段がページの縦方向に積まれ、1 段 = 1 画面になる。ページ i は `scrollTop = i * pageHeight`。
-横書きは `scrollLeft = i * pageWidth`。行は段の境界で分断されない。
+縦書きでも余白は `html` の padding で作り、段の高さ + 段間 = ページ高さにして
+ページ i の `scrollTop = i * pageHeight` を成り立たせる（横書きの `scrollLeft = i * pageWidth` と対称）。
+`writing-mode` 自体は強制しない。段がページの縦方向に積まれ、1 段 = 1 画面になる。行は段の境界で分断されない。
+ページ分割に関わる `html` の宣言はすべて `!important` にする（出版社 CSS が `html { width: 100% }` などを持つため）。
 
 `writing-mode` は強制しない。読み込み後に `getComputedStyle(document.documentElement).writingMode` を読み、
-縦書きなら縦用の変数とスクロール軸に切り替える（`reader.js` が判定して Swift に報告する）。
-出版社 CSS が `body` にだけ `writing-mode` を付けている場合は `html` に昇格させる。
+縦書き（`vertical-*` / `sideways-*`）なら `html` に `data-reader-writing-mode="vertical"` を付けて上の CSS を効かせ、
+スクロール軸を y に切り替える（`reader.js` が判定して `ready` と `layout` の `writingMode` で Swift に報告する。
+Swift 側は `WritingMode` 列挙型で受ける）。出版社 CSS が `body` にだけ `writing-mode` を付けている場合は `html` に昇格させる。
+Swift は縦書きの通知を受けるとフレームを 3 ページ分の高さに組み替える（§1.2）。
 
 縦書きの見開きは多段組では表現できない（段が縦に積まれるため 2 面を横に並べられない）。
 縦書き + 見開きは §6 のラッパー文書で 2 つの iframe を並べて実現する。横書きの見開きは
@@ -207,9 +208,9 @@ html {
 
 | 関数 | 役割 |
 |---|---|
-| `layout({pageWidth, pageHeight, columnsPerPage, margins, ...})` | CSS 変数を更新し、`writing-mode` を判定して `{pageCount, writingMode}` を返す |
+| `layout({pageWidth, pageHeight, columnsPerPage, margins, ...})` | CSS 変数を更新し、`writing-mode` を判定して `{pageCount, writingMode}` を返す。`writingMode` は CSS の値（`horizontal-tb` / `vertical-rl` / `vertical-lr`） |
 | `goToPage(index)` | ページ数を測り直してから index をクランプし、スクロール位置を設定する。`{pageIndex, slot, pageCount, scrollLeft, scrollTop}` を返す（§1.2 のスロットと iOS の同期に使う） |
-| `captureAnchor(slot, margins)` / `pageForAnchor()` | M1〜M2 の暫定。可視ページ先頭のテキスト位置（`caretRangeFromPoint`）か要素を reader world 内の DOM アンカーとして保持し、再レイアウト後にそれを含むページを返す。M3 で `cfiForPage` / `pageFor(cfi)` に置き換える |
+| `captureAnchor(slot, margins)` / `pageForAnchor()` | M1〜M2 の暫定。可視ページ先頭のテキスト位置（`caretRangeFromPoint`）か要素を reader world 内の DOM アンカーとして保持し、再レイアウト後にそれを含むページを返す。縦書きではページ先頭は右上で、スロットのオフセットは y 方向（M2）。M3 で `cfiForPage` / `pageFor(cfi)` に置き換える |
 | `pageForFragment(id)` | 文書内リンクと目次の `#fragment` が指す要素のページを返す |
 | `pageFor(cfi)` | CFI を Range に解決し、`getBoundingClientRect` からページ番号を返す |
 | `cfiForPage(index)` | そのページの先頭に見えるテキスト位置の CFI を返す（`caretRangeFromPoint` を使う） |
@@ -226,7 +227,7 @@ html {
 
 | type | payload | 発火 |
 |---|---|---|
-| `ready` | `{pageCount, writingMode}` | 文書の読み込みと初回 `layout` の完了。`.atDocumentEnd` の `WKUserScript` は `DOMContentLoaded` 相当（`readyState = "interactive"`）で動き、画像とフォントはまだ読み込まれていない。`reader.js` は `document.fonts.ready` と `load` を待ってから初回 `layout` を確定し `ready` を送る。それ以降の増減は `pageCountChanged` で補正する |
+| `ready` | `{writingMode, readyState, href}` | 文書の読み込み完了（`layout` は Swift が続けて呼ぶ）。`href` は文書の `location.href`。Swift は `load` ごとに URL へ一意なクエリ `__reader_load=<n>` を付けるので、同じ章を続けて読み込んだときも、置き換えられた古い文書の `ready` を取り違えずに捨てられる（M2 で変更。フラグメントでは同一文書ナビゲーションになり `reader.js` が再実行されないのでクエリを使う。スキームハンドラは `url.path` で解決するためクエリは無視される）。`.atDocumentEnd` の `WKUserScript` は `DOMContentLoaded` 相当（`readyState = "interactive"`）で動き、画像とフォントはまだ読み込まれていない。`reader.js` は `document.fonts.ready` と `load` を待ってから初回 `layout` を確定し `ready` を送る。それ以降の増減は `pageCountChanged` で補正する |
 | `pageCountChanged` | `{pageCount}` | 画像読み込みやフォント読み込みで高さが変わったとき |
 | `link` | `{href, isExternal}` | `a` のクリック（`preventDefault` 済み） |
 | `noteref` | `{href, html, text}` | `a[epub\:type~="noteref"]` のクリック。同一文書内なら参照先要素の `innerHTML` と `textContent` を同梱する |
@@ -267,13 +268,18 @@ Swift 側が持つ `chapterPageCount` は、この通知の到着前は古い値
 `BookPagination` は spine 順に各章の `pageCount` を持ち、章 i のページ j を `offset(i) + j` と番号付けする。
 値は 2 種類ある。
 
-- 確定値: 事前ページ化（§8）で計測した章。
-- 推定値: 未計測の章。`SpineItem.characterCount` と、計測済み章の「1 ページあたり文字数」の平均から推定する。
-  計測済み章がなければ 1 ページ 600 文字（横書き）を初期値にする。
+- 確定値: 事前ページ化（§8）で計測した章、または表示用 WebView 自身が表示した章（表示側の計測もキャッシュに書く）。
+- 推定値: 未計測の章。`SpineItem.characterCount` と、計測済み章の「1 ページあたり文字数」から推定する。
+  計測済み章がなければ 1 ページ 600 文字（横書き）/ 500 文字（縦書き）を初期値にする。
+
+M2 で決めた推定の規則: 比率を学習するのは 500 文字以上の計測済み章だけ（表紙や扉のような「画像と数語で 1〜2 ページ」
+の章が比率を下げ、全章の推定を数倍に膨らませるため）。比率は 50〜10000 文字/ページにクランプする。
+非線形（`linear="no"`）の spine item は番号付けに含めない。
 
 `BookPagination.isEstimated` が false になるのは全章の計測が終わったときだけ。UI は推定中であることを
-表示できる。キャッシュのキーは `(publicationID, layoutKey)`。`layoutKey` はページサイズ、見開き有無、
-`ReaderSettings` のレイアウトに影響する項目（フォント、サイズ、行間、余白）のハッシュ。テーマ色は含めない。
+表示できる（`estimatedChapterCount`）。キャッシュのキーは `(publicationID, layoutKey)`。`layoutKey` は
+整数に丸めたページサイズ、見開き有無、`ReaderSettings.layoutKey`（フォント、サイズ、行間、余白）。テーマ色は含めない。
+`ReaderSession.totalProgression` は `BookPagination` のページ番号から求める（確定前は推定値ベース）。
 
 ### 5.3 位置の復元
 
@@ -284,6 +290,11 @@ M1〜M2 の暫定: CFI は M3 で入るため、それまでは `reader.js` が�
 保持し、同じ文書の再レイアウト後に `pageForAnchor()` で戻す。アンカーは文書の再読み込みをまたげないので、
 章の再読み込み時は章内の進捗率（`currentPageIndex / (chapterPageCount - 1)`）で近似する。
 アプリに公開する位置は M3 まで spine index とページ index（03-api §3.2）。
+
+再レイアウト中の見た目（M2）: `ReaderSession` は再レイアウトの前に可視ページのスナップショットを撮って
+`relayoutSnapshot` に置き、位置を復元し終えたら nil に戻す。表示用 WebView のページサイズ変更も再レイアウトの
+操作の中で行うので、中間サイズで流し込まれた文書が画面に出ることはない。EPUBUI はこの画像を WebView の上に重ね、
+nil になったらクロスフェードで外す（03-api §4.5）。
 
 ## 6. FXL と見開き
 
@@ -320,7 +331,8 @@ FXL のときだけ iOS の `scrollView.pinchGestureRecognizer` と macOS の `a
 
 `WKWebView.takeSnapshot(with:)` に `rect` を指定して「現在ページ」「次ページ」「前ページ」の画像を撮る。
 3 ページ幅のフレーム（§1.2）により、章内の前後ページはスクロールせずに撮れる（macOS 約 0.4 ms、iOS 約 8 ms。05-spike-results §2.3）。
-`PageSnapshot` は `CGImage`、`scale`、ページ番号、CFI を持ち、現在の前後 1 ページずつだけ保持する。
+`PageSnapshot` は `CGImage`、`scale`、`size`（pt）、`spineIndex`、`pageIndex` を持つ（CFI は M3 で追加）。
+表示用 WebView からは必要なときに撮り、保持するのは事前ページ化側の隣接章の先頭 / 末尾ページだけ（§8.3）。
 `WKSnapshotConfiguration.rect` と `snapshotWidth` は pt で指定し、返る画像はバッキングスケール倍のピクセルになるので、
 `scale` を持たせて EPUBUI が pt で描けるようにする。
 
@@ -349,26 +361,35 @@ iOS の `takeSnapshot` は画面に合成された見た目を撮る（macOS は
 
 ### 8.1 `PaginationService`（`@MainActor`）
 
-非表示の WebView を 1 つ持ち、表示用と同じ `WKWebViewConfiguration`、同じフレームサイズ、同じ
-`ReaderSettings` で spine item を順に読み込み、`layout` の `pageCount` を `PaginationCache` に書く。
+非表示の WebView（2 つ目の `WebViewSpineRenderer`。同じスキームハンドラ、同じフレームサイズ、同じ `ReaderSettings`）を
+1 つ持ち、線形の spine item を順に読み込み、`layout` → `goToPage(0)` の `pageCount` を `PaginationCache` に書く。
+どのウィンドウにも載せないままで読み込み・レイアウト・`takeSnapshot` が動く（macOS、iOS 27 Simulator で確認。M2）。
 
-順序: 表示中の章 → 次 → 前 → 先頭から順。ユーザーが章を移動したら優先順を組み替える。
-1 章ごとに `await` を挟み、表示用 WebView の操作を優先する。
+順序: 次 → 前 → 先頭から順（表示中の章は表示用 WebView が計測する）。ユーザーが章を移動したら
+`setCurrentSpineIndex` で優先順を組み替える。このとき進行中の章はキャンセルせず最後まで計測する
+（キャンセルして同じ章を読み直すと、古い文書の `ready` が新しい読み込みに答えてしまう）。
+1 章ごとに `await` を挟み、表示用 WebView の操作を優先する。1 章の読み込みは `ready` 10 秒、全体 20 秒で打ち切り、
+失敗した章はそのレイアウトでは再試行しない（`onChapterFailed`）。`kusamakura` 全 15 章で約 0.7 秒（macOS）。
 
 ### 8.2 無効化
 
-`layoutKey` が変わる（設定変更、リサイズ、見開き切り替え）たびに世代番号を上げ、古い世代の結果は捨てる。
-進行中の読み込みはキャンセルする。キャッシュは `layoutKey` ごとに保持するので、設定を戻せば即座に確定値に戻る。
+`layoutKey` が変わる（設定変更、リサイズ、見開き切り替え）たびに `PaginationCache.select` が世代番号を上げ、
+古い世代の結果は `store` が捨てる。進行中の読み込みは `configure` でキャンセルし、隣接章のスナップショットも
+捨てる（別レイアウトの画像だから）。キャッシュは `layoutKey` ごとに保持するので、設定を戻せば即座に確定値に戻る。
+ページサイズは整数 pt に丸めてキーにする（SwiftUI のレイアウトの端数で世代が変わらないように）。
 
 ### 8.3 隣接章のスナップショット
 
 次の章に移るめくりに備え、`PaginationService` は「次の章の先頭ページ」と「前の章の末尾ページ」を撮って
 `PageSnapshot` として提供する。章のページ化と同じ読み込みで撮れるので追加コストは小さい。
+`ReaderSession.pageSnapshot(.next)` は章末で、`.previous` は章頭でこの画像を返す（未取得なら nil で、EPUBUI は背景色で代用する）。
+隣接章が変わると古い隣接章の画像は捨て、未撮影の隣接章は計測済みでも読み込み直して撮る（M2 実装済み）。
 
 ### 8.4 メモリ
 
 事前ページ化用 WebView は常時 1 つ。`UIApplication.didReceiveMemoryWarningNotification`（iOS）を受けたら
-一時停止し、`PaginationCache` の他 `layoutKey` の項目を落とす。
+`pause()` で一時停止してスナップショットを捨て、`PaginationCache.dropOtherLayouts()` で他 `layoutKey` の項目を落とす。
+次の章移動（`setCurrentSpineIndex`）か設定変更（`configure`）で再開する（M2 実装済み）。
 
 ## 9. 復旧
 
