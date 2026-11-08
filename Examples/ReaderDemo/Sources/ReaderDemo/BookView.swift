@@ -11,6 +11,8 @@ struct BookView: View {
     @State private var showTOC = false
     @State private var status = ""
     @State private var readThrough: ReadThroughResult?
+    @State private var showGoToPage = false
+    @State private var goToPageText = ""
 
     var body: some View {
         Group {
@@ -32,6 +34,11 @@ struct BookView: View {
                     .disabled(session == nil)
                 Button("Settings", systemImage: "textformat.size") { showSettings = true }
                     .disabled(session == nil)
+                Button("Go to page", systemImage: "number") {
+                    goToPageText = session.flatMap { $0.currentPage.map { String($0 + 1) } } ?? ""
+                    showGoToPage = true
+                }
+                .disabled(session == nil || session?.pagination.totalPages == 0)
                 Menu("Debug", systemImage: "ladybug") {
                     Button("Jump to last chapter") {
                         guard let session, let last = session.publication.linearReadingOrder.last else { return }
@@ -53,6 +60,21 @@ struct BookView: View {
         .sheet(isPresented: $showTOC) {
             if let session {
                 TOCView(session: session) { showTOC = false }
+            }
+        }
+        .alert("Go to page", isPresented: $showGoToPage) {
+            TextField("Page (1–\(session?.pagination.totalPages ?? 0))", text: $goToPageText)
+                #if os(iOS)
+                .keyboardType(.numberPad)
+                #endif
+            Button("Go") {
+                guard let session, let page = Int(goToPageText.trimmingCharacters(in: .whitespaces)) else { return }
+                Task { await session.go(toPage: page - 1) }
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            if let pagination = session?.pagination, pagination.isEstimated {
+                Text("\(pagination.estimatedChapterCount) chapters are still estimates; the page may be approximate.")
             }
         }
         .task(id: book.id) {
@@ -83,7 +105,7 @@ struct BookView: View {
                     status = "Warning: \(warning)"
                 case .tapped(_, let zone):
                     if zone == .center { status = "" }
-                case .pageChanged:
+                case .pageChanged, .paginationUpdated:
                     break
                 }
             }
@@ -108,13 +130,41 @@ struct StatusBar: View {
                 Text("·")
                 Text(session.totalProgression, format: .percent.precision(.fractionLength(0)))
                 if session.isLoading {
-                    ProgressView().controlSize(.mini)
+                    ProgressView().controlSize(.mini).frame(width: 14, height: 14)
                 }
                 Spacer()
                 if session.isAtEnd { Text("END").bold() }
             }
             .font(.footnote.monospacedDigit())
+            // Fixed heights: a spinner appearing must not change the inset, or the viewport (and with it the layout
+            // key) would change every time the pagination state flips.
+            .frame(height: 18)
             .accessibilityIdentifier("status.position")
+            HStack(spacing: 4) {
+                // Book-wide page numbers from BookPagination: "≈" while some chapters are still estimates.
+                let pagination = session.pagination
+                if let page = session.currentPage {
+                    Text("Book page \(page + 1)")
+                } else {
+                    Text("Book page –")
+                }
+                Text("/")
+                Text("\(pagination.isEstimated ? "≈" : "")\(pagination.totalPages)")
+                if pagination.isEstimated {
+                    Text("(estimating \(pagination.estimatedChapterCount) of \(pagination.chapters.count) chapters)")
+                        .foregroundStyle(.secondary)
+                    ProgressView().controlSize(.mini).frame(width: 12, height: 12)
+                } else {
+                    Text("(measured)").foregroundStyle(.secondary)
+                }
+                Spacer()
+                Text(session.writingMode.isVertical ? "vertical" : "horizontal")
+                    .foregroundStyle(.secondary)
+                if session.isRightToLeft { Text("RTL").foregroundStyle(.secondary) }
+            }
+            .font(.caption2.monospacedDigit())
+            .frame(height: 16)
+            .accessibilityIdentifier("status.bookPage")
             if let readThrough {
                 Text("Read through: \(readThrough.chapters) chapters, \(readThrough.pages) pages in \(readThrough.seconds, format: .number.precision(.fractionLength(1))) s\(readThrough.errors.isEmpty ? "" : ", errors: \(readThrough.errors.count)")")
                     .font(.caption2)

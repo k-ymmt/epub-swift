@@ -13,6 +13,7 @@ enum Library {
     static let bundled: [Book] = [
         ("moby-dick", "Moby-Dick"),
         ("childrens-literature", "Children's Literature"),
+        ("kusamakura-japanese-vertical-writing", "草枕 (縦書き・右綴じ)"),
     ].compactMap { name, title in
         guard let url = Bundle.module.url(forResource: name, withExtension: "epub", subdirectory: "Books") else { return nil }
         return Book(id: name, title: title, url: url)
