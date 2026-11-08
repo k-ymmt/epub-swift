@@ -236,6 +236,8 @@ public enum PublicationWarning: Sendable, Hashable {
     case missingViewport(path: String)
     /// The ZIP local header disagreed with the central directory; the central directory values were used.
     case inconsistentZIPEntry(path: String)
+    /// `META-INF/encryption.xml` exists but is not well-formed XML; no resource is treated as encrypted.
+    case malformedEncryptionXML
 }
 
 /// Thrown only when the EPUB cannot be opened at all (docs/design/00-overview.md §5.2).

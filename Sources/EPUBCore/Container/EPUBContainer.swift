@@ -11,6 +11,10 @@ public actor EPUBContainer {
     public nonisolated let url: URL?
 
     private let archive: ZIPArchive
+    /// Container path → font obfuscation to undo (docs/design/01-core.md §2.4).
+    private let obfuscations: [String: FontObfuscation]
+    /// Container paths encrypted with an unsupported algorithm; reading them throws `EPUBError.encryptedResource`.
+    private let unsupportedEncryptedPaths: Set<String>
     private let cache: NSCache<NSString, NSData> = {
         let c = NSCache<NSString, NSData>()
         c.totalCostLimit = 16 * 1024 * 1024
@@ -26,6 +30,8 @@ public actor EPUBContainer {
         self.publication = loaded.publication
         self.url = url
         self.archive = loaded.archive
+        self.obfuscations = loaded.obfuscations
+        self.unsupportedEncryptedPaths = loaded.unsupportedEncryptedPaths
     }
 
     /// Opens an EPUB held in memory (tests, documents received as data).
@@ -37,6 +43,8 @@ public actor EPUBContainer {
         self.publication = loaded.publication
         self.url = nil
         self.archive = loaded.archive
+        self.obfuscations = loaded.obfuscations
+        self.unsupportedEncryptedPaths = loaded.unsupportedEncryptedPaths
     }
 
     /// Container paths of every file in the ZIP.
@@ -48,13 +56,20 @@ public actor EPUBContainer {
         archive.contains(path)
     }
 
-    /// Raw bytes of a resource. Font de-obfuscation (M2) will be applied here.
+    /// Bytes of a resource, with font obfuscation undone (docs/design/01-core.md §2.4). Throws
+    /// `EPUBError.encryptedResource` for resources encrypted with an unsupported algorithm.
     public func data(at path: String) throws -> Data {
         let normalized = ContainerPath.normalize(path)
         if let cached = cache.object(forKey: normalized as NSString) {
             return cached as Data
         }
-        let data = try archive.data(at: normalized)
+        if unsupportedEncryptedPaths.contains(normalized) {
+            throw EPUBError.encryptedResource(path: normalized)
+        }
+        var data = try archive.data(at: normalized)
+        if let obfuscation = obfuscations[normalized] {
+            data = obfuscation.apply(to: data)
+        }
         if shouldCache(path: normalized, size: data.count) {
             cache.setObject(data as NSData, forKey: normalized as NSString, cost: data.count)
         }
@@ -94,6 +109,8 @@ public actor EPUBContainer {
     struct Loaded {
         var archive: ZIPArchive
         var publication: Publication
+        var obfuscations: [String: FontObfuscation] = [:]
+        var unsupportedEncryptedPaths: Set<String> = []
     }
 
     enum Loader {
@@ -154,6 +171,14 @@ public actor EPUBContainer {
                 toc = NavigationParser.fallbackTOC(readingOrder: parsed.readingOrder)
             }
 
+            // META-INF/encryption.xml: font obfuscation is undone transparently by `data(at:)`; other
+            // algorithms (DRM) are recorded as warnings and their resources cannot be read.
+            var encryption = EncryptionParser.Result()
+            if archive.contains("META-INF/encryption.xml"), let encryptionData = try? archive.data(at: "META-INF/encryption.xml") {
+                encryption = EncryptionParser.parse(encryptionData, uniqueIdentifier: parsed.metadata.identifier)
+                warnings.append(contentsOf: encryption.warnings)
+            }
+
             let publication = Publication(
                 id: PublicationID(),
                 metadata: parsed.metadata,
@@ -170,7 +195,7 @@ public actor EPUBContainer {
                 navigationDocumentPath: parsed.navigationDocumentPath,
                 warnings: warnings
             )
-            return Loaded(archive: archive, publication: publication)
+            return Loaded(archive: archive, publication: publication, obfuscations: encryption.obfuscations, unsupportedEncryptedPaths: encryption.unsupported)
         }
     }
 }

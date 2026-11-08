@@ -135,10 +135,20 @@ enum MiniEPUB {
     <html xmlns="http://www.w3.org/1999/xhtml"><head><title>c</title></head><body><p id="p1">Hello</p></body></html>
     """
 
-    static func build(withNav: Bool, zip64: Bool = false, deflate: Bool = true, extraManifest: String = "", extraSpine: String = "") -> Data {
+    static func build(
+        withNav: Bool,
+        zip64: Bool = false,
+        deflate: Bool = true,
+        extraManifest: String = "",
+        extraSpine: String = "",
+        extraFiles: [(name: String, data: Data)] = [],
+        encryptionXML: String? = nil
+    ) -> Data {
         var w = ZIPWriter()
         w.zip64 = zip64
         w.add("mimetype", "application/epub+zip")
+        if let encryptionXML { w.add("META-INF/encryption.xml", encryptionXML, deflate: deflate) }
+        for file in extraFiles { w.add(file.name, data: file.data, deflate: deflate) }
         w.add("META-INF/container.xml", """
         <?xml version="1.0"?>
         <container xmlns="urn:oasis:names:tc:opendocument:xmlns:container" version="1.0">
