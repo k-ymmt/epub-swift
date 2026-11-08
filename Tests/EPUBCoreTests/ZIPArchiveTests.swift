@@ -69,3 +69,25 @@ import Testing
         #expect(CRC32.checksum(Data()) == 0)
     }
 }
+
+@Suite struct InflateTests {
+    @Test func decodesEntriesLargerThanTheStreamBlock() throws {
+        // 338 KB entry: the Compression stream pauses every 256 KB, so decoding must loop.
+        let archive = try ZIPArchive(url: Fixtures.childrensLiterature)
+        let entry = try #require(archive.entry(at: "EPUB/s04.xhtml"))
+        #expect(entry.uncompressedSize > 262_144)
+        let data = try archive.data(for: entry)
+        #expect(data.count == Int(entry.uncompressedSize))
+        #expect(String(decoding: data.suffix(8), as: UTF8.self).contains("</html>"))
+    }
+
+    @Test func roundTripsRandomPayload() throws {
+        var payload = Data(count: 700_000)
+        payload.withUnsafeMutableBytes { buffer in
+            for i in buffer.indices { buffer[i] = UInt8((i * 31 + i / 7919) & 0xFF) }
+        }
+        let compressed = ZIPWriter.deflate(payload)
+        let restored = try Inflate.decode(compressed, expectedSize: payload.count)
+        #expect(restored == payload)
+    }
+}

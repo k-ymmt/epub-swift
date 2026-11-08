@@ -30,12 +30,21 @@ enum Inflate {
                 streamPointer.pointee.src_size = src.count
                 streamPointer.pointee.dst_ptr = dstBase
                 streamPointer.pointee.dst_size = dst.count
-                let status = compression_stream_process(streamPointer, Int32(COMPRESSION_STREAM_FINALIZE.rawValue))
-                switch status {
-                case COMPRESSION_STATUS_END, COMPRESSION_STATUS_OK:
-                    return dst.count - streamPointer.pointee.dst_size
-                default:
-                    throw Failure.corruptStream
+                // The stream may stop after an internal block (e.g. 256 KB); keep going until it reports END
+                // or makes no progress.
+                while true {
+                    let before = streamPointer.pointee.dst_size
+                    let status = compression_stream_process(streamPointer, Int32(COMPRESSION_STREAM_FINALIZE.rawValue))
+                    switch status {
+                    case COMPRESSION_STATUS_END:
+                        return dst.count - streamPointer.pointee.dst_size
+                    case COMPRESSION_STATUS_OK:
+                        if streamPointer.pointee.dst_size == 0 || (streamPointer.pointee.dst_size == before && streamPointer.pointee.src_size == 0) {
+                            return dst.count - streamPointer.pointee.dst_size
+                        }
+                    default:
+                        throw Failure.corruptStream
+                    }
                 }
             }
         }
