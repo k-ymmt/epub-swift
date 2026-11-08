@@ -289,4 +289,33 @@ extension TOCEntry {
         try await Task.sleep(for: .milliseconds(300))
         #expect(host.session.currentPageIndex >= host.session.chapterPageCount - 3, "landed on \(host.session.currentPageIndex + 1)/\(host.session.chapterPageCount)")
     }
+
+    /// A resize keeps the old page on screen as a snapshot until the position is restored in the new layout
+    /// (03-api §4.5), then drops it.
+    @Test func resizeShowsASnapshotUntilTheRelayoutHasRestoredThePosition() async throws {
+        let host = try await SessionHost(url: ReaderSessionTests.mobyDick)
+        await host.session.loadIfNeeded()
+        let chapter = try #require(host.session.publication.readingOrder.first { $0.path.hasSuffix("chapter_001.xhtml") })
+        await host.session.go(toSpineIndex: chapter.index)
+        for _ in 0..<3 { await host.session.goForward() }
+        let pageBefore = host.session.currentPageIndex
+        let countBefore = host.session.chapterPageCount
+        #expect(host.session.currentSpineIndex == chapter.index)
+        #expect(countBefore > 10, "chapter 1 of moby-dick is long: \(countBefore) pages")
+        #expect(host.session.relayoutSnapshot == nil)
+
+        host.session.viewportSize = CGSize(width: 300, height: 700)
+        var sawSnapshot = false
+        var snapshotSize: CGSize?
+        try await host.waitUntil {
+            if let snapshot = host.session.relayoutSnapshot { sawSnapshot = true; snapshotSize = snapshot.size }
+            return !host.session.isLoading && host.session.chapterPageCount != countBefore
+        }
+        #expect(sawSnapshot, "the old page is shown while the document is re-laid out")
+        #expect(snapshotSize == CGSize(width: 400, height: 600), "the snapshot is of the page before the resize")
+        #expect(host.session.relayoutSnapshot == nil, "dropped once the position is restored")
+        #expect(host.session.chapterPageCount > countBefore)
+        // Narrower pages: the same text is further into the chapter.
+        #expect(host.session.currentPageIndex >= pageBefore)
+    }
 }

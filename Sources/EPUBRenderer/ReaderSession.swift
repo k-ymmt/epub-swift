@@ -58,6 +58,11 @@ public final class ReaderSession {
         return pagination.pageIndex(spineIndex: currentSpineIndex, pageIndex: currentPageIndex)
     }
 
+    /// The page as it looked before the relayout in progress (settings change, resize), until the position has been
+    /// restored in the new layout; nil otherwise. `EPUBReaderView` shows it over the web view and cross-fades it
+    /// away (docs/design/03-api.md §4.5).
+    public private(set) var relayoutSnapshot: PageSnapshot?
+
     /// Size of one visible page. Set by `EPUBReaderView`; changing it re-layouts and restores the position.
     public var viewportSize: CGSize = .zero {
         didSet {
@@ -115,11 +120,23 @@ public final class ReaderSession {
     @ObservationIgnored private var loadGeneration = 0
     @ObservationIgnored private var relayoutTask: Task<Void, Never>?
     @ObservationIgnored private var pendingResize: Task<Void, Never>?
+    @ObservationIgnored private var relayoutSnapshotTask: Task<Void, Never>?
+    /// Page size the display web view is laid out for (lags `viewportSize` until the resize relayout runs).
+    @ObservationIgnored private var laidOutPageSize: CGSize = .zero
     @ObservationIgnored private var operationQueue: [() async -> Void] = []
     @ObservationIgnored private var isRunningOperation = false
     @ObservationIgnored private let logger = Logger(subsystem: "EPUB", category: "ReaderSession")
 
     static let loadTimeout: Duration = .seconds(10)
+    /// Window resizes on macOS come as a stream of sizes; the relayout waits for them to settle (03-api §4.5).
+    /// On iOS a size change (rotation, split view) is a single event and is applied at once.
+    static let resizeDebounce: Duration = {
+        #if os(macOS)
+        return .milliseconds(150)
+        #else
+        return .zero
+        #endif
+    }()
 
     public init(container: EPUBContainer, settings: ReaderSettings = ReaderSettings()) {
         self.container = container
@@ -289,6 +306,7 @@ public final class ReaderSession {
         let generation = loadGeneration
         isLoading = true
         renderer.setContentHidden(true)
+        applyPageSize()
         schemeHandler.rootStyle = ContentInjector.rootStyle(settings: settings, pageSize: viewportSize, publicationID: container.id)
         selectLayout()
         let url = EPUBSchemeHandler.url(publicationID: container.id, path: item.path)
@@ -387,16 +405,42 @@ public final class ReaderSession {
     }
 
     private func viewportSizeDidChange() {
-        renderer.setPageSize(viewportSize)
         schemeHandler.rootStyle = ContentInjector.rootStyle(settings: settings, pageSize: viewportSize, publicationID: container.id)
-        guard hasLoaded else { return }
-        // Debounce window resizes (03-api §4.5).
-        pendingResize?.cancel()
+        guard hasLoaded else { applyPageSize(); return }
+        // The web view keeps its old size (and layout) under the snapshot until the relayout runs, so the reader
+        // never sees the document reflow at the wrong page size.
+        let wasIdle = !isLoading
         isLoading = true
+        if wasIdle { captureRelayoutSnapshotIfNeeded() }
+        pendingResize?.cancel()
         pendingResize = Task { @MainActor [weak self] in
-            try? await Task.sleep(for: .milliseconds(150))
+            if Self.resizeDebounce > .zero { try? await Task.sleep(for: Self.resizeDebounce) }
             guard !Task.isCancelled, let self else { return }
+            self.pendingResize = nil
             await self.run { [weak self] in await self?.relayoutPreservingPosition() }
+        }
+    }
+
+    /// Gives the display web view the current viewport size.
+    private func applyPageSize() {
+        guard viewportSize.width > 0, viewportSize.height > 0 else { return }
+        renderer.setPageSize(viewportSize)
+        laidOutPageSize = viewportSize
+    }
+
+    /// Takes the picture of the visible page that covers the web view while it is re-laid out. Only one is kept per
+    /// relayout (a stream of resizes keeps the first).
+    private func captureRelayoutSnapshotIfNeeded() {
+        guard hasLoaded, relayoutSnapshot == nil, relayoutSnapshotTask == nil else { return }
+        let slot = renderer.visibleSlot
+        let spineIndex = currentSpineIndex
+        let pageIndex = currentPageIndex
+        let size = laidOutPageSize
+        relayoutSnapshotTask = Task { @MainActor [weak self] in
+            guard let self else { return }
+            defer { relayoutSnapshotTask = nil }
+            guard let result = try? await renderer.snapshot(slot: slot), relayoutSnapshot == nil, isLoading else { return }
+            relayoutSnapshot = PageSnapshot(image: result.image, scale: result.scale, size: size, spineIndex: spineIndex, pageIndex: pageIndex)
         }
     }
 
@@ -405,11 +449,18 @@ public final class ReaderSession {
     private func relayoutPreservingPosition() async {
         guard hasLoaded else { isLoading = false; return }
         isLoading = true
-        defer { isLoading = false }
+        captureRelayoutSnapshotIfNeeded()
+        await relayoutSnapshotTask?.value
+        defer {
+            isLoading = false
+            // A resize that arrived meanwhile re-lays out again right away; keep covering the web view until then.
+            if pendingResize == nil { relayoutSnapshot = nil }
+        }
         selectLayout()
         do {
             let anchored = try await renderer.captureAnchor(slot: renderer.visibleSlot, margins: settings.pageMargins)
             let ratio = chapterPageCount > 1 ? Double(currentPageIndex) / Double(chapterPageCount - 1) : 0
+            applyPageSize()
             let layout = try await renderer.applySettings(LayoutParameters(pageSize: viewportSize, settings: settings, rootStyle: schemeHandler.rootStyle))
             chapterPageCount = layout.pageCount
             var targetPage = min(currentPageIndex, layout.pageCount - 1)

@@ -26,6 +26,19 @@ public struct EPUBReaderView: View {
     public var body: some View {
         ZStack(alignment: .topLeading) {
             platformView
+            if let snapshot = session.relayoutSnapshot {
+                // The page as it was before a resize or settings change, until the position is restored in the new
+                // layout (03-api §4.5). Anchored top-leading so the text the reader was looking at stays put.
+                Image(decorative: snapshot.image, scale: snapshot.scale)
+                    .resizable()
+                    .aspectRatio(contentMode: .fill)
+                    .frame(width: session.viewportSize.width, height: session.viewportSize.height, alignment: .topLeading)
+                    .clipped()
+                    .background(Color(session.settings.theme.background))
+                    .transition(.opacity)
+                    .allowsHitTesting(false)
+                    .accessibilityHidden(true)
+            }
             if let context = turn.context(size: session.viewportSize, layoutDirection: layoutDirection) {
                 transition.body(context)
                     .allowsHitTesting(false)
@@ -33,6 +46,7 @@ public struct EPUBReaderView: View {
             }
         }
         .background(Color(session.settings.theme.background))
+        .animation(.easeOut(duration: 0.2), value: session.relayoutSnapshot == nil)
         .contentShape(Rectangle())
         .gesture(dragGesture, isEnabled: gestures.swipeEnabled)
         .onGeometryChange(for: CGSize.self, of: { $0.size }) { size in
