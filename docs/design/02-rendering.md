@@ -389,7 +389,7 @@ iOS の `takeSnapshot` は画面に合成された見た目を撮る（macOS は
 
 事前ページ化用 WebView は常時 1 つ。`UIApplication.didReceiveMemoryWarningNotification`（iOS）を受けたら
 `pause()` で一時停止してスナップショットを捨て、`PaginationCache.dropOtherLayouts()` で他 `layoutKey` の項目を落とす。
-次の章移動（`setCurrentSpineIndex`）か設定変更（`configure`）で再開する（M2 実装済み）。
+次の章移動（`setCurrentSpineIndex`）か `resume()` で再開する（M2 実装済み。設定変更の `configure` では再開しない点は `TODO.md` 参照）。
 
 ## 9. 復旧
 
