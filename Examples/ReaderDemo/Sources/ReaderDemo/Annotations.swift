@@ -111,6 +111,7 @@ struct SearchView: View {
     let onSelect: () -> Void
 
     @State private var query = ""
+    @State private var submittedQuery = ""
     @State private var results: [SearchResult] = []
     @State private var isSearching = false
     @State private var searchTask: Task<Void, Never>?
@@ -149,6 +150,14 @@ struct SearchView: View {
             .onChange(of: query) { _, newValue in
                 if newValue.isEmpty { searchTask?.cancel(); results = [] }
             }
+            // On macOS, `.onSubmit(of: .search)` does not fire for a `.searchable` field inside this sheet, so the
+            // search also starts once typing pauses (both platforms; Return still searches at once on iOS).
+            .task(id: query) {
+                guard !query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
+                try? await Task.sleep(for: .milliseconds(400))
+                guard !Task.isCancelled, submittedQuery != query else { return }
+                search()
+            }
             .navigationTitle(isSearching ? "Searching… (\(results.count))" : "Search (\(results.count))")
             .toolbar {
                 Button("Done") { searchTask?.cancel(); onSelect() }
@@ -160,6 +169,7 @@ struct SearchView: View {
     }
 
     private func search() {
+        submittedQuery = query
         searchTask?.cancel()
         results = []
         error = nil

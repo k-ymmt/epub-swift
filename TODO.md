@@ -19,7 +19,6 @@
 - [ ] `PaginationService` は章の `pageCountChanged`（遅延画像で章が伸びる）を追わない。計測後に増えた分は表示側が章を開いたときに上書きされるだけ。
 - [ ] `SpineItem.characterCount` を `EPUBContainer` を開くときに全章分計算している（moby-dick で約 20 ms、大きな本では開く時間に効く）。遅延計算や検索インデックス（M3）との統合を検討する。
 - [ ] 04-roadmap §3.3 の計測（最初のページまでの時間、事前ページ化の完了時間、メモリ）を Instruments で記録していない。草枕の事前ページ化は macOS のテストで約 0.7 秒、iOS Simulator で約 1 秒（目視）。
-- [ ] `Examples/ReaderDemo` の macOS 版は M2 ではビルドと起動のみで、画面操作による確認（縦書き表示、設定の往復、ウィンドウリサイズ）は未実施。
 - [ ] `EPUBReaderView` の周囲の UI の高さが変わると `viewportSize` が変わり全章の再計測になる（デモではステータスバーの高さを固定して回避）。数 pt の変化を無視する、または高さ変化を遅延して適用するなどライブラリ側で吸収するか検討する。
 
 ## M2 の積み残し（2026-11-08 の Codex 敵対的レビューで確認した不具合。いずれも未修正）
@@ -39,7 +38,6 @@
 - [ ] `SelectedText.rects` / `highlightTapped` の矩形は `selectionChanged` 受信時点の可視ページ座標で、その後ページ移動や再レイアウトがあると古くなる。アプリがメニューを出すときは `rects(for:)` で取り直す運用にしているが、ライブラリ側で位置変更時に `currentSelection` を更新するか検討する。
 - [ ] `SearchService` の抽出結果（`TextMap`）は spine item ごとに actor 内へ無期限にキャッシュする。大きな本では本文全体をメモリに持つことになるので、上限を検討する（M2 の `contentDocuments` の積み残しと同じ話。メモリ警告での破棄は M5 で入れた: `ReaderSession` がサービスごと捨てる）。
 - [ ] 検索は線形 spine item のみ。非線形（`linear="no"`）の文書は対象外にしている。必要なら `SearchOptions` にフラグを足す。
-- [ ] `Examples/ReaderDemo` の macOS 版は M3 でもビルドと `swift test` のみで、画面操作（右クリックメニューの Highlight、検索シート）は未確認。
 
 ## M3 の積み残し（2026-11-09 の Codex 敵対的レビューで確認した不具合。いずれも未修正）
 
@@ -62,7 +60,7 @@
 - [ ] FXL の面には `ReaderSettings.theme` を当てない（出版社のページそのまま）ので、ダークテーマでは FXL の面だけ白く光る。ダークテーマ時の減光（`filter: brightness`）を FXL にも当てるか検討する。ラッパーの背景色も白固定。
 - [ ] 見開きラッパーは章内の前後の面を隣のスロットに置かないので、FXL の面のめくりはすべて destinationPending（到着後に撮る）経路になり、スナップショットでのめくり演出が 1 テンポ遅れる。隣の面を事前に 2 つ目のラッパーへ読み込むか、`PaginationService` の隣接面スナップショット（02-rendering §8.3）を面単位に広げる。
 - [ ] `Examples/ReaderDemo/Sources/ReaderDemo/Books/` の fixture の重複（M1 の積み残し）が FXL の 3 冊分（約 5 MB）増えた。
-- [ ] `Examples/ReaderDemo` の macOS 版は M4 でもビルドと `swift test` のみで、画面操作（見開き表示、ウィンドウリサイズでの単ページ ⇄ 見開き、トラックパッドのピンチ）は未確認。
+- [ ] macOS のトラックパッドのピンチ（FXL のズーム）は実機で未確認。見開き表示とウィンドウリサイズでの単ページ ⇄ 見開きは 2026-11-09 に macOS 27 の ReaderDemo で確認した。
 
 ## M4 の積み残し（2026-11-09 の Codex 敵対的レビューで確認した不具合。いずれも未修正）
 
@@ -74,7 +72,9 @@
 
 ## M5 の積み残し（2026-11-09）
 
-- [ ] `Examples/ReaderDemo` の macOS 版は M5 でもビルドと `swift test` のみ。画面操作の許可がセッションで拒否されたため、キーボード（← → ↑ ↓ space PageUp/PageDown Home/End、右綴じでの ← の向き）、トラックパッドの 1 スワイプ 1 ページ、脚注ポップオーバー、画像ビューア、外部リンクのダイアログを実機の macOS で確認していない（キー対応表とスワイプの判定は `KeyboardAndTrackpadTests` の単体テストのみ）。
+- [ ] macOS 27 の ReaderDemo の画面確認（2026-11-09）で未確認のまま残ったもの: ↑ ↓ PageUp Home/End のキー、トラックパッドの 1 スワイプ 1 ページ（操作ツールの合成スクロールにはフェーズがない）、画像ビューア、外部リンクのダイアログ。確認済み: → ← space ⇧space PageDown（章またぎ、右綴じでの ← が次）、タップめくり、検索シート、右クリックの Highlight、内部リンクと戻る、脚注ポップオーバー、テーマと見開き設定の往復、縦書き・FXL・アラビア語の見開き。
+- [ ] macOS でページ左右 4 分の 1 の単語をダブルクリックすると、1 回目のクリックがタップめくりとして扱われ、ページがめくれてから単語が選択される。タップめくりをダブルクリックの判定時間だけ遅らせるか、`clickCount` が 2 以上ならめくりを取り消すかを決める（`EPUBReaderView.turnForTap`）。
+- [ ] 画像タップはページ中央の領域でだけ画像ビューアを開き、左右 4 分の 1 ではめくりになる（M5 の判断）。macOS の見開きや本文の左寄せ画像ではほとんどの画像が左右の領域に入り、画像ビューアを開けない。画像の大部分が中央にかかるなら開く、修飾キー付きクリックで開くなどを検討する。
 - [ ] VoiceOver を実際に有効にした確認（読み込み中にフォーカスが飛ばないこと、3 本指スワイプでのページ送りと「Page n of m」の読み上げ）は未実施。iOS 27 Simulator には VoiceOver がないので、実機か Accessibility Inspector で確かめる。
 - [ ] デモアプリでの WebContent プロセス終了からの復旧は未確認（`RecoveryTests` が macOS の実 WKWebView で SIGKILL を送って検証しているだけ）。iOS の実際のメモリ圧迫による終了と、メモリ警告からの再開も手動では見ていない。
 - [ ] 読み込みタイムアウト（`ReaderError.loadTimeout`）には専用のテストがない。`ready` を返さない文書を作るのは難しいので、`SpineRenderer` のテスト用実装で `ready` を止めて確かめるか検討する。
