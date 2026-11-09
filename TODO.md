@@ -43,3 +43,12 @@
 - [ ] 検索は線形 spine item のみ。非線形（`linear="no"`）の文書は対象外にしている。必要なら `SearchOptions` にフラグを足す。
 - [ ] `Examples/ReaderDemo` の macOS 版は M3 でもビルドと `swift test` のみで、画面操作（右クリックメニューの Highlight、検索シート）は未確認。
 
+## M3 の積み残し（2026-11-09 の Codex 敵対的レビューで確認した不具合。いずれも未修正）
+
+- [ ] `Sources/EPUBRenderer/Reader/reader.js` `boundaryToPoint`: 選択範囲の境界が要素コンテナで、その子オフセットの位置がコメントノード（`<b>First</b><!-- c -->Second` で `selectNode(b)` の終点）だと null を返し、`fromRange` 全体が null になって選択が「なし」と報告される（ハイライトできない）。コメントや空白テキストを読み飛ばして次の要素 / テキストに寄せる。
+- [ ] `Sources/EPUBRenderer/ReaderSession.swift` `show(_:)`: `go(to:)` の後の章の一致確認を操作キューの外で行い、一時ハイライトの適用を別の操作として積むので、その間に別の章への移動が割り込むと、検索結果の CFI 範囲が別の文書に対して解決され無関係な文字がハイライトされうる（`reader.js` の `resolveSteps` は spine ステップを見ない）。移動と一時ハイライトを 1 つの操作にまとめるか、適用直前に `currentSpineIndex` を再確認する。`reader.js` 側でも `spineSteps` の一致を確認すると二重に防げる。
+- [ ] `Sources/EPUBCore/Model/Publication.swift` `spineIndex(of:)`: ID でもステップ index でも一致しないときに `index / 2 - 1` を reading order の添字として使うため、manifest にない itemref を読み飛ばした OPF では、存在しない章を指す CFI が別の章に解決される。最後のフォールバックをやめて nil を返す（`cfiStepIndex` の一致だけを認める）。
+- [ ] `Sources/EPUBCore/CFI/CFIGenerator.swift` `textAssertion(in:offset:)`: 前後 10 ユニットしか使わないのにテキストノード全体を `Array(text.utf16)` に展開する。`SearchService.results(for:)` は一致ごとに 2 回呼ぶので、長いテキストノードに大量の一致がある章では二次関数的に遅くなり、その章が終わるまで結果が流れず、ループ内でキャンセルも見ない。`String.UTF16View` の index 演算で必要範囲だけ切り出し、`results(for:)` のループで `Task.checkCancellation()` を見る。
+- [ ] `Sources/EPUBUI/EPUBReaderView.swift`: `.selectionActions` の転送が `onChange(of: ids)` なので、id が同じまま title / systemImage / handler だけ変わった配列はセッションに反映されない（古いハンドラが呼ばれ続ける）。`SelectionAction` を `Equatable` にする（handler を除く比較 + 変更世代）か、毎回代入する。
+- [ ] `Examples/ReaderDemo/Sources/ReaderDemo/Annotations.swift` `BookStore.init`: 英数字以外をすべて `_` に置き換えてファイル名にするので、`A-B.epub` と `A_B.epub` のように異なる本が同じ JSON を共有し、ハイライトと位置を上書きし合う。ハッシュ（SHA-256）をファイル名にする。
+
