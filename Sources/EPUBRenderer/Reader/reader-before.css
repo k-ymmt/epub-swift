@@ -48,6 +48,25 @@ html {
   text-size-adjust: 100%;
 }
 
+/* Scroll extent of whole pages (reader.js applyExtent, M5). WebKit ends the scrollable overflow of the column flow at
+   the last column, without the root's end padding, so the document is one margin short of `pageCount` pages and the
+   scroll position of the last pages is clamped one margin early (the page shows shifted). This box, out of flow and
+   outside the DOM (no CFI, search or text-selection effect), stretches the scroll area to exactly `pageCount` pages. */
+html::after {
+  content: "" !important;
+  display: block !important;
+  position: absolute !important;
+  left: 0 !important;
+  top: 0 !important;
+  width: var(--reader-extent-x, 0px) !important;
+  height: var(--reader-extent-y, 0px) !important;
+  margin: 0 !important;
+  padding: 0 !important;
+  border: 0 !important;
+  visibility: hidden !important;
+  pointer-events: none !important;
+}
+
 /* Vertical writing (reader.js sets the attribute after reading the computed writing-mode; 02-rendering §3.4).
    `column-width` is measured along the inline axis, which is vertical here, so the columns stack vertically:
    one column = one page, the stride is exactly one page height, and page i is at scrollTop = i * page-height. */

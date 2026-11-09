@@ -143,6 +143,22 @@
     return Math.max(1, Math.floor(endX / state.pageWidth) + 1);
   }
 
+  // Stretches the scroll area to exactly `pageCount` pages along the page axis (reader-before.css `html::after`).
+  function applyExtent() {
+    if (state.fixedLayout || !state.pageWidth || !state.pageHeight) {
+      root().style.removeProperty("--reader-extent-x");
+      root().style.removeProperty("--reader-extent-y");
+      return;
+    }
+    if (isVertical()) {
+      setVar("--reader-extent-x", "1px");
+      setVar("--reader-extent-y", (state.pageCount * state.pageHeight) + "px");
+    } else {
+      setVar("--reader-extent-x", (state.pageCount * state.pageWidth) + "px");
+      setVar("--reader-extent-y", "1px");
+    }
+  }
+
   function applyParams(p) {
     if (!p) { return; }
     if (p.pageWidth) { state.pageWidth = p.pageWidth; setVar("--reader-page-width", p.pageWidth + "px"); }
@@ -200,6 +216,7 @@
     ensureSentinel();
     void root().offsetWidth; // flush layout
     state.pageCount = computePageCount();
+    applyExtent();
     return { pageCount: state.pageCount, writingMode: state.writingMode, columnsPerPage: columns };
   }
 
@@ -216,6 +233,7 @@
     }
     // Re-measure first: late image/font loads may have changed the page count since the last call.
     state.pageCount = computePageCount();
+    applyExtent();
     const i = Math.max(0, Math.min(Math.floor(index), state.pageCount - 1));
     const sc = scroller();
     const pageSize = isVertical() ? state.pageHeight : state.pageWidth;
@@ -266,6 +284,7 @@
     const columns = state.fixedLayout ? 1 : applyColumns();
     void root().offsetWidth;
     state.pageCount = computePageCount();
+    applyExtent();
     return { pageCount: state.pageCount, writingMode: state.writingMode, columnsPerPage: columns };
   }
 
@@ -1514,6 +1533,7 @@
       if (!state.readySent || !state.pageWidth) { return; }
       const before = state.pageCount;
       state.pageCount = computePageCount();
+      applyExtent();
       if (state.pageCount !== before) {
         post("pageCountChanged", { pageCount: state.pageCount });
       }

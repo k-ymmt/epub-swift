@@ -19,6 +19,14 @@ struct BookView: View {
     @State private var readThrough: ReadThroughResult?
     @State private var showGoToPage = false
     @State private var goToPageText = ""
+    @State private var note: NoteContent?
+    @State private var image: ImageItem?
+    @State private var pendingExternalURL: URL?
+    /// Where to return after following a link or going to a note (the app's business; the library only reports).
+    @State private var backStack: [ReadingPosition] = []
+    @State private var previousPosition: ReadingPosition?
+    @State private var lastPosition: ReadingPosition?
+    @Environment(\.openURL) private var openURL
 
     var body: some View {
         Group {
@@ -36,6 +44,12 @@ struct BookView: View {
         #endif
         .toolbar {
             ToolbarItemGroup {
+                if !backStack.isEmpty {
+                    Button("Back", systemImage: "arrow.uturn.backward") {
+                        guard let session, let target = backStack.popLast() else { return }
+                        Task { await session.go(to: target) }
+                    }
+                }
                 Button("Contents", systemImage: "list.bullet") { showTOC = true }
                     .disabled(session == nil)
                 Button("Settings", systemImage: "textformat.size") { showSettings = true }
@@ -108,6 +122,15 @@ struct BookView: View {
                 Text("\(pagination.estimatedChapterCount) chapters are still estimates; the page may be approximate.")
             }
         }
+        .confirmationDialog("Open external link?", isPresented: Binding(get: { pendingExternalURL != nil }, set: { if !$0 { pendingExternalURL = nil } }), presenting: pendingExternalURL) { url in
+            Button("Open \(url.host() ?? url.absoluteString)") { openURL(url) }
+            Button("Cancel", role: .cancel) {}
+        } message: { url in
+            Text(url.absoluteString)
+        }
+        .sheet(item: $image) { item in
+            ImageViewer(item: item)
+        }
         .task(id: book.id) {
             do {
                 let container = try await EPUBContainer(url: book.url)
@@ -150,7 +173,17 @@ struct BookView: View {
             .onReaderEvent { event in
                 switch event {
                 case .externalLink(let url):
+                    // M5: the library never navigates away; the app asks, then opens the browser.
                     status = "External link: \(url.absoluteString)"
+                    pendingExternalURL = url
+                case .internalLink(let cfi):
+                    status = "Link → \(cfi.description)"
+                    // The session has already moved (and published the new position): go back to the one before.
+                    if let previousPosition { backStack.append(previousPosition) }
+                case .noteref(let content):
+                    note = content
+                case .imageTapped(let tapped):
+                    image = ImageItem(image: tapped)
                 case .error(let error):
                     status = "Error: \(error)"
                 case .warning(let warning):
@@ -165,6 +198,8 @@ struct BookView: View {
                     } else {
                         store?.position = position
                     }
+                    previousPosition = lastPosition
+                    lastPosition = position
                 case .highlightTapped(let id, _):
                     tappedHighlight = store?.highlights.first { $0.id == id }
                 case .selectionChanged(let selected):
@@ -173,6 +208,18 @@ struct BookView: View {
                     break
                 case .zoomChanged(let zoomed):
                     status = zoomed ? "Zoomed in: pinch out (or turn a page) to return" : ""
+                }
+            }
+            // M5: the note a noteref points at, anchored to the noteref's box (page coordinates = this view's).
+            .popover(isPresented: Binding(get: { note != nil }, set: { if !$0 { note = nil } }),
+                     attachmentAnchor: .rect(.rect(note?.sourceRect ?? .zero))) {
+                if let note {
+                    NotePopover(note: note) {
+                        self.note = nil
+                        if let here = session.position { backStack.append(here) }
+                        if let cfi = note.cfi { Task { await session.go(to: cfi) } }
+                    }
+                    .presentationCompactAdaptation(.popover)
                 }
             }
             .safeAreaInset(edge: .bottom) {
@@ -404,5 +451,104 @@ struct TOCView: View {
         #if os(macOS)
         .frame(minWidth: 380, minHeight: 480)
         #endif
+    }
+}
+
+/// The text of a footnote / endnote (M5 `ReaderEvent.noteref`), with a button to go to the note itself.
+struct NotePopover: View {
+    let note: NoteContent
+    let goToNote: () -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            ScrollView {
+                Text(note.text ?? "The note could not be found (\(note.path)#\(note.fragment ?? "")).")
+                    .textSelection(.enabled)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            .frame(maxHeight: 240)
+            HStack {
+                Text(note.isInSameDocument ? "Note in this chapter" : "Note in \(note.path)")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Spacer()
+                // A note in this chapter is taken out of the page flow (hidden), so there is nothing to go to.
+                if !note.isInSameDocument {
+                    Button("Go to note", action: goToNote)
+                        .disabled(note.cfi == nil)
+                }
+            }
+        }
+        .padding()
+        .frame(minWidth: 280, idealWidth: 340, maxWidth: 420)
+        .accessibilityIdentifier("note.popover")
+    }
+}
+
+/// `TappedImage` for `.sheet(item:)`.
+struct ImageItem: Identifiable {
+    let id = UUID()
+    let image: TappedImage
+}
+
+/// A tapped image (M5 `ReaderEvent.imageTapped`), loaded from the container with `TappedImage.data`.
+struct ImageViewer: View {
+    let item: ImageItem
+    @Environment(\.dismiss) private var dismiss
+    @State private var loaded: Image?
+    @State private var failure: String?
+    @State private var scale: CGFloat = 1
+    @GestureState private var pinch: CGFloat = 1
+
+    var body: some View {
+        NavigationStack {
+            Group {
+                if let loaded {
+                    // Fit to the sheet at zoom 1; zooming grows the frame so that the scroll view can pan over it.
+                    GeometryReader { geometry in
+                        let zoom = scale * pinch
+                        ScrollView([.horizontal, .vertical]) {
+                            loaded
+                                .resizable()
+                                .scaledToFit()
+                                .frame(width: geometry.size.width * zoom, height: geometry.size.height * zoom)
+                        }
+                        .defaultScrollAnchor(.center)
+                        .gesture(MagnifyGesture()
+                            .updating($pinch) { value, state, _ in state = value.magnification }
+                            .onEnded { value in scale = min(max(1, scale * value.magnification), 6) })
+                        .onTapGesture(count: 2) { scale = scale > 1 ? 1 : 2.5 }
+                        .accessibilityLabel(item.image.alt ?? "Image")
+                    }
+                } else if let failure {
+                    ContentUnavailableView("Could not load the image", systemImage: "photo", description: Text(failure))
+                } else {
+                    ProgressView()
+                }
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .navigationTitle(item.image.alt.flatMap { $0.isEmpty ? nil : $0 } ?? item.image.path ?? item.image.url.lastPathComponent)
+            #if os(iOS)
+            .navigationBarTitleDisplayMode(.inline)
+            #endif
+            .toolbar {
+                Button("Done") { dismiss() }
+            }
+        }
+        #if os(macOS)
+        .frame(minWidth: 480, minHeight: 400)
+        #endif
+        .task {
+            do {
+                let data = try await item.image.data()
+                #if os(iOS)
+                if let image = UIImage(data: data) { loaded = Image(uiImage: image) } else { failure = "Unsupported format (\(data.count) bytes)" }
+                #else
+                if let image = NSImage(data: data) { loaded = Image(nsImage: image) } else { failure = "Unsupported format (\(data.count) bytes)" }
+                #endif
+            } catch {
+                failure = String(describing: error)
+            }
+        }
     }
 }

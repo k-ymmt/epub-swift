@@ -17,6 +17,9 @@ enum Library {
         ("haruko-html-jpeg", "はるこ (FXL・右綴じ)"),
         ("page-blanche", "Page blanche (FXL)"),
         ("cole-voyage-of-life", "Voyage of Life (リフロー + FXL 絵画)"),
+        ("regime-anticancer-arabic", "Régime anti-cancer (アラビア語・RTL)"),
+        ("wasteland-otf-obf", "The Waste Land (フォント難読化)"),
+        ("links-sample", "Links sample (リンク・脚注・画像)"),
     ].compactMap { name, title in
         guard let url = Bundle.module.url(forResource: name, withExtension: "epub", subdirectory: "Books") else { return nil }
         return Book(id: name, title: title, url: url)
