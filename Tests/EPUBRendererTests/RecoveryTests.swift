@@ -42,7 +42,7 @@ import EPUBCore
         #expect(host.session.position?.cfi == before.cfi)
         #expect(host.session.currentSpineIndex == 6)
         #expect(host.session.currentPageIndex == page)
-        #expect(host.renderer.webView.isHidden == false)
+        #expect(!host.renderer.isContentHidden)
         let errors = recorder.events.filter { if case .error = $0 { true } else { false } }
         #expect(errors.count == 1, "one webContentTerminated, nothing else (real crash: \(crashed))")
         // Navigation keeps working afterwards.

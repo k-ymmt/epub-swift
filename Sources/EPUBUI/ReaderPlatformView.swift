@@ -7,13 +7,19 @@ import UIKit
 /// Hosts the session's page view (the clipped web view) in SwiftUI.
 struct ReaderPlatformView: UIViewRepresentable {
     let session: ReaderSession
+    /// VoiceOver's three-finger swipe (`accessibilityScroll`) on the page (M5, 02-rendering §7.3). Returns whether
+    /// the page moved.
+    var onAccessibilityScroll: (@MainActor (UIAccessibilityScrollDirection) -> Bool)?
 
     func makeUIView(context: Context) -> HostView {
-        HostView(content: session.platformView)
+        let view = HostView(content: session.platformView)
+        view.onAccessibilityScroll = onAccessibilityScroll
+        return view
     }
 
     func updateUIView(_ uiView: HostView, context: Context) {
         uiView.content = session.platformView
+        uiView.onAccessibilityScroll = onAccessibilityScroll
     }
 
     final class HostView: UIView {
@@ -36,9 +42,17 @@ struct ReaderPlatformView: UIViewRepresentable {
         @available(*, unavailable)
         required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 
+        var onAccessibilityScroll: (@MainActor (UIAccessibilityScrollDirection) -> Bool)?
+
         override func layoutSubviews() {
             super.layoutSubviews()
             content.frame = bounds
+        }
+
+        /// The web view does not scroll by itself (paging is the library's), so the scroll gesture of VoiceOver
+        /// reaches this ancestor and turns the page.
+        override func accessibilityScroll(_ direction: UIAccessibilityScrollDirection) -> Bool {
+            onAccessibilityScroll?(direction) ?? false
         }
     }
 }

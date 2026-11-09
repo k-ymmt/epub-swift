@@ -80,7 +80,25 @@ public struct EPUBReaderView: View {
 
     @ViewBuilder private var platformView: some View {
         #if canImport(UIKit)
-        ReaderPlatformView(session: session)
+        ReaderPlatformView(session: session, onAccessibilityScroll: { direction in
+            guard session.hasLoaded, !session.isZoomed else { return false }
+            let forward: Bool
+            switch direction {
+            case .next, .down: forward = true
+            case .previous, .up: forward = false
+            // A three-finger swipe to the left brings in the page on the right: the next one, unless the book is
+            // right-bound.
+            case .left: forward = layoutDirection != .rightToLeft
+            case .right: forward = layoutDirection == .rightToLeft
+            @unknown default: return false
+            }
+            if forward ? session.isAtEnd : session.isAtStart { return false }
+            Task {
+                await turn.turn(forward ? .forward : .backward)
+                UIAccessibility.post(notification: .pageScrolled, argument: accessibilityPageDescription)
+            }
+            return true
+        })
         #else
         ReaderPlatformView(
             session: session,
@@ -96,6 +114,14 @@ public struct EPUBReaderView: View {
             }
         )
         #endif
+    }
+
+    /// "Page 3 of 120" (book pages, or chapter pages while the book's count is unknown) for VoiceOver.
+    private var accessibilityPageDescription: String {
+        if let page = session.currentPage {
+            return "Page \(page + 1) of \(session.pagination.totalPages)"
+        }
+        return "Page \(session.currentPageIndex + 1) of \(session.chapterPageCount)"
     }
 
     /// Keyboard moves (03-api §4.3, M5): page turns go through the turn controller (with the effect); chapter

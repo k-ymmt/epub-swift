@@ -20,6 +20,12 @@ final class WebViewSpineRenderer: NSObject, SpineRenderer {
 
     let clipView: PlatformView
     let webView: ReaderWebView
+    /// Covers the web view (background colour) while a document loads, instead of hiding the web view: a hidden view
+    /// leaves the accessibility tree and VoiceOver focus would jump elsewhere at every chapter change (02-rendering
+    /// §7.3, M5). The curtain itself is not an accessibility element.
+    let curtain: PlatformView
+    /// `true` while the curtain is up (set by `setContentHidden`).
+    private(set) var isContentHidden = false
     let schemeHandler: EPUBSchemeHandler
     var view: PlatformView { clipView }
 
@@ -61,6 +67,19 @@ final class WebViewSpineRenderer: NSObject, SpineRenderer {
 
         webView = ReaderWebView(frame: CGRect(x: 0, y: 0, width: 300 * 3, height: 400), configuration: configuration)
         #if canImport(AppKit)
+        curtain = NSView(frame: CGRect(x: 0, y: 0, width: 300, height: 400))
+        curtain.wantsLayer = true
+        curtain.autoresizingMask = [.width, .height]
+        curtain.setAccessibilityElement(false)
+        curtain.isHidden = true
+        #else
+        curtain = UIView(frame: CGRect(x: 0, y: 0, width: 300, height: 400))
+        curtain.autoresizingMask = [.flexibleWidth, .flexibleHeight]
+        curtain.isAccessibilityElement = false
+        curtain.accessibilityElementsHidden = true
+        curtain.isHidden = true
+        #endif
+        #if canImport(AppKit)
         clipView = NSView(frame: CGRect(x: 0, y: 0, width: 300, height: 400))
         clipView.wantsLayer = true
         clipView.layer?.masksToBounds = true
@@ -84,6 +103,7 @@ final class WebViewSpineRenderer: NSObject, SpineRenderer {
         #endif
         super.init()
         clipView.addSubview(webView)
+        clipView.addSubview(curtain)
         webView.navigationDelegate = self
         messageBridge.owner = self
         controller.addScriptMessageHandler(messageBridge, contentWorld: Self.readerWorld, name: "reader")
@@ -181,6 +201,7 @@ final class WebViewSpineRenderer: NSObject, SpineRenderer {
         guard size != pageSize, size.width > 0, size.height > 0 else { return }
         pageSize = size
         clipView.frame = CGRect(origin: clipView.frame.origin, size: size)
+        curtain.frame = CGRect(origin: .zero, size: size)
         layoutWebViewFrame()
     }
 
@@ -216,15 +237,18 @@ final class WebViewSpineRenderer: NSObject, SpineRenderer {
     func setBackgroundColor(_ color: ReaderColor) {
         #if canImport(AppKit)
         clipView.layer?.backgroundColor = CGColor(srgbRed: color.red, green: color.green, blue: color.blue, alpha: color.alpha)
+        curtain.layer?.backgroundColor = clipView.layer?.backgroundColor
         webView.underPageBackgroundColor = NSColor(srgbRed: color.red, green: color.green, blue: color.blue, alpha: color.alpha)
         #else
         clipView.backgroundColor = UIColor(red: color.red, green: color.green, blue: color.blue, alpha: color.alpha)
+        curtain.backgroundColor = clipView.backgroundColor
         webView.underPageBackgroundColor = clipView.backgroundColor
         #endif
     }
 
     func setContentHidden(_ hidden: Bool) {
-        webView.isHidden = hidden
+        isContentHidden = hidden
+        curtain.isHidden = !hidden
     }
 
     // MARK: - Loading
@@ -354,7 +378,7 @@ final class WebViewSpineRenderer: NSObject, SpineRenderer {
     // MARK: - Snapshots
 
     func snapshot(slot: Int) async throws -> (image: CGImage, scale: CGFloat)? {
-        guard pageSize.width > 0, pageSize.height > 0, !webView.isHidden else { return nil }
+        guard pageSize.width > 0, pageSize.height > 0, !isContentHidden else { return nil }
         let configuration = WKSnapshotConfiguration()
         configuration.rect = slotRect(slot)
         configuration.snapshotWidth = NSNumber(value: Double(pageSize.width))
