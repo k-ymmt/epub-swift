@@ -10,7 +10,8 @@ enum SpreadDocument {
     enum Kind: String, Sendable {
         /// One or two pre-paginated documents, scaled to fit.
         case fixed
-        /// One reflowable vertical-writing document shown twice, the two frames scrolled to adjacent pages.
+        /// One reflowable document shown twice, the two frames scrolled to adjacent pages: vertical writing, and
+        /// (M5) horizontal chapters of a right-bound book, whose first page goes on the right.
         case vertical
     }
 
@@ -38,8 +39,9 @@ enum SpreadDocument {
         return url(publicationID: publicationID, kind: .fixed, pages: pages.map { Page(spineIndex: $0.spineIndex, placement: $0.placement) })
     }
 
-    /// The wrapper that shows a vertical-writing reflowable chapter as two facing pages: the same document in both
-    /// frames, the first page of the pair on the side the writing mode starts on (right for vertical-rl).
+    /// The wrapper that shows a reflowable chapter as two facing pages: the same document in both frames, the first
+    /// page of the pair on the side the writing mode starts on (right for vertical-rl and for horizontal chapters of
+    /// a right-bound book, left for vertical-lr).
     static func verticalURL(publicationID: PublicationID, spineIndex: Int, writingMode: WritingMode) -> URL {
         let first: SpreadPlan.Placement = writingMode == .verticalLR ? .left : .right
         let second: SpreadPlan.Placement = first == .left ? .right : .left

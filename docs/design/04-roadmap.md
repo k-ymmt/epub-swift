@@ -139,7 +139,14 @@ IDPF epub3-samples（https://github.com/IDPF/epub3-samples）から次を `Tests
 | `cole-voyage-of-life` | リフロー本文 + FXL の絵画 4 ページ（itemref の `rendition:layout-pre-paginated` / `spread-none` / `orientation-landscape`、viewport 1024×697）。`page-spread-*` は使っていない（M4 で追加） |
 | `haruko-html-jpeg` | FXL 漫画（JPEG）、右綴じ、`rendition:spread landscape`、p01〜p12 に `page-spread-left` / `right`、最後に リフローの About（M4 で追加） |
 | `page-blanche` | FXL（JPEG、viewport 1200×1577）、`page-spread-left` / `right`、`page-progression-direction` なし（M4 で追加。SVG ではない） |
-| `regime-anticancer-arabe` | RTL 言語、`dir` 属性 |
+| `regime-anticancer-arabic` | アラビア語の横書きリフロー、`<html dir="rtl">`、`page-progression-direction="rtl"`（M5 で追加。IDPF での名前は `arabe` ではなく `arabic`。無加工で 111 KB） |
+
+IDPF 以外に、この計画のために書いた小さな EPUB も置く（ソースは同じ名前のディレクトリ）。
+
+| フィクスチャ | 用途 |
+|---|---|
+| `cfi-sample` | CFI のテストベクタと検索（M3） |
+| `links-sample` | 章内・章間・外部リンク、同一文書 / 別文書の noteref、隠す脚注、画像タップ、FXL ページ（viewport 600×800）内のリンクと noteref（M5） |
 
 Adobe 方式の難読化は公開サンプルがないので、テスト内で IDPF サンプルのフォントを Adobe 方式で難読化し直して検証する。
 

@@ -260,7 +260,7 @@ final class PaginationService {
         var realization = ReaderSession.realization(of: unit, publicationID: container.id, publication: publication, writingModeHint: lastWritingMode)
         var layout = try await load(realization, spineSteps: steps)
         guard stillCurrent() else { throw CancellationError() }
-        if case .reflowable(let index, true) = unit, realization.isWrapper != layout.writingMode.isVertical {
+        if case .reflowable(let index, true) = unit, realization.isWrapper != ReaderSession.spreadNeedsWrapper(writingMode: layout.writingMode, publication: publication) {
             realization = ReaderSession.realization(of: .reflowable(spineIndex: index, twoPages: true), publicationID: container.id, publication: publication, writingModeHint: layout.writingMode)
             layout = try await load(realization, spineSteps: steps)
             guard stillCurrent() else { throw CancellationError() }

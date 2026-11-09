@@ -102,7 +102,18 @@
     }
     const vertical = wm.indexOf("vertical") === 0 || wm.indexOf("sideways") === 0;
     root().setAttribute("data-reader-writing-mode", vertical ? "vertical" : "horizontal");
+    detectDirection(vertical);
     return wm;
+  }
+
+  // Right-to-left horizontal text (Arabic, Hebrew: `dir="rtl"` on html). With an rtl root the columns flow to the
+  // left of the first one (negative scroll positions), which the page arithmetic does not handle. The root is laid
+  // out left-to-right and the text direction moves to body (reader-before.css, `data-reader-direction`); the page
+  // order of a right-bound book is the spread's business (first page on the right, 02-rendering §6.2, M5).
+  function detectDirection(vertical) {
+    if (vertical) { root().removeAttribute("data-reader-direction"); return; }
+    if (root().getAttribute("data-reader-direction") === "rtl") { return; }
+    if (getComputedStyle(root()).direction === "rtl") { root().setAttribute("data-reader-direction", "rtl"); }
   }
 
   function isVertical() { return state.writingMode.indexOf("vertical") === 0 || state.writingMode.indexOf("sideways") === 0; }

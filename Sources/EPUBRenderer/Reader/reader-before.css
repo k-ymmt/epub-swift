@@ -119,3 +119,8 @@ ruby {
 [hidden]:not([hidden="until-found" i]) {
   display: none !important;
 }
+
+/* Right-to-left horizontal text (reader.js detectDirection, M5): the root keeps a left-to-right column flow, the
+   text keeps its direction through body. */
+html[data-reader-direction="rtl"] { direction: ltr !important; }
+html[data-reader-direction="rtl"] > body:not([dir]) { direction: rtl; }

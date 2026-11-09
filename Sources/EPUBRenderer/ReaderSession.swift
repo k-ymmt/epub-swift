@@ -429,7 +429,7 @@ public final class ReaderSession {
             var realization = Self.realization(of: unit, publicationID: container.id, publication: publication, writingModeHint: writingMode)
             var layout = try await load(realization, generation: generation, spineSteps: publication.cfiSpineSteps(forSpineIndex: leading))
             guard generation == loadGeneration else { return }
-            if case .reflowable(let index, true) = unit, realization.isWrapper != layout.writingMode.isVertical {
+            if case .reflowable(let index, true) = unit, realization.isWrapper != Self.spreadNeedsWrapper(writingMode: layout.writingMode, publication: publication) {
                 realization = Self.realization(of: .reflowable(spineIndex: index, twoPages: true), publicationID: container.id, publication: publication, writingModeHint: layout.writingMode)
                 layout = try await load(realization, generation: generation, spineSteps: publication.cfiSpineSteps(forSpineIndex: leading))
                 guard generation == loadGeneration else { return }
@@ -490,12 +490,19 @@ public final class ReaderSession {
         case .fixed:
             return Realization(url: SpreadDocument.url(publicationID: publicationID, unit: unit)!, columnsPerPage: 1, isWrapper: true)
         case .reflowable(let index, let twoPages):
-            if twoPages, writingModeHint.isVertical {
+            if twoPages, spreadNeedsWrapper(writingMode: writingModeHint, publication: publication) {
                 return Realization(url: SpreadDocument.verticalURL(publicationID: publicationID, spineIndex: index, writingMode: writingModeHint), columnsPerPage: 1, isWrapper: true)
             }
             let url = EPUBSchemeHandler.url(publicationID: publicationID, path: publication.readingOrder[index].path)
             return Realization(url: url, columnsPerPage: twoPages ? 2 : 1, isWrapper: false)
         }
+    }
+
+    /// Whether a reflowable chapter shown as two facing pages needs the two-frame wrapper rather than two columns:
+    /// vertical writing (columns stack along y), and any chapter of a right-bound book, whose first page of the pair
+    /// belongs on the right while columns always fill from the left (M5: Arabic and Hebrew books; 02-rendering §6.2).
+    static func spreadNeedsWrapper(writingMode: WritingMode, publication: Publication) -> Bool {
+        writingMode.isVertical || publication.pageProgression == .rtl
     }
 
     /// Loads a realization and lays it out.
@@ -664,7 +671,7 @@ public final class ReaderSession {
             if let unit = currentUnit, let replacement = spreadPlan.unit(containing: currentSpineIndex) {
                 let inPlace: Bool
                 switch (unit, replacement) {
-                case (.reflowable(let a, _), .reflowable(let b, let twoPages)) where a == b && !loadedAsWrapper && !writingMode.isVertical:
+                case (.reflowable(let a, _), .reflowable(let b, let twoPages)) where a == b && !loadedAsWrapper && !Self.spreadNeedsWrapper(writingMode: writingMode, publication: publication):
                     inPlace = true
                     columns = twoPages ? 2 : 1
                 default:
