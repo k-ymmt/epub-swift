@@ -24,6 +24,7 @@ enum PackageParser {
         var readingOrder: [SpineItem]
         var layout: RenditionLayout
         var spread: RenditionSpread
+        var orientation: RenditionOrientation
         var pageProgression: PageProgression
         var coverImagePath: String?
         var navigationDocumentPath: String?
@@ -99,6 +100,7 @@ enum PackageParser {
 
         let layout: RenditionLayout = raw["rendition:layout"]?.first.flatMap(RenditionLayout.init(rawValue:)) ?? .reflowable
         let spread: RenditionSpread = raw["rendition:spread"]?.first.flatMap(RenditionSpread.init(rawValue:)) ?? .auto
+        let orientation: RenditionOrientation = raw["rendition:orientation"]?.first.flatMap(RenditionOrientation.init(rawValue:)) ?? .auto
 
         // --- manifest ---------------------------------------------------------------------------
         var manifest: [ManifestItem] = []
@@ -161,6 +163,17 @@ enum PackageParser {
             if properties.contains("page-spread-left") || properties.contains("rendition:page-spread-left") { spreadPosition = .left }
             if properties.contains("page-spread-right") || properties.contains("rendition:page-spread-right") { spreadPosition = .right }
             if properties.contains("rendition:page-spread-center") || properties.contains("page-spread-center") { spreadPosition = .center }
+            // `rendition:spread-*` / `rendition:orientation-*` overrides (M4). The last one listed wins.
+            var itemSpread: RenditionSpread?
+            var itemOrientation: RenditionOrientation?
+            for property in properties {
+                if property.hasPrefix("rendition:spread-"), let value = RenditionSpread(rawValue: String(property.dropFirst("rendition:spread-".count))) {
+                    itemSpread = value
+                }
+                if property.hasPrefix("rendition:orientation-"), let value = RenditionOrientation(rawValue: String(property.dropFirst("rendition:orientation-".count))) {
+                    itemOrientation = value
+                }
+            }
             readingOrder.append(SpineItem(
                 id: idref,
                 index: readingOrder.count,
@@ -169,6 +182,8 @@ enum PackageParser {
                 isLinear: itemref.attribute("linear")?.lowercased() != "no",
                 layout: itemLayout,
                 spreadPosition: spreadPosition,
+                spread: itemSpread,
+                orientation: itemOrientation,
                 cfiStepIndex: 2 * (childPosition + 1)
             ))
         }
@@ -182,6 +197,7 @@ enum PackageParser {
             readingOrder: readingOrder,
             layout: layout,
             spread: spread,
+            orientation: orientation,
             pageProgression: pageProgression,
             coverImagePath: coverImagePath,
             navigationDocumentPath: navigationDocumentPath,

@@ -98,7 +98,6 @@ final class EPUBSchemeHandler: NSObject, WKURLSchemeHandler {
                     let document = try await container.contentDocument(at: path)
                     for warning in document.warnings { self.onWarning?(warning) }
                     let injected = ContentInjector.inject(document.data, isXML: document.isXML, injection: injection)
-                    if !isReflowable, !injected.hadViewport { self.onWarning?(.missingViewport(path: path)) }
                     let response = Self.response(url: url, mediaType: document.mediaType, length: injected.data.count)
                     self.finish(urlSchemeTask, taskID: taskID, response: response, data: injected.data)
                 } else {

@@ -182,15 +182,25 @@ public actor EPUBContainer {
             readingOrder.reserveCapacity(parsed.readingOrder.count)
             for item in parsed.readingOrder {
                 var characterCount: Int?
+                var viewport: FixedLayoutViewport?
                 if item.mediaType == XHTMLRepair.xhtmlMediaType || item.path.hasSuffix(".xhtml") || item.path.hasSuffix(".html"),
                    archive.contains(item.path), let data = try? archive.data(at: item.path) {
                     let prepared = XHTMLRepair.prepareAndParse(data, path: item.path)
                     contentDocuments[item.path] = prepared.document
-                    if let tree = prepared.tree { characterCount = TextLength.characterCount(of: tree) }
+                    if let tree = prepared.tree {
+                        characterCount = TextLength.characterCount(of: tree)
+                        // The fixed-layout page size (02-rendering §6.1). Read for every document; only used for
+                        // pre-paginated items.
+                        viewport = FixedLayoutViewport(document: tree)
+                    }
+                }
+                if item.layout == .prePaginated, viewport == nil {
+                    warnings.append(.missingViewport(path: item.path))
                 }
                 readingOrder.append(SpineItem(
                     id: item.id, index: item.index, path: item.path, mediaType: item.mediaType, isLinear: item.isLinear,
-                    layout: item.layout, spreadPosition: item.spreadPosition, characterCount: characterCount, cfiStepIndex: item.cfiStepIndex
+                    layout: item.layout, spreadPosition: item.spreadPosition, spread: item.spread, orientation: item.orientation,
+                    viewport: viewport, characterCount: characterCount, cfiStepIndex: item.cfiStepIndex
                 ))
             }
 
@@ -212,6 +222,7 @@ public actor EPUBContainer {
                 landmarks: landmarks,
                 layout: parsed.layout,
                 spread: parsed.spread,
+                orientation: parsed.orientation,
                 pageProgression: parsed.pageProgression,
                 coverImagePath: parsed.coverImagePath,
                 packageDocumentPath: opfPath,

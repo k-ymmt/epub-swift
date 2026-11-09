@@ -13,7 +13,11 @@ public struct Publication: Sendable {
     public let landmarks: [TOCEntry]
     /// Book-level default (`rendition:layout`).
     public let layout: RenditionLayout
+    /// Book-level default (`rendition:spread`). Itemrefs may override it (`SpineItem.spread`).
     public let spread: RenditionSpread
+    /// Book-level default (`rendition:orientation`). Read but not enforced: the library does not lock the device
+    /// orientation (M4).
+    public let orientation: RenditionOrientation
     public let pageProgression: PageProgression
     /// Container path of the manifest item with `properties="cover-image"`, if any.
     public let coverImagePath: String?
@@ -40,6 +44,7 @@ public struct Publication: Sendable {
         landmarks: [TOCEntry],
         layout: RenditionLayout,
         spread: RenditionSpread,
+        orientation: RenditionOrientation = .auto,
         pageProgression: PageProgression,
         coverImagePath: String?,
         packageDocumentPath: String,
@@ -56,6 +61,7 @@ public struct Publication: Sendable {
         self.landmarks = landmarks
         self.layout = layout
         self.spread = spread
+        self.orientation = orientation
         self.pageProgression = pageProgression
         self.coverImagePath = coverImagePath
         self.packageDocumentPath = packageDocumentPath
@@ -188,14 +194,22 @@ public struct SpineItem: Sendable, Hashable, Identifiable {
     public let isLinear: Bool
     /// Book-level layout, overridden by `rendition:layout-*` on the itemref.
     public let layout: RenditionLayout
+    /// `page-spread-left` / `page-spread-right` / `rendition:page-spread-center` on the itemref.
     public let spreadPosition: SpreadPosition?
+    /// `rendition:spread-*` on the itemref; nil means the book-level `Publication.spread` applies (M4).
+    public let spread: RenditionSpread?
+    /// `rendition:orientation-*` on the itemref; nil means the book-level value applies (M4). Not enforced.
+    public let orientation: RenditionOrientation?
+    /// The `<meta name="viewport">` size of the document, filled when the container is opened (M4). A fixed-layout
+    /// document without one gets `PublicationWarning.missingViewport` and is drawn at the visible page size.
+    public let viewport: FixedLayoutViewport?
     /// Filled when the container is opened (Core DOM text count). Used to estimate page counts.
     public let characterCount: Int?
     /// CFI step index of this itemref among the `spine` element's children (`2 × (1-based position)`). Differs
     /// from `2 × (index + 1)` only when the spine has non-itemref children or unresolvable itemrefs.
     public let cfiStepIndex: Int
 
-    public init(id: String, index: Int, path: String, mediaType: String, isLinear: Bool, layout: RenditionLayout, spreadPosition: SpreadPosition?, characterCount: Int? = nil, cfiStepIndex: Int? = nil) {
+    public init(id: String, index: Int, path: String, mediaType: String, isLinear: Bool, layout: RenditionLayout, spreadPosition: SpreadPosition?, spread: RenditionSpread? = nil, orientation: RenditionOrientation? = nil, viewport: FixedLayoutViewport? = nil, characterCount: Int? = nil, cfiStepIndex: Int? = nil) {
         self.id = id
         self.index = index
         self.path = path
@@ -203,9 +217,15 @@ public struct SpineItem: Sendable, Hashable, Identifiable {
         self.isLinear = isLinear
         self.layout = layout
         self.spreadPosition = spreadPosition
+        self.spread = spread
+        self.orientation = orientation
+        self.viewport = viewport
         self.characterCount = characterCount
         self.cfiStepIndex = cfiStepIndex ?? 2 * (index + 1)
     }
+
+    /// Whether this item is laid out as a fixed page (`rendition:layout` pre-paginated, after the itemref override).
+    public var isFixedLayout: Bool { layout == .prePaginated }
 }
 
 /// An entry of the `toc`, `page-list` or `landmarks` nav.
@@ -242,6 +262,11 @@ public enum RenditionLayout: String, Sendable, Hashable {
 
 public enum RenditionSpread: String, Sendable, Hashable {
     case auto, none, landscape, both
+}
+
+/// `rendition:orientation` (M4). Read for completeness; the library does not lock the orientation.
+public enum RenditionOrientation: String, Sendable, Hashable {
+    case auto, landscape, portrait
 }
 
 public enum PageProgression: String, Sendable, Hashable {

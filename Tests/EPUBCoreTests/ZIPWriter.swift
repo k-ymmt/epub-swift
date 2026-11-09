@@ -141,9 +141,12 @@ enum MiniEPUB {
         deflate: Bool = true,
         extraManifest: String = "",
         extraSpine: String = "",
+        extraMetadata: String = "",
+        spineItemProperties: [String] = ["", ""],
         extraFiles: [(name: String, data: Data)] = [],
         encryptionXML: String? = nil
     ) -> Data {
+        let props = spineItemProperties.map { $0.isEmpty ? "" : " properties=\"\($0)\"" }
         var w = ZIPWriter()
         w.zip64 = zip64
         w.add("mimetype", "application/epub+zip")
@@ -165,6 +168,7 @@ enum MiniEPUB {
             <dc:creator>Tester</dc:creator>
             <dc:language>ja</dc:language>
             <meta property="dcterms:modified">2026-01-02T03:04:05Z</meta>
+            \(extraMetadata)
           </metadata>
           <manifest>
             \(navItem)
@@ -173,8 +177,8 @@ enum MiniEPUB {
             \(extraManifest)
           </manifest>
           <spine page-progression-direction="rtl">
-            <itemref idref="c1"/>
-            <itemref idref="c2" linear="no"/>
+            <itemref idref="c1"\(props[0])/>
+            <itemref idref="c2" linear="no"\(props[1])/>
             \(extraSpine)
           </spine>
         </package>
