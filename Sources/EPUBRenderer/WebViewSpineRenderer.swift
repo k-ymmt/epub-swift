@@ -48,7 +48,8 @@ final class WebViewSpineRenderer: NSObject, SpineRenderer {
         let controller = WKUserContentController()
         if let scriptURL = Bundle.module.url(forResource: "reader", withExtension: "js", subdirectory: "Reader") ?? Bundle.module.url(forResource: "reader", withExtension: "js"),
            let source = try? String(contentsOf: scriptURL, encoding: .utf8) {
-            controller.addUserScript(WKUserScript(source: source, injectionTime: .atDocumentEnd, forMainFrameOnly: true, in: Self.readerWorld))
+            // Also in the iframes of a spread wrapper (M4); a framed document does not talk to Swift directly.
+            controller.addUserScript(WKUserScript(source: source, injectionTime: .atDocumentEnd, forMainFrameOnly: false, in: Self.readerWorld))
         }
         configuration.userContentController = controller
 
@@ -146,7 +147,9 @@ final class WebViewSpineRenderer: NSObject, SpineRenderer {
         // an earlier load of the same chapter can be recognised and ignored. A fragment would not do: changing
         // only the fragment of the current URL is a same-document navigation and the reader script does not run again.
         var components = URLComponents(url: url, resolvingAgainstBaseURL: false)
-        components?.queryItems = [URLQueryItem(name: "__reader_load", value: String(loadCounter))]
+        // Appended: a spread wrapper URL already carries its own query (M4).
+        let existing = components?.queryItems ?? []
+        components?.queryItems = existing + [URLQueryItem(name: "__reader_load", value: String(loadCounter))]
         let tagged = components?.url ?? url
         webView.load(URLRequest(url: tagged))
         return tagged

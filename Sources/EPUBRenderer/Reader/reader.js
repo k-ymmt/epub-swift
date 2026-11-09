@@ -12,6 +12,12 @@
 //   tap {x, y}                      click/tap on anything that is not a link (viewport coordinates)
 //   selectionChanged {cfiRange, text, rects} | null   the selection changed (debounced)
 // Positions are EPUB CFI strings; the CFI module below mirrors EPUBCore (docs/design/01-core.md §5).
+//
+// Spreads (M4, 02-rendering §6.2): the script also runs in the iframes of the `_reader/spread` wrapper document.
+// A framed document does not talk to Swift; it exposes `setHost` / `whenReady` and the wrapper's copy of this
+// script (the spread controller, `installSpreadController` below) presents the same API to Swift, proxying the
+// calls to the frames and mapping coordinates. `layout({fixedLayout: true})` turns a pre-paginated page into a
+// single page without columns.
 (function () {
   "use strict";
   if (window.__epubReader) { return; }
@@ -27,19 +33,35 @@
     spineSteps: [],
     // [{id, range}] of the highlights currently drawn, for hit testing.
     highlights: [],
+    // Pre-paginated document inside a spread wrapper: one page, no columns (M4).
+    fixedLayout: false,
+    // Inside a spread wrapper: the controller's callback that receives this document's events (M4).
+    host: null,
   };
+  // In an iframe (a spread wrapper's page, or an iframe inside a content document). Framed documents never post to
+  // Swift: the wrapper proxies for them, and an iframe inside a chapter has no say in the chapter's pagination.
+  const framed = (function () { try { return window.top !== window; } catch (e) { return true; } })();
 
   function root() { return document.documentElement; }
   function scroller() { return document.scrollingElement || document.documentElement; }
   function setVar(name, value) { root().style.setProperty(name, value); }
 
   function post(type, payload) {
+    if (framed) {
+      if (state.host) {
+        try { state.host(type, payload || {}); } catch (e) { /* the wrapper handles its own errors */ }
+        return Promise.resolve(true);
+      }
+      return Promise.resolve(false);
+    }
     try {
       return window.webkit.messageHandlers.reader.postMessage({ type: type, payload: payload || {} });
     } catch (e) {
       return Promise.reject(e);
     }
   }
+
+  function setHost(fn) { state.host = typeof fn === "function" ? fn : null; }
 
   function ensureSentinel() {
     let s = document.getElementById(SENTINEL_ID);
@@ -74,6 +96,7 @@
   // Page count from the end sentinel's document position (not scrollWidth: in the 3-page-wide frame
   // scrollWidth never goes below the viewport width; 05-spike-results §2.3).
   function computePageCount() {
+    if (state.fixedLayout) { return 1; }
     if (!state.pageWidth || !state.pageHeight) { return 1; }
     const s = ensureSentinel();
     if (!s) { return 1; }
@@ -132,7 +155,13 @@
       const parsed = CFI.parse("epubcfi(" + params.spineSteps + "!/2)");
       state.spineSteps = parsed ? parsed[0].spineSteps : [];
     }
+    state.fixedLayout = !!(params && params.fixedLayout);
     state.writingMode = detectWritingMode();
+    if (state.fixedLayout) {
+      // The page is the publisher's fixed design: no sentinel, no columns, exactly one page (02-rendering §6.1).
+      state.pageCount = 1;
+      return { pageCount: 1, writingMode: state.writingMode };
+    }
     ensureSentinel();
     void root().offsetWidth; // flush layout
     state.pageCount = computePageCount();
@@ -144,6 +173,12 @@
   // at the ends the scroll position is clamped and the page ends up in another slot. The returned
   // `slot` tells Swift where the page is so it can offset the web view (02-rendering §1.2).
   function goToPage(index) {
+    if (state.fixedLayout) {
+      const sc0 = scroller();
+      sc0.scrollLeft = 0;
+      sc0.scrollTop = 0;
+      return { pageIndex: 0, slot: 0, pageCount: 1, scrollLeft: 0, scrollTop: 0 };
+    }
     // Re-measure first: late image/font loads may have changed the page count since the last call.
     state.pageCount = computePageCount();
     const i = Math.max(0, Math.min(Math.floor(index), state.pageCount - 1));
@@ -899,6 +934,380 @@
     return null;
   }
 
+  // --- spread wrapper (M4, 02-rendering §6.2) ----------------------------------------------------------
+  // The wrapper document (`_reader/spread`, SpreadDocument.swift) holds one or two same-origin iframes, in reading
+  // order (`data-order`). This controller presents the document API to Swift: it lays the frames out (fixed-layout
+  // pages scaled into the visible area, `transform: scale()`), proxies the calls to the frames' own reader.js
+  // (reachable as `iframe.contentWindow.__epubReader`, same content world) and maps coordinates between a frame and
+  // the wrapper. kind "fixed": one page per frame, page count 1. kind "vertical": the same vertical-writing
+  // document in both frames, scrolled to adjacent pages; wrapper page k shows document pages 2k and 2k+1.
+  function installSpreadController() {
+    const kind = root().getAttribute("data-reader-spread") || "fixed";
+    const frames = Array.from(document.querySelectorAll("iframe[data-spine-index]")).map(function (el) {
+      const steps = el.getAttribute("data-spine-steps") || "";
+      return {
+        el: el,
+        spineIndex: parseInt(el.getAttribute("data-spine-index"), 10),
+        stepsString: steps,
+        spineSteps: parseSpineSteps(steps),
+        declaredWidth: parseFloat(el.getAttribute("data-width")) || 0,
+        declaredHeight: parseFloat(el.getAttribute("data-height")) || 0,
+        placement: el.getAttribute("data-placement") || "f",
+        order: parseInt(el.getAttribute("data-order"), 10) || 0,
+        x: 0, y: 0, width: 0, height: 0, scale: 1, hidden: false, bridge: null,
+      };
+    }).sort(function (a, b) { return a.order - b.order; });
+    const sp = { pageWidth: 0, pageHeight: 0, pageCount: 1, childPageCount: 1, writingMode: "horizontal-tb", readySent: false };
+
+    function parseSpineSteps(str) {
+      if (!str) { return []; }
+      const parsed = CFI.parse("epubcfi(" + str + "!/2)");
+      return parsed ? parsed[0].spineSteps : [];
+    }
+    function bridgeOf(frame) {
+      try { return (frame.el.contentWindow && frame.el.contentWindow.__epubReader) || null; } catch (e) { return null; }
+    }
+    // Resolves (with the frame's writing mode, or null) once the frame's document has loaded and its reader.js is
+    // ready. A page that fails to load, or never answers, resolves null after a grace period so the wrapper still
+    // becomes ready (the Swift side has its own load timeout).
+    function frameReady(frame) {
+      return new Promise(function (resolve) {
+        let done = false;
+        function finish(mode) { if (!done) { done = true; resolve(mode || null); } }
+        function attach() {
+          const bridge = bridgeOf(frame);
+          if (bridge && bridge.whenReady) {
+            bridge.whenReady().then(function (r) { finish(r && r.writingMode); }, function () { finish(null); });
+          } else {
+            finish(null);
+          }
+        }
+        let doc = null;
+        try { doc = frame.el.contentDocument; } catch (e) { doc = null; }
+        if (doc && doc.readyState === "complete" && bridgeOf(frame)) { attach(); }
+        else { frame.el.addEventListener("load", attach, { once: true }); }
+        setTimeout(function () { finish(null); }, 8000);
+      });
+    }
+    const ready = Promise.all(frames.map(frameReady)).then(function (modes) {
+      frames.forEach(function (frame) {
+        frame.bridge = bridgeOf(frame);
+        if (frame.bridge && frame.bridge.setHost) { frame.bridge.setHost(hostFor(frame)); }
+      });
+      sp.writingMode = (kind === "vertical" && modes[0]) ? modes[0] : "horizontal-tb";
+      return sp.writingMode;
+    });
+
+    // --- geometry ---
+    function twoPageLayout() { return kind === "vertical" || frames.some(function (f) { return f.placement !== "f"; }); }
+    // The size the page is laid out at before scaling: the declared viewport, or the available area when the
+    // document has none (PublicationWarning.missingViewport).
+    function naturalSize(frame) {
+      const two = twoPageLayout();
+      return {
+        w: frame.declaredWidth > 0 ? frame.declaredWidth : (two ? sp.pageWidth / 2 : sp.pageWidth),
+        h: frame.declaredHeight > 0 ? frame.declaredHeight : sp.pageHeight,
+      };
+    }
+    function place(frame, x, y, w, h, s) {
+      frame.x = x; frame.y = y; frame.width = w; frame.height = h; frame.scale = s;
+      const st = frame.el.style;
+      st.left = x + "px"; st.top = y + "px"; st.width = w + "px"; st.height = h + "px";
+      st.transform = s === 1 ? "none" : "scale(" + s + ")";
+      st.visibility = frame.hidden ? "hidden" : "visible";
+    }
+    function setHidden(frame, hidden) {
+      frame.hidden = !!hidden;
+      frame.el.style.visibility = frame.hidden ? "hidden" : "visible";
+    }
+    function layoutFrames() {
+      const W = sp.pageWidth, H = sp.pageHeight;
+      if (!W || !H) { return; }
+      root().style.width = W + "px"; root().style.height = H + "px";
+      document.body.style.width = W + "px"; document.body.style.height = H + "px";
+      const stage = document.getElementById("__reader_stage");
+      if (stage) { stage.style.width = W + "px"; stage.style.height = H + "px"; }
+      if (kind === "vertical") {
+        frames.forEach(function (f) { place(f, f.placement === "l" ? 0 : W / 2, 0, W / 2, H, 1); });
+        return;
+      }
+      if (frames.length === 2) {
+        // Both pages share one scale so the spread reads as one picture; the pair is centered.
+        const L = frames.find(function (f) { return f.placement === "l"; }) || frames[0];
+        const R = frames.find(function (f) { return f !== L; });
+        const ls = naturalSize(L), rs = naturalSize(R);
+        const s = Math.min(W / (ls.w + rs.w), H / Math.max(ls.h, rs.h));
+        const x0 = (W - (ls.w + rs.w) * s) / 2;
+        place(L, x0, (H - ls.h * s) / 2, ls.w, ls.h, s);
+        place(R, x0 + ls.w * s, (H - rs.h * s) / 2, rs.w, rs.h, s);
+        return;
+      }
+      const f = frames[0];
+      if (!f) { return; }
+      const n = naturalSize(f);
+      if (f.placement === "f") {
+        const s = Math.min(W / n.w, H / n.h);
+        place(f, (W - n.w * s) / 2, (H - n.h * s) / 2, n.w, n.h, s);
+      } else {
+        // A lone page of a two-page face sits on its half, against the spine (the center line).
+        const s = Math.min((W / 2) / n.w, H / n.h);
+        place(f, f.placement === "l" ? W / 2 - n.w * s : W / 2, (H - n.h * s) / 2, n.w, n.h, s);
+      }
+    }
+    function toParent(frame, x, y) { return { x: frame.x + x * frame.scale, y: frame.y + y * frame.scale }; }
+    // Frame viewport rects → wrapper coordinates. `clip` keeps only the part inside the frame's box (the other pages
+    // of a vertical-writing document lie outside it).
+    function mapRects(frame, rects, clip) {
+      const out = [];
+      const right = frame.x + frame.width * frame.scale, bottom = frame.y + frame.height * frame.scale;
+      for (const r of rects || []) {
+        let x = frame.x + r.x * frame.scale, y = frame.y + r.y * frame.scale;
+        let x2 = x + r.width * frame.scale, y2 = y + r.height * frame.scale;
+        if (clip) {
+          x = Math.max(x, frame.x); y = Math.max(y, frame.y); x2 = Math.min(x2, right); y2 = Math.min(y2, bottom);
+          if (x2 - x <= 0 || y2 - y <= 0) { continue; }
+        }
+        out.push({ x: x, y: y, width: x2 - x, height: y2 - y });
+      }
+      return out;
+    }
+    function withRects(frame, selection) {
+      return { cfiRange: selection.cfiRange, text: selection.text, rects: mapRects(frame, selection.rects, kind === "vertical") };
+    }
+    function visibleFrames() { return frames.filter(function (f) { return f.bridge && !f.hidden; }); }
+
+    // --- events from the frames ---
+    function hostFor(frame) {
+      return function (type, payload) {
+        payload = payload || {};
+        switch (type) {
+          case "link":
+            post("link", payload);
+            break;
+          case "tap": {
+            const p = toParent(frame, payload.x || 0, payload.y || 0);
+            post("tap", { x: p.x, y: p.y, viewportWidth: sp.pageWidth, viewportHeight: sp.pageHeight });
+            break;
+          }
+          case "highlightTap":
+            post("highlightTap", { id: payload.id, rects: mapRects(frame, payload.rects, kind === "vertical") });
+            break;
+          case "selectionChanged": {
+            // Each frame has its own selection; when one frame loses its selection another may still hold one.
+            let selection = payload.selection ? withRects(frame, payload.selection) : null;
+            if (!selection) {
+              for (const other of frames) {
+                if (other === frame || !other.bridge) { continue; }
+                const s = other.bridge.currentSelection();
+                if (s) { selection = withRects(other, s); break; }
+              }
+            }
+            post("selectionChanged", { selection: selection });
+            break;
+          }
+          case "pageCountChanged":
+            if (kind === "vertical" && frame === frames[0]) {
+              const before = sp.pageCount;
+              sp.childPageCount = payload.pageCount || 1;
+              sp.pageCount = Math.max(1, Math.ceil(sp.childPageCount / 2));
+              if (sp.pageCount !== before && sp.readySent) { post("pageCountChanged", { pageCount: sp.pageCount }); }
+            }
+            break;
+          default:
+            break;
+        }
+      };
+    }
+    document.addEventListener("click", function (e) {
+      // Outside every frame (the area around the pages).
+      post("tap", { x: e.clientX, y: e.clientY, viewportWidth: sp.pageWidth, viewportHeight: sp.pageHeight });
+    }, true);
+
+    // --- the document API ---
+    function applyWrapperParams(params) {
+      if (!params) { return; }
+      if (params.pageWidth) { sp.pageWidth = params.pageWidth; }
+      if (params.pageHeight) { sp.pageHeight = params.pageHeight; }
+      if (params.theme) {
+        setVar("--reader-bg", params.theme.background);
+        setVar("--reader-fg", params.theme.foreground);
+        root().setAttribute("data-reader-theme", params.theme.isDark ? "dark" : "light");
+      }
+    }
+    function childParams(frame, params) {
+      const p = Object.assign({}, params || {});
+      p.pageWidth = frame.width;
+      p.pageHeight = frame.height;
+      p.spineSteps = frame.stepsString;
+      if (kind !== "vertical") {
+        p.fixedLayout = true;
+        p.margins = { horizontal: 0, vertical: 0 };
+        // The page keeps the publisher's design (reader-fixed.css only): no settings style, no font override.
+        delete p.rootStyle;
+        delete p.fontFamily;
+      }
+      return p;
+    }
+    function layout(params) {
+      applyWrapperParams(params);
+      return ready.then(function () {
+        layoutFrames();
+        return Promise.all(frames.map(function (f) { return f.bridge ? f.bridge.layout(childParams(f, params)) : null; }));
+      }).then(function (results) {
+        if (kind === "vertical") {
+          const r = results[0];
+          sp.childPageCount = (r && r.pageCount) || 1;
+          if (r && r.writingMode) { sp.writingMode = r.writingMode; }
+          sp.pageCount = Math.max(1, Math.ceil(sp.childPageCount / 2));
+        } else {
+          sp.pageCount = 1;
+        }
+        return { pageCount: sp.pageCount, writingMode: sp.writingMode };
+      });
+    }
+    function goToPage(index) {
+      if (kind !== "vertical" || !frames[0] || !frames[0].bridge) {
+        return { pageIndex: 0, slot: 0, pageCount: sp.pageCount, scrollLeft: 0, scrollTop: 0 };
+      }
+      const a = frames[0].bridge;
+      const b = frames[1] ? frames[1].bridge : null;
+      let r = a.goToPage(2 * Math.max(0, Math.floor(index || 0)));
+      sp.childPageCount = r.pageCount;
+      sp.pageCount = Math.max(1, Math.ceil(r.pageCount / 2));
+      const i = Math.max(0, Math.min(Math.floor(index || 0), sp.pageCount - 1));
+      if (r.pageIndex !== 2 * i) { r = a.goToPage(2 * i); }
+      if (b) {
+        if (2 * i + 1 < sp.childPageCount) { b.goToPage(2 * i + 1); setHidden(frames[1], false); }
+        else { setHidden(frames[1], true); }
+      }
+      return { pageIndex: i, slot: 0, pageCount: sp.pageCount, scrollLeft: 0, scrollTop: 0 };
+    }
+    function pageForFragment(fragment) {
+      if (kind === "vertical") {
+        const p = frames[0] && frames[0].bridge ? frames[0].bridge.pageForFragment(fragment) : null;
+        return p === null || p === undefined ? null : Math.floor(p / 2);
+      }
+      for (const f of frames) {
+        if (f.bridge && f.bridge.pageForFragment(fragment) !== null) { return 0; }
+      }
+      return null;
+    }
+    function cfiForPage(index, margins) {
+      if (kind === "vertical") {
+        const i = Math.max(0, Math.min(Math.floor(index || 0), sp.pageCount - 1));
+        const a = frames[0] && frames[0].bridge ? frames[0].bridge.cfiForPage(2 * i, margins) : null;
+        if (a) { return a; }
+        return frames[1] && frames[1].bridge && !frames[1].hidden ? frames[1].bridge.cfiForPage(2 * i + 1, margins) : null;
+      }
+      for (const f of frames) {
+        const cfi = f.bridge ? f.bridge.cfiForPage(0, { horizontal: 0, vertical: 0 }) : null;
+        if (cfi) { return cfi; }
+      }
+      return null;
+    }
+    function stepsMatch(a, b) {
+      if (a.length !== b.length) { return false; }
+      for (let k = 0; k < a.length; k++) {
+        if (a[k].id && b[k].id) { if (a[k].id !== b[k].id) { return false; } }
+        else if (a[k].index !== b[k].index) { return false; }
+      }
+      return true;
+    }
+    // The frame whose document a CFI addresses (by spine steps; a CFI without them goes to the first frame). null
+    // for a CFI of a document that is not in the wrapper.
+    function frameFor(cfiString) {
+      const parsed = CFI.parse(cfiString);
+      if (parsed && parsed[0].spineSteps.length) {
+        const found = frames.find(function (f) { return f.bridge && stepsMatch(f.spineSteps, parsed[0].spineSteps); });
+        if (found) { return found; }
+        if (kind !== "vertical") { return null; }
+      }
+      return frames.find(function (f) { return f.bridge; }) || null;
+    }
+    function pageFor(cfiString) {
+      const frame = frameFor(cfiString);
+      if (!frame) { return null; }
+      const p = frame.bridge.pageFor(cfiString);
+      if (p === null || p === undefined) { return null; }
+      return kind === "vertical" ? Math.floor(p / 2) : 0;
+    }
+    function rectsFor(cfiRange) {
+      if (kind === "vertical") {
+        let out = [];
+        for (const f of visibleFrames()) { out = out.concat(mapRects(f, f.bridge.rectsFor(cfiRange), true)); }
+        return out;
+      }
+      const frame = frameFor(cfiRange);
+      return frame ? mapRects(frame, frame.bridge.rectsFor(cfiRange), false) : [];
+    }
+    function setHighlights(list) {
+      list = list || [];
+      let applied = [];
+      for (const f of frames) {
+        if (!f.bridge) { continue; }
+        const mine = kind === "vertical" ? list : list.filter(function (item) { return frameFor(item.cfiRange) === f; });
+        for (const id of f.bridge.setHighlights(mine)) { if (applied.indexOf(id) < 0) { applied.push(id); } }
+      }
+      return applied;
+    }
+    function setTransientHighlight(cfiRange) {
+      let any = false;
+      const target = cfiRange && kind !== "vertical" ? frameFor(cfiRange) : null;
+      for (const f of frames) {
+        if (!f.bridge) { continue; }
+        const own = !cfiRange || kind === "vertical" || f === target;
+        if (f.bridge.setTransientHighlight(own ? cfiRange : null) && own) { any = true; }
+      }
+      return any;
+    }
+    function currentSelection() {
+      for (const f of frames) {
+        const s = f.bridge ? f.bridge.currentSelection() : null;
+        if (s) { return withRects(f, s); }
+      }
+      return null;
+    }
+    function clearSelection() {
+      for (const f of frames) { if (f.bridge) { f.bridge.clearSelection(); } }
+      return true;
+    }
+
+    window.__epubReader = {
+      version: 1,
+      isSpreadWrapper: true,
+      kind: kind,
+      layout: layout,
+      goToPage: goToPage,
+      pageForFragment: pageForFragment,
+      applySettings: layout,
+      cfiForPage: cfiForPage,
+      pageFor: pageFor,
+      rectsFor: rectsFor,
+      setHighlights: setHighlights,
+      setTransientHighlight: setTransientHighlight,
+      currentSelection: currentSelection,
+      clearSelection: clearSelection,
+      cfi: CFI,
+      pageCount: function () { return sp.pageCount; },
+      // Tests / diagnostics: where the frames are.
+      frameInfo: function () {
+        return frames.map(function (f) {
+          return { spineIndex: f.spineIndex, placement: f.placement, x: f.x, y: f.y, width: f.width, height: f.height, scale: f.scale, hidden: f.hidden, hasBridge: !!f.bridge };
+        });
+      },
+    };
+
+    ready.then(function (mode) {
+      sp.readySent = true;
+      post("ready", { writingMode: mode, readyState: document.readyState, href: location.href });
+    });
+  }
+
+  if (root().hasAttribute("data-reader-spread")) {
+    installSpreadController();
+    return;
+  }
+
   // --- selection ----------------------------------------------------------------------------------
 
   function selectionPayload() {
@@ -989,6 +1398,16 @@
 
   const fontsReady = (document.fonts && document.fonts.ready) ? document.fonts.ready.catch(function () {}) : Promise.resolve();
 
+  const readyPromise = Promise.all([whenLoaded(), fontsReady]).then(function () {
+    state.readySent = true;
+    watchForChanges();
+    const writingMode = detectWritingMode();
+    // href lets Swift drop a `ready` from a document that was replaced by a newer load before it finished.
+    // A framed document does not post: the spread wrapper waits for `whenReady` instead.
+    if (!framed) { post("ready", { writingMode: writingMode, readyState: document.readyState, href: location.href }); }
+    return { writingMode: writingMode };
+  });
+
   window.__epubReader = {
     version: 1,
     layout: layout,
@@ -1004,12 +1423,10 @@
     clearSelection: clearSelection,
     cfi: CFI,
     pageCount: function () { return state.pageCount; },
+    // Spread wrapper support (M4): the wrapper installs itself as the host of a framed document's events and waits
+    // for the document to be ready.
+    setHost: setHost,
+    whenReady: function () { return readyPromise; },
+    isFramed: framed,
   };
-
-  Promise.all([whenLoaded(), fontsReady]).then(function () {
-    state.readySent = true;
-    watchForChanges();
-    // href lets Swift drop a `ready` from a document that was replaced by a newer load before it finished.
-    post("ready", { writingMode: detectWritingMode(), readyState: document.readyState, href: location.href });
-  });
 })();

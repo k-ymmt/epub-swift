@@ -25,6 +25,9 @@ final class PaginationService {
 
     private var pageSize: CGSize = .zero
     private var settings = ReaderSettings()
+    /// The faces of the current layout (M4): a fixed-layout spread is measured as one wrapper document; its pages
+    /// are one book page each. Spine indices in the queue and the snapshots are the faces' leading indices.
+    private var plan = SpreadPlan(units: [])
     private var generation = -1
     private var currentSpineIndex: Int?
     private var queue: [Int] = []
@@ -77,9 +80,10 @@ final class PaginationService {
 
     /// (Re)starts for a layout. Results of loads that started under an earlier generation are dropped by the cache;
     /// the running load is cancelled here. Snapshots belong to one layout, so they are cleared.
-    func configure(pageSize: CGSize, settings: ReaderSettings, generation: Int, currentSpineIndex: Int?) {
+    func configure(pageSize: CGSize, settings: ReaderSettings, plan: SpreadPlan, generation: Int, currentSpineIndex: Int?) {
         self.pageSize = pageSize
         self.settings = settings
+        self.plan = plan
         self.generation = generation
         self.currentSpineIndex = currentSpineIndex
         renderer.setPageSize(pageSize)
@@ -140,26 +144,35 @@ final class PaginationService {
 
     // MARK: - Queue
 
+    private func unit(containing index: Int) -> SpreadPlan.Unit {
+        plan.unit(containing: index) ?? .reflowable(spineIndex: index, twoPages: false)
+    }
+
+    /// Leading spine indices of the faces after and before the face that holds `index`.
     private func neighbours(of index: Int) -> [Int] {
         let order = publication.readingOrder
+        let unit = unit(containing: index)
         var out: [Int] = []
-        if let next = order.dropFirst(index + 1).first(where: \.isLinear)?.index { out.append(next) }
-        if let previous = order.prefix(index).last(where: \.isLinear)?.index { out.append(previous) }
+        if let last = unit.spineIndices.max(), let next = order.dropFirst(last + 1).first(where: \.isLinear)?.index { out.append(next) }
+        if let first = unit.spineIndices.min(), let previous = order.prefix(first).last(where: \.isLinear)?.index { out.append(previous) }
         return out
     }
 
     private func buildQueue() -> [Int] {
         var out: [Int] = []
         if let current = currentSpineIndex { out = neighbours(of: current) }
-        for item in publication.linearReadingOrder where !out.contains(item.index) {
-            out.append(item.index)
+        for unit in plan.units where publication.readingOrder[unit.leadingSpineIndex].isLinear && !out.contains(unit.leadingSpineIndex) {
+            out.append(unit.leadingSpineIndex)
+        }
+        if plan.units.isEmpty {
+            for item in publication.linearReadingOrder where !out.contains(item.index) { out.append(item.index) }
         }
         return out
     }
 
     private func needsWork(_ index: Int) -> Bool {
         guard !failed.contains(index) else { return false }
-        if cache.pageCount(ofSpineIndex: index) == nil { return true }
+        if unit(containing: index).spineIndices.contains(where: { cache.pageCount(ofSpineIndex: $0) == nil }) { return true }
         if let current = currentSpineIndex, neighbours(of: current).contains(index), snapshots[index] == nil { return true }
         return false
     }
@@ -215,12 +228,14 @@ final class PaginationService {
     private func layOut(spineIndex: Int, generation: Int, token: Int) async throws {
         func stillCurrent() -> Bool { token == workerToken && generation == self.generation && !Task.isCancelled }
         guard stillCurrent() else { throw CancellationError() }
-        let item = publication.readingOrder[spineIndex]
-        let url = EPUBSchemeHandler.url(publicationID: container.id, path: item.path)
+        let unit = unit(containing: spineIndex)
+        let leading = unit.leadingSpineIndex
+        let url = SpreadDocument.url(publicationID: container.id, unit: unit)
+            ?? EPUBSchemeHandler.url(publicationID: container.id, path: publication.readingOrder[leading].path)
         let mode = try await withReady { renderer.load(url) }
         guard stillCurrent() else { throw CancellationError() }
         renderer.setWritingMode(mode)
-        _ = try await renderer.layout(LayoutParameters(pageSize: pageSize, settings: settings, spineSteps: publication.cfiSpineSteps(forSpineIndex: spineIndex)))
+        _ = try await renderer.layout(LayoutParameters(pageSize: pageSize, settings: settings, spineSteps: publication.cfiSpineSteps(forSpineIndex: leading)))
         guard stillCurrent() else { throw CancellationError() }
         // goToPage re-measures and positions page 0 (slot 0), whose snapshot the UI wants for a forward turn.
         let first = try await renderer.goToPage(0)
@@ -228,19 +243,21 @@ final class PaginationService {
         let wantsSnapshots = currentSpineIndex.map { neighbours(of: $0).contains(spineIndex) } ?? false
         var chapterSnapshots = ChapterSnapshots()
         if wantsSnapshots {
-            chapterSnapshots.first = try await pageSnapshot(slot: first.slot, spineIndex: spineIndex, pageIndex: 0)
+            chapterSnapshots.first = try await pageSnapshot(slot: first.slot, spineIndex: leading, pageIndex: 0)
             guard stillCurrent() else { throw CancellationError() }
             let last = try await renderer.goToPage(pageCount - 1)
             pageCount = last.pageCount
-            chapterSnapshots.last = try await pageSnapshot(slot: last.slot, spineIndex: spineIndex, pageIndex: last.pageIndex)
+            chapterSnapshots.last = try await pageSnapshot(slot: last.slot, spineIndex: leading, pageIndex: last.pageIndex)
         }
         guard stillCurrent() else { throw CancellationError() }
-        cache.store(spineIndex: spineIndex, pageCount: pageCount, generation: generation)
+        for index in unit.spineIndices {
+            cache.store(spineIndex: index, pageCount: unit.isFixedLayout ? 1 : pageCount, generation: generation)
+        }
         if wantsSnapshots {
-            snapshots[spineIndex] = chapterSnapshots
+            snapshots[leading] = chapterSnapshots
             onSnapshotsChanged?()
         }
-        onChapterMeasured?(spineIndex, pageCount)
+        onChapterMeasured?(leading, pageCount)
     }
 
     /// Runs `operation` and throws `ReaderError.loadTimeout` if it has not finished after `duration`. The operation

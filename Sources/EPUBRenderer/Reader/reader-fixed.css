@@ -1,0 +1,9 @@
+/* EPUB-Swift reader-fixed.css
+   Injected into pre-paginated (fixed-layout) documents instead of reader-before.css / reader-after.css
+   (docs/design/02-rendering.md §6.1, M4). A fixed-layout page is the publisher's design: no pagination columns,
+   no font or color overrides. Only what the reader itself needs. */
+
+/* Temporary highlight of a search result (reader.js `setTransientHighlight`). */
+::highlight(reader-transient) {
+  background-color: rgba(255, 170, 0, 0.45);
+}

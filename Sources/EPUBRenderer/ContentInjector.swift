@@ -14,6 +14,9 @@ enum ContentInjector {
         var rootStyle: String
         /// Whether to add `<meta name="viewport">` when the document has none (reflowable documents).
         var injectViewport: Bool
+        /// Fixed-layout document (M4): only `fixedStylesheetURL` is injected (no pagination CSS, no viewport, no
+        /// settings style), so the publisher's page design is left alone.
+        var fixedStylesheetURL: String? = nil
     }
 
     static let viewportMeta = #"<meta name="viewport" content="width=device-width, initial-scale=1"/>"#
@@ -24,11 +27,18 @@ enum ContentInjector {
             return (data, false)
         }
         let hadViewport = hasViewportMeta(text)
-        let head = "<link rel=\"stylesheet\" type=\"text/css\" href=\"\(escapeAttribute(injection.beforeStylesheetURL))\"/>"
-            + ((injection.injectViewport && !hadViewport) ? viewportMeta : "")
-        var tail = "<link rel=\"stylesheet\" type=\"text/css\" href=\"\(escapeAttribute(injection.afterStylesheetURL))\"/>"
-        if !injection.rootStyle.isEmpty {
-            tail += "<style id=\"__reader_settings\">\(injection.rootStyle)</style>"
+        let head: String
+        var tail: String
+        if let fixed = injection.fixedStylesheetURL {
+            head = ""
+            tail = "<link rel=\"stylesheet\" type=\"text/css\" href=\"\(escapeAttribute(fixed))\"/>"
+        } else {
+            head = "<link rel=\"stylesheet\" type=\"text/css\" href=\"\(escapeAttribute(injection.beforeStylesheetURL))\"/>"
+                + ((injection.injectViewport && !hadViewport) ? viewportMeta : "")
+            tail = "<link rel=\"stylesheet\" type=\"text/css\" href=\"\(escapeAttribute(injection.afterStylesheetURL))\"/>"
+            if !injection.rootStyle.isEmpty {
+                tail += "<style id=\"__reader_settings\">\(injection.rootStyle)</style>"
+            }
         }
 
         if let headOpen = range(ofTag: "head", in: text) {

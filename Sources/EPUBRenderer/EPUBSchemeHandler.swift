@@ -76,20 +76,28 @@ final class EPUBSchemeHandler: NSObject, WKURLSchemeHandler {
         }
         let path = ContainerPath.normalize(url.path.removingPercentEncoding ?? url.path)
 
+        if path == SpreadDocument.path {
+            serveSpreadDocument(url: url, container: container, task: urlSchemeTask, taskID: taskID)
+            return
+        }
         if path.hasPrefix("_reader/") {
             serveReaderResource(path: path, url: url, publicationID: publicationID, task: urlSchemeTask, taskID: taskID)
             return
         }
 
         let rootStyle = self.rootStyle
-        let isSpineItem = container.publication.spineIndex(ofPath: path) != nil
+        let spineIndex = container.publication.spineIndex(ofPath: path)
+        let isSpineItem = spineIndex != nil
         let mediaType = container.mediaType(forPath: path)
-        let isReflowable = container.publication.layout == .reflowable
+        // Per item (M4): a pre-paginated page gets only reader-fixed.css; the book-level layout decides for XHTML
+        // that is not in the spine.
+        let isFixedLayout = spineIndex.map { container.publication.readingOrder[$0].isFixedLayout } ?? (container.publication.layout == .prePaginated)
         let injection = ContentInjector.Injection(
             beforeStylesheetURL: Self.readerResourceURL(publicationID: publicationID, name: "reader-before.css"),
             afterStylesheetURL: Self.readerResourceURL(publicationID: publicationID, name: "reader-after.css"),
             rootStyle: rootStyle,
-            injectViewport: isReflowable
+            injectViewport: !isFixedLayout,
+            fixedStylesheetURL: isFixedLayout ? Self.readerResourceURL(publicationID: publicationID, name: "reader-fixed.css") : nil
         )
         Task { @MainActor [weak self] in
             guard let self else { return }
@@ -114,6 +122,19 @@ final class EPUBSchemeHandler: NSObject, WKURLSchemeHandler {
 
     func webView(_ webView: WKWebView, stop urlSchemeTask: any WKURLSchemeTask) {
         activeTasks.remove(ObjectIdentifier(urlSchemeTask))
+    }
+
+    // MARK: - Spread wrapper (M4)
+
+    /// `_reader/spread?kind=fixed&pages=3r,4l`: the wrapper document with one iframe per page (`SpreadDocument`).
+    private func serveSpreadDocument(url: URL, container: EPUBContainer, task: any WKURLSchemeTask, taskID: ObjectIdentifier) {
+        guard let parsed = SpreadDocument.parse(query: URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems),
+              let html = SpreadDocument.html(publication: container.publication, publicationID: container.id, kind: parsed.kind, pages: parsed.pages, rootStyle: rootStyle) else {
+            finish(task, taskID: taskID, response: Self.errorResponse(url: url, status: 404), data: nil)
+            return
+        }
+        let data = Data(html.utf8)
+        finish(task, taskID: taskID, response: Self.response(url: url, mediaType: "text/html", length: data.count), data: data)
     }
 
     // MARK: - Reader resources

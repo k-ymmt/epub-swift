@@ -37,6 +37,19 @@ public final class ReaderSession {
     /// Writing mode of the current document as reported by the bridge (M2: typed; was the raw CSS string in M1).
     public private(set) var writingMode: WritingMode = .horizontalTB
 
+    /// The face being shown (M4): one reflowable item, or one or two fixed-layout pages. nil until the first load.
+    private(set) var currentUnit: SpreadPlan.Unit?
+    /// How the reading order is cut into faces for the current viewport and `settings.spreadPolicy` (M4).
+    private(set) var spreadPlan = SpreadPlan(units: [])
+
+    /// Whether the visible face is laid out as two pages (a fixed-layout spread, or a reflowable chapter shown as
+    /// two facing pages; docs/design/03-api.md §3.2, M4). `false` for a single page.
+    public var isShowingSpread: Bool { currentUnit?.isTwoPageLayout ?? false }
+
+    /// Spine indices of the documents on the visible face, in reading order: one item, or the two pages of a
+    /// fixed-layout spread (M4). `currentSpineIndex` is the first of them.
+    public var visibleSpineIndices: [Int] { currentUnit?.spineIndices ?? (hasLoaded ? [currentSpineIndex] : []) }
+
     /// Whether pages progress right-to-left: `page-progression-direction="rtl"`, or a vertical-rl document when the
     /// package does not say otherwise. EPUBUI flips tap zones, swipes and the transition direction on this
     /// (docs/design/03-api.md §4.3).
@@ -168,6 +181,7 @@ public final class ReaderSession {
         self.container = container
         self.publication = container.publication
         self.settings = settings
+        self.spreadPlan = SpreadBuilder.plan(for: container.publication, policy: settings.spreadPolicy, viewportSize: .zero)
         let handler = EPUBSchemeHandler()
         self.schemeHandler = handler
         self.renderer = WebViewSpineRenderer(schemeHandler: handler)
@@ -245,13 +259,24 @@ public final class ReaderSession {
 
     public func go(toSpineIndex index: Int) async {
         guard publication.readingOrder.indices.contains(index) else { return }
-        await run { [self] in await loadChapter(index, target: .first) }
+        await run { [self] in
+            // The other page of the visible fixed-layout spread is already on screen.
+            if isShowing(spineIndex: index), isShowingWrapper, currentUnit?.isFixedLayout == true { return }
+            await loadChapter(index, target: .first)
+        }
     }
 
     /// Jumps to a table-of-contents entry (spine item plus optional fragment).
     public func go(to entry: TOCEntry) async {
         guard let spineIndex = entry.spineIndex ?? entry.href.flatMap({ publication.spineIndex(ofPath: $0) }) else { return }
-        await run { [self] in await loadChapter(spineIndex, target: entry.fragment.map { .fragment($0) } ?? .first) }
+        await run { [self] in
+            if isShowing(spineIndex: spineIndex), hasLoaded, let fragment = entry.fragment {
+                if let page = try? await renderer.pageForFragment(fragment) { await goToPageInChapter(page) }
+                return
+            }
+            if isShowing(spineIndex: spineIndex), isShowingWrapper, currentUnit?.isFixedLayout == true { return }
+            await loadChapter(spineIndex, target: entry.fragment.map { .fragment($0) } ?? .first)
+        }
     }
 
     /// Page `index` within the current chapter.
@@ -264,7 +289,7 @@ public final class ReaderSession {
     public func go(toPage index: Int) async {
         guard let location = pagination.location(ofPageIndex: index) else { return }
         await run { [self] in
-            if location.spineIndex == currentSpineIndex, hasLoaded {
+            if isShowing(spineIndex: location.spineIndex), hasLoaded {
                 await goToPageInChapter(location.pageIndex)
             } else {
                 await loadChapter(location.spineIndex, target: .page(location.pageIndex))
@@ -277,7 +302,7 @@ public final class ReaderSession {
     public func go(to cfi: CFI) async {
         guard let spineIndex = publication.spineIndex(of: cfi) else { return }
         await run { [self] in
-            if spineIndex == currentSpineIndex, hasLoaded {
+            if isShowing(spineIndex: spineIndex), hasLoaded {
                 let page = (try? await renderer.pageFor(cfi)) ?? nil
                 await goToPageInChapter(page ?? currentPageIndex)
             } else {
@@ -316,7 +341,9 @@ public final class ReaderSession {
                 guard let next = nextLinearSpineIndex(after: currentSpineIndex) else { return nil }
                 return paginationService.snapshot(firstPageOf: next)
             }
-            guard visibleSlot + 1 < WebViewSpineRenderer.slotCount else { return nil }
+            // A spread wrapper draws the whole face in slot 0 and has no neighbour slots (M4): the UI turns without
+            // a destination picture and shows the arrived page instead.
+            guard !isShowingWrapper, visibleSlot + 1 < WebViewSpineRenderer.slotCount else { return nil }
             pageIndex = currentPageIndex + 1
             slot = visibleSlot + 1
         case .previous:
@@ -324,7 +351,7 @@ public final class ReaderSession {
                 guard let previous = previousLinearSpineIndex(before: currentSpineIndex) else { return nil }
                 return paginationService.snapshot(lastPageOf: previous)
             }
-            guard visibleSlot - 1 >= 0 else { return nil }
+            guard !isShowingWrapper, visibleSlot - 1 >= 0 else { return nil }
             pageIndex = currentPageIndex - 1
             slot = visibleSlot - 1
         }
@@ -359,7 +386,6 @@ public final class ReaderSession {
 
     func loadChapter(_ spineIndex: Int, target: LoadTarget) async {
         guard publication.readingOrder.indices.contains(spineIndex), viewportSize.width > 0 else { return }
-        let item = publication.readingOrder[spineIndex]
         loadGeneration += 1
         let generation = loadGeneration
         isLoading = true
@@ -373,13 +399,17 @@ public final class ReaderSession {
         applyPageSize()
         schemeHandler.rootStyle = ContentInjector.rootStyle(settings: settings, pageSize: viewportSize, publicationID: container.id)
         selectLayout()
-        let url = EPUBSchemeHandler.url(publicationID: container.id, path: item.path)
-        logger.debug("load spine \(spineIndex) \(item.path)")
+        // The face that holds the item: a fixed-layout page loads through the spread wrapper, with its partner (M4).
+        let unit = spreadPlan.unit(containing: spineIndex) ?? .reflowable(spineIndex: spineIndex, twoPages: false)
+        let leading = unit.leadingSpineIndex
+        let url = SpreadDocument.url(publicationID: container.id, unit: unit)
+            ?? EPUBSchemeHandler.url(publicationID: container.id, path: publication.readingOrder[leading].path)
+        logger.debug("load spine \(spineIndex) unit \(unit.spineIndices) \(url.lastPathComponent)")
         do {
             let mode = try await withReady(generation: generation) { renderer.load(url) }
             // The frame's slot axis must match the document before it is measured (three pages tall for vertical writing).
             renderer.setWritingMode(mode)
-            let layout = try await renderer.layout(LayoutParameters(pageSize: viewportSize, settings: settings, spineSteps: publication.cfiSpineSteps(forSpineIndex: spineIndex)))
+            let layout = try await renderer.layout(LayoutParameters(pageSize: viewportSize, settings: settings, spineSteps: publication.cfiSpineSteps(forSpineIndex: leading)))
             guard generation == loadGeneration else { return }
             writingMode = layout.writingMode
             renderer.setWritingMode(layout.writingMode)
@@ -394,16 +424,17 @@ public final class ReaderSession {
             }
             let result = try await renderer.goToPage(targetPage)
             guard generation == loadGeneration else { return }
-            await applyHighlights(spineIndex: spineIndex)
+            await applyHighlights(for: unit)
             guard generation == loadGeneration else { return }
-            currentSpineIndex = spineIndex
+            currentUnit = unit
+            currentSpineIndex = leading
             chapterPageCount = result.pageCount
             currentPageIndex = result.pageIndex
             isLoading = false
             hasLoaded = true
             renderer.setContentHidden(false)
-            recordChapterMeasurement(spineIndex: spineIndex, pageCount: result.pageCount)
-            paginationService.setCurrentSpineIndex(spineIndex)
+            recordChapterMeasurement(unit: unit, pageCount: result.pageCount)
+            paginationService.setCurrentSpineIndex(leading)
             await refreshPosition()
         } catch {
             guard generation == loadGeneration else { return }
@@ -428,7 +459,7 @@ public final class ReaderSession {
             let result = try await renderer.goToPage(clamped)
             currentPageIndex = result.pageIndex
             chapterPageCount = result.pageCount
-            recordChapterMeasurement(spineIndex: currentSpineIndex, pageCount: result.pageCount)
+            recordChapterMeasurement(unit: currentUnit, pageCount: result.pageCount)
             await refreshPosition()
             return true
         } catch {
@@ -529,6 +560,14 @@ public final class ReaderSession {
         do {
             let anchor = (try? await renderer.cfiForPage(currentPageIndex, margins: settings.pageMargins)) ?? position?.cfi
             let ratio = chapterPageCount > 1 ? Double(currentPageIndex) / Double(chapterPageCount - 1) : 0
+            // The new viewport or policy may cut the reading order differently (single page ↔ spread, M4): then the
+            // face is reloaded at the same position instead of re-laid out in place.
+            if let unit = currentUnit, let replacement = spreadPlan.unit(containing: currentSpineIndex), replacement != unit {
+                // The anchor may sit on the second page of the spread (the first one blank): keep that page.
+                let anchorIndex = anchor.flatMap { publication.spineIndex(of: $0) }.flatMap { isShowing(spineIndex: $0) ? $0 : nil } ?? currentSpineIndex
+                await loadChapter(anchorIndex, target: anchor.map { .cfi($0) } ?? .page(currentPageIndex))
+                return
+            }
             applyPageSize()
             let layout = try await renderer.applySettings(LayoutParameters(pageSize: viewportSize, settings: settings, rootStyle: schemeHandler.rootStyle, spineSteps: publication.cfiSpineSteps(forSpineIndex: currentSpineIndex)))
             chapterPageCount = layout.pageCount
@@ -541,7 +580,7 @@ public final class ReaderSession {
             let result = try await renderer.goToPage(targetPage)
             currentPageIndex = result.pageIndex
             chapterPageCount = result.pageCount
-            recordChapterMeasurement(spineIndex: currentSpineIndex, pageCount: result.pageCount)
+            recordChapterMeasurement(unit: currentUnit, pageCount: result.pageCount)
             await refreshPosition()
         } catch {
             emit(.error(.scriptFailed(error.localizedDescription)))
@@ -564,7 +603,7 @@ public final class ReaderSession {
     /// Rectangles of a CFI range in the visible page's coordinate space: empty when the range is in another
     /// chapter or does not resolve. Rects on other pages of the chapter are outside the visible page's bounds.
     public func rects(for range: CFIRange) async -> [CGRect] {
-        guard hasLoaded, publication.spineIndex(of: range.start) == currentSpineIndex else { return [] }
+        guard hasLoaded, let spineIndex = publication.spineIndex(of: range.start), isShowing(spineIndex: spineIndex) else { return [] }
         do {
             return pageRects(fromViewport: try await renderer.rects(for: range))
         } catch {
@@ -575,11 +614,11 @@ public final class ReaderSession {
 
     // MARK: - Highlights
 
-    /// Draws the highlights of `spineIndex` (default: the current chapter), replacing the previous set.
-    private func applyHighlights(spineIndex: Int? = nil) async {
-        if spineIndex == nil { guard hasLoaded else { return } }
-        let index = spineIndex ?? currentSpineIndex
-        let visible = highlights.filter { publication.spineIndex(of: $0.range.start) == index }
+    /// Draws the highlights of the documents on `unit` (default: the visible face), replacing the previous set.
+    private func applyHighlights(for unit: SpreadPlan.Unit? = nil) async {
+        if unit == nil { guard hasLoaded else { return } }
+        let indices = Set(unit?.spineIndices ?? currentUnit?.spineIndices ?? [currentSpineIndex])
+        let visible = highlights.filter { publication.spineIndex(of: $0.range.start).map(indices.contains) ?? false }
         do {
             _ = try await renderer.setHighlights(visible)
         } catch {
@@ -608,7 +647,7 @@ public final class ReaderSession {
         keepTransientHighlight = true
         await go(to: result.range.start)
         keepTransientHighlight = false
-        guard hasLoaded, publication.spineIndex(of: result.range.start) == currentSpineIndex else { return }
+        guard hasLoaded, let spineIndex = publication.spineIndex(of: result.range.start), isShowing(spineIndex: spineIndex) else { return }
         await run { [self] in
             do {
                 try await renderer.setTransientHighlight(result.range)
@@ -643,12 +682,14 @@ public final class ReaderSession {
         guard spineIndex == currentSpineIndex, pageIndex == currentPageIndex else { return }
         // A page with nothing addressable (an empty page) keeps the chapter's last position, or falls back to the
         // chapter's body element so `position` is never nil once a chapter has loaded.
-        let fallback = position?.spineIndex == spineIndex ? position?.cfi : nil
+        let fallback = position.flatMap { isShowing(spineIndex: $0.spineIndex) ? $0.cfi : nil }
         let cfiToPublish = cfi ?? fallback ?? CFI(spineSteps: publication.cfiSpineSteps(forSpineIndex: spineIndex), steps: [CFI.Step(index: 4)])
+        // On a fixed-layout spread the first text may be on the second page (M4); the position names that document.
+        let positionSpineIndex = publication.spineIndex(of: cfiToPublish).flatMap { isShowing(spineIndex: $0) ? $0 : nil } ?? spineIndex
         let updated = ReadingPosition(
             cfi: cfiToPublish,
-            spineIndex: spineIndex,
-            chapterTitle: chapterTitle(forSpineIndex: spineIndex),
+            spineIndex: positionSpineIndex,
+            chapterTitle: chapterTitle(forSpineIndex: positionSpineIndex),
             progressionInChapter: chapterProgression,
             totalProgression: totalProgression
         )
@@ -682,18 +723,24 @@ public final class ReaderSession {
     /// and restarts pre-pagination for it; selecting a key seen before restores its measured counts at once.
     private func selectLayout() {
         guard viewportSize.width > 0, viewportSize.height > 0 else { return }
+        spreadPlan = SpreadBuilder.plan(for: publication, policy: settings.spreadPolicy, viewportSize: viewportSize)
         let key = LayoutKey(pageSize: viewportSize, settings: settings)
         if paginationCache.select(key) {
-            paginationService.configure(pageSize: viewportSize, settings: settings, generation: paginationCache.generation, currentSpineIndex: hasLoaded ? currentSpineIndex : nil)
+            paginationService.configure(pageSize: viewportSize, settings: settings, plan: spreadPlan, generation: paginationCache.generation, currentSpineIndex: hasLoaded ? currentSpineIndex : nil)
             rebuildPagination()
         }
     }
 
-    /// The display web view's own measurement of a chapter counts as a measured value for the current layout.
-    private func recordChapterMeasurement(spineIndex: Int, pageCount: Int) {
-        if paginationCache.store(spineIndex: spineIndex, pageCount: pageCount, generation: paginationCache.generation) {
-            rebuildPagination()
+    /// The display web view's own measurement of a face counts as a measured value for the current layout. Each
+    /// page of a fixed-layout face is one book page (M4).
+    private func recordChapterMeasurement(unit: SpreadPlan.Unit?, pageCount: Int) {
+        let unit = unit ?? .reflowable(spineIndex: currentSpineIndex, twoPages: false)
+        var changed = false
+        for index in unit.spineIndices {
+            let count = unit.isFixedLayout ? 1 : pageCount
+            if paginationCache.store(spineIndex: index, pageCount: count, generation: paginationCache.generation) { changed = true }
         }
+        if changed { rebuildPagination() }
     }
 
     private func rebuildPagination() {
@@ -725,7 +772,7 @@ public final class ReaderSession {
         case .pageCountChanged(let count):
             guard hasLoaded, !isLoading, count != chapterPageCount else { return }
             chapterPageCount = max(1, count)
-            recordChapterMeasurement(spineIndex: currentSpineIndex, pageCount: chapterPageCount)
+            recordChapterMeasurement(unit: currentUnit, pageCount: chapterPageCount)
             if currentPageIndex >= chapterPageCount {
                 enqueue { [weak self] in await self?.goToPageInChapter((self?.chapterPageCount ?? 1) - 1) }
             } else {
@@ -768,13 +815,15 @@ public final class ReaderSession {
         let path = ContainerPath.normalize(url.path.removingPercentEncoding ?? url.path)
         let fragment = url.fragment
         if let spineIndex = publication.spineIndex(ofPath: path) {
-            if spineIndex == currentSpineIndex, let fragment {
+            if isShowing(spineIndex: spineIndex), let fragment {
                 enqueue { [weak self] in
                     guard let self else { return }
                     if let page = try? await self.renderer.pageForFragment(fragment) {
                         await self.goToPageInChapter(page)
                     }
                 }
+            } else if isShowing(spineIndex: spineIndex), currentUnit?.isFixedLayout == true {
+                // The other page of the visible spread: nothing to load.
             } else {
                 enqueue { [weak self] in await self?.loadChapter(spineIndex, target: fragment.map { .fragment($0) } ?? .first) }
             }
@@ -785,12 +834,23 @@ public final class ReaderSession {
 
     // MARK: - Helpers
 
+    /// Whether `spineIndex` is one of the documents on the visible face.
+    private func isShowing(spineIndex: Int) -> Bool {
+        currentUnit?.contains(spineIndex: spineIndex) ?? (spineIndex == currentSpineIndex)
+    }
+
+    /// The visible face is a spread wrapper document (fixed layout), not the chapter itself (M4).
+    private var isShowingWrapper: Bool { currentUnit?.isFixedLayout ?? false }
+
+    /// First linear spine item after the face that holds `index` (M4: the partner page of a spread is skipped).
     private func nextLinearSpineIndex(after index: Int) -> Int? {
-        publication.readingOrder.dropFirst(index + 1).first(where: \.isLinear)?.index
+        let last = spreadPlan.unit(containing: index)?.spineIndices.max() ?? index
+        return publication.readingOrder.dropFirst(last + 1).first(where: \.isLinear)?.index
     }
 
     private func previousLinearSpineIndex(before index: Int) -> Int? {
-        publication.readingOrder.prefix(index).last(where: \.isLinear)?.index
+        let first = spreadPlan.unit(containing: index)?.spineIndices.min() ?? index
+        return publication.readingOrder.prefix(first).last(where: \.isLinear)?.index
     }
 
     private func emit(_ event: ReaderEvent) {
