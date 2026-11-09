@@ -16,6 +16,9 @@ enum Fixtures {
     static let childrensLiterature = url("childrens-literature.epub")
     static let kusamakura = url("kusamakura-japanese-vertical-writing.epub")
     static let wasteland = url("wasteland-otf-obf.epub")
+    static let coleVoyageOfLife = url("cole-voyage-of-life.epub")
+    static let haruko = url("haruko-html-jpeg.epub")
+    static let pageBlanche = url("page-blanche.epub")
 
     static func malformed(_ name: String) throws -> Data {
         try Data(contentsOf: url("malformed/\(name).xhtml"))
