@@ -208,6 +208,52 @@ final class WebViewSpineRenderer: NSObject, SpineRenderer {
         return result as? Int
     }
 
+    // MARK: - Positions, highlights, selection (02-rendering §4.1)
+
+    func cfiForPage(_ index: Int, margins: PageMargins) async throws -> CFI? {
+        let result = try await call(
+            "return window.__epubReader.cfiForPage(index, margins)",
+            arguments: ["index": index, "margins": ["horizontal": margins.horizontal, "vertical": margins.vertical]]
+        )
+        return (result as? String).flatMap(CFI.init)
+    }
+
+    func pageFor(_ cfi: CFI) async throws -> Int? {
+        let result = try await call("return window.__epubReader.pageFor(cfi)", arguments: ["cfi": cfi.description])
+        return result as? Int
+    }
+
+    func rects(for range: CFIRange) async throws -> [CGRect] {
+        let result = try await call("return window.__epubReader.rectsFor(cfiRange)", arguments: ["cfiRange": range.description])
+        return BridgeMessage.rects(from: result)
+    }
+
+    func setHighlights(_ highlights: [Highlight]) async throws -> [String] {
+        let list: [[String: Any]] = highlights.map { highlight in
+            let style: String
+            switch highlight.style {
+            case .background: style = "background"
+            case .underline: style = "underline"
+            }
+            return ["id": highlight.id.uuidString, "cfiRange": highlight.range.description, "color": highlight.style.color.cssString, "style": style]
+        }
+        let result = try await call("return window.__epubReader.setHighlights(list)", arguments: ["list": list])
+        return (result as? [String]) ?? []
+    }
+
+    func setTransientHighlight(_ range: CFIRange?) async throws {
+        _ = try await call("return window.__epubReader.setTransientHighlight(cfiRange)", arguments: ["cfiRange": range?.description as Any? ?? NSNull()])
+    }
+
+    func currentSelection() async throws -> BridgeSelection? {
+        let result = try await call("return window.__epubReader.currentSelection()")
+        return BridgeSelection(result)
+    }
+
+    func clearSelection() async throws {
+        _ = try await call("return window.__epubReader.clearSelection()")
+    }
+
     private static func layoutResult(from result: Any?) throws -> LayoutResult {
         guard let dict = result as? [String: Any], let pageCount = dict["pageCount"] as? Int else {
             throw ReaderError.scriptFailed("layout returned \(String(describing: result))")

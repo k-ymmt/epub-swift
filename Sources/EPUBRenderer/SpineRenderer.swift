@@ -33,6 +33,8 @@ struct LayoutParameters: Sendable {
     /// Replacement for the `<style id="__reader_settings">` the scheme handler injected at load time
     /// (`ContentInjector.rootStyle`), so that settings changes undo earlier overrides and add `@font-face` rules.
     var rootStyle: String? = nil
+    /// Spine steps of the document being laid out (`/6/14[xchapter_001]`), prefixed to the CFIs the script generates.
+    var spineSteps: [CFI.Step] = []
 
     var dictionary: [String: Any] {
         var dict: [String: Any] = [
@@ -50,6 +52,7 @@ struct LayoutParameters: Sendable {
         ]
         dict["fontFamily"] = ContentInjector.fontFamilyCSS(settings.font) ?? ""
         if let rootStyle { dict["rootStyle"] = rootStyle }
+        dict["spineSteps"] = CFI.render(steps: spineSteps)
         return dict
     }
 }
@@ -68,6 +71,10 @@ enum BridgeMessage: Sendable {
     case pageCountChanged(Int)
     case link(href: String, isExternal: Bool)
     case tap(x: Double, y: Double)
+    /// A tap inside a drawn highlight. Rects are in the web view's viewport coordinates.
+    case highlightTap(id: String, rects: [CGRect])
+    /// The document selection changed; nil when it was cleared or collapsed.
+    case selectionChanged(BridgeSelection?)
 
     init?(body: Any) {
         guard let dict = body as? [String: Any], let type = dict["type"] as? String else { return nil }
@@ -83,9 +90,39 @@ enum BridgeMessage: Sendable {
             self = .link(href: href, isExternal: payload["isExternal"] as? Bool ?? false)
         case "tap":
             self = .tap(x: payload["x"] as? Double ?? 0, y: payload["y"] as? Double ?? 0)
+        case "highlightTap":
+            guard let id = payload["id"] as? String else { return nil }
+            self = .highlightTap(id: id, rects: BridgeMessage.rects(from: payload["rects"]))
+        case "selectionChanged":
+            self = .selectionChanged(BridgeSelection(payload["selection"]))
         default:
             return nil
         }
+    }
+
+    /// `[{x, y, width, height}]` → rects.
+    static func rects(from value: Any?) -> [CGRect] {
+        guard let list = value as? [[String: Any]] else { return [] }
+        return list.compactMap { dict in
+            guard let x = dict["x"] as? Double, let y = dict["y"] as? Double,
+                  let width = dict["width"] as? Double, let height = dict["height"] as? Double else { return nil }
+            return CGRect(x: x, y: y, width: width, height: height)
+        }
+    }
+}
+
+/// `{cfiRange, text, rects}` from `currentSelection` / `selectionChanged`. Rects are viewport coordinates.
+struct BridgeSelection: Sendable {
+    var range: CFIRange
+    var text: String
+    var rects: [CGRect]
+
+    init?(_ value: Any?) {
+        guard let dict = value as? [String: Any], let cfi = dict["cfiRange"] as? String, let range = CFIRange(cfi),
+              let text = dict["text"] as? String else { return nil }
+        self.range = range
+        self.text = text
+        self.rects = BridgeMessage.rects(from: dict["rects"])
     }
 }
 
@@ -119,6 +156,18 @@ protocol SpineRenderer: AnyObject {
     func captureAnchor(slot: Int, margins: PageMargins) async throws -> Bool
     func pageForAnchor() async throws -> Int?
     func pageForFragment(_ fragment: String) async throws -> Int?
+    /// CFI of the first text on page `index` (nil for a page without content).
+    func cfiForPage(_ index: Int, margins: PageMargins) async throws -> CFI?
+    /// Page that contains the position of `cfi` (a point, or the start of a range); nil when it does not resolve.
+    func pageFor(_ cfi: CFI) async throws -> Int?
+    /// Client rects (viewport coordinates of the three-slot frame) of a CFI range.
+    func rects(for range: CFIRange) async throws -> [CGRect]
+    /// Draws the highlights (replacing the previous set). Returns the ids that resolved.
+    func setHighlights(_ highlights: [Highlight]) async throws -> [String]
+    /// Draws (or with nil, removes) the single temporary highlight.
+    func setTransientHighlight(_ range: CFIRange?) async throws
+    func currentSelection() async throws -> BridgeSelection?
+    func clearSelection() async throws
     /// Snapshot of the page in `slot` (0, 1 or 2 within the frame).
     func snapshot(slot: Int) async throws -> (image: CGImage, scale: CGFloat)?
     /// The slot currently aligned with the visible area.

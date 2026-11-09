@@ -315,7 +315,7 @@ public final class ReaderSession {
             let mode = try await withReady(generation: generation) { renderer.load(url) }
             // The frame's slot axis must match the document before it is measured (three pages tall for vertical writing).
             renderer.setWritingMode(mode)
-            let layout = try await renderer.layout(LayoutParameters(pageSize: viewportSize, settings: settings))
+            let layout = try await renderer.layout(LayoutParameters(pageSize: viewportSize, settings: settings, spineSteps: publication.cfiSpineSteps(forSpineIndex: spineIndex)))
             guard generation == loadGeneration else { return }
             writingMode = layout.writingMode
             renderer.setWritingMode(layout.writingMode)
@@ -461,7 +461,7 @@ public final class ReaderSession {
             let anchored = try await renderer.captureAnchor(slot: renderer.visibleSlot, margins: settings.pageMargins)
             let ratio = chapterPageCount > 1 ? Double(currentPageIndex) / Double(chapterPageCount - 1) : 0
             applyPageSize()
-            let layout = try await renderer.applySettings(LayoutParameters(pageSize: viewportSize, settings: settings, rootStyle: schemeHandler.rootStyle))
+            let layout = try await renderer.applySettings(LayoutParameters(pageSize: viewportSize, settings: settings, rootStyle: schemeHandler.rootStyle, spineSteps: publication.cfiSpineSteps(forSpineIndex: currentSpineIndex)))
             chapterPageCount = layout.pageCount
             var targetPage = min(currentPageIndex, layout.pageCount - 1)
             if anchored, let page = try await renderer.pageForAnchor() {
@@ -545,6 +545,8 @@ public final class ReaderSession {
                 ? (pageX < viewportSize.width * 0.25 ? .leading : (pageX >= viewportSize.width * 0.75 ? .trailing : .center))
                 : .center
             emit(.tapped(point, zone: zone))
+        case .highlightTap, .selectionChanged:
+            break // M3 step 3 wires these to ReaderEvent
         }
     }
 

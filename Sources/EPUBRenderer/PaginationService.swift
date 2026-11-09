@@ -220,7 +220,7 @@ final class PaginationService {
         let mode = try await withReady { renderer.load(url) }
         guard stillCurrent() else { throw CancellationError() }
         renderer.setWritingMode(mode)
-        _ = try await renderer.layout(LayoutParameters(pageSize: pageSize, settings: settings))
+        _ = try await renderer.layout(LayoutParameters(pageSize: pageSize, settings: settings, spineSteps: publication.cfiSpineSteps(forSpineIndex: spineIndex)))
         guard stillCurrent() else { throw CancellationError() }
         // goToPage re-measures and positions page 0 (slot 0), whose snapshot the UI wants for a forward turn.
         let first = try await renderer.goToPage(0)

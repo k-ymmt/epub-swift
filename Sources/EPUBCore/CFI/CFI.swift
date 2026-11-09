@@ -95,7 +95,8 @@ public struct CFI: Hashable, Codable, Sendable, Comparable, LosslessStringConver
         return out
     }
 
-    static func render(steps: [Step]) -> String {
+    /// `/6/4[id]...` for a list of steps.
+    public static func render(steps: [Step]) -> String {
         var out = ""
         for step in steps {
             out += "/\(step.index)"

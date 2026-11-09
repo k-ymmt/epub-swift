@@ -98,3 +98,9 @@ ruby {
   padding: 0;
   border: 0;
 }
+
+/* Temporary highlight of a search result (reader.js `setTransientHighlight`, CSS Custom Highlight API).
+   Persistent highlights get their own `::highlight(reader-h-<id>)` rules from reader.js. */
+::highlight(reader-transient) {
+  background-color: rgba(255, 170, 0, 0.45);
+}

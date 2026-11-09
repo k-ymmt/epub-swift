@@ -21,7 +21,7 @@ public actor SearchService {
         guard preparation == nil else { return }
         preparation = Task { [weak self] in
             guard let self else { return }
-            for item in await self.publication.readingOrder {
+            for item in self.publication.readingOrder {
                 if Task.isCancelled { return }
                 _ = await self.textMap(forSpineIndex: item.index)
                 await Task.yield()
