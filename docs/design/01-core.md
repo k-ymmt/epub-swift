@@ -58,6 +58,11 @@ libxml2 の recover は使わない。読めなければ `EPUBError.invalidPacka
 `linear="no"` の itemref は reading order に含めるが `isLinear = false` を付ける。ページ番号の
 計算には含めず、リンクで到達したときだけ表示する。
 
+M4 で変更: `rendition:orientation`（書籍既定）と itemref の `rendition:spread-*` / `rendition:orientation-*` 上書きは
+M3 まで読み飛ばしていたが、`Publication.orientation` / `SpineItem.spread` / `SpineItem.orientation` に入れた。
+`orientation` は読むだけで、ライブラリは端末の向きを固定しない。`rendition:page-spread-center` は接頭辞なしの
+`page-spread-center` と同じく `SpreadPosition.center` にする。
+
 ### 2.3 nav 文書
 
 `properties="nav"` の manifest item を XHTML として読み、`nav[epub:type]` のうち `toc`、
@@ -103,6 +108,7 @@ public struct Publication: Sendable {
     public let landmarks: [TOCEntry]
     public let layout: RenditionLayout            // reflowable / prePaginated（書籍既定）
     public let spread: RenditionSpread            // auto / none / landscape / both
+    public let orientation: RenditionOrientation  // auto / landscape / portrait（M4 で追加。読むだけ）
     public let pageProgression: PageProgression   // ltr / rtl / default
     public let coverImagePath: String?
     public let warnings: [PublicationWarning]
@@ -116,9 +122,24 @@ public struct SpineItem: Sendable, Identifiable {
     public let isLinear: Bool
     public let layout: RenditionLayout    // itemref で上書きされた値を反映
     public let spreadPosition: SpreadPosition?   // left / right / center
+    public let spread: RenditionSpread?          // itemref の rendition:spread-*。nil なら書籍既定（M4）
+    public let orientation: RenditionOrientation? // itemref の rendition:orientation-*（M4。読むだけ）
+    public let viewport: FixedLayoutViewport?    // <meta name="viewport"> の width / height（M4）
     public let characterCount: Int?       // 開いた時点で埋まる。ページ数推定に使う
+    public var isFixedLayout: Bool { layout == .prePaginated }
+}
+
+public struct FixedLayoutViewport: Sendable, Hashable {   // M4
+    public var width: Double
+    public var height: Double
+    public init?(metaContent: String)     // "width=1024,height=697"（区切りは , か ;、px 接尾辞可。両方正の数でなければ nil）
+    public init?(document: XMLDocument)   // head 内（なければ文書全体）の最初の meta[name=viewport]
 }
 ```
+
+`viewport` は `characterCount` と同じ走査（§4 の軽量 DOM）で全 spine item から読む（M4 で追加）。FXL（`prePaginated`）の
+文書に viewport meta がなければ `PublicationWarning.missingViewport` を開いた時点で出し、Renderer は可視領域の大きさを
+ページサイズとして描く。`width=device-width` のようなリフロー用の値は FXL の viewport とみなさない。
 
 `characterCount` は `EPUBContainer` を開くときに全 spine item の XHTML を軽量 DOM（§4）で読み、`TextLength.characterCount`
 で数えて埋める（M2 で変更。当初は検索インデックス構築時に埋める予定だった）。`body` 配下のテキストノードの文字数で、
@@ -307,6 +328,7 @@ public enum PublicationWarning: Sendable {
     case malformedEncryptionXML                              // M2 で追加。encryption.xml が XML として読めない
     case unknownMediaType(path: String)
     case duplicateManifestID(id: String)
+    case missingViewport(path: String)                       // FXL 文書に <meta name="viewport"> がない（M4 で Core が開いた時点で出す。M1〜M3 は配信時に Renderer が出していた）
 }
 ```
 

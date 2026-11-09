@@ -39,6 +39,11 @@ WebView 側:
 
 見開き時は「ページ」を「見開き 1 面」と読み替え、フレームは見開き 3 面分になる。
 
+M4 で変更: 見開きラッパー文書（§6.1）はフレームのスロット 0 だけを使い、自分では横にスクロールしない（FXL の面は常に
+1 ページ、縦書きラッパーは 2 つの iframe の `scrollTop` を動かす）。そのためラッパー表示中は章内の前後ページを隣のスロットから
+撮れず、`pageSnapshot(.next / .previous)` は章内でも nil を返す（EPUBUI は到着後のページを撮って演出する。§7.2 の
+destinationPending 経路）。横書きリフローの見開きは多段組 2 本の文書そのものなので、3 スロットがそのまま 3 面になる。
+
 縦書きのフレームは高さを 3 ページ分にし、幅はページ幅に固定する（段は縦に積まれるため、幅を広げる理由がない）。
 
 フレームが 3 ページ分あるため、文書の `scrollWidth`（縦書きは `scrollHeight`）はビューポート幅の 3 ページ分が下限になり、
@@ -64,8 +69,13 @@ Swift 側は iOS で `scrollView.setContentOffset(_:animated: false)` を同じ�
 epub://<publicationID>/<コンテナ内パス>
 epub://<publicationID>/_reader/css/<name>.css
 epub://<publicationID>/_reader/fonts/<name>
-epub://<publicationID>/_reader/spread?left=<path>&right=<path>
+epub://<publicationID>/_reader/spread?kind=<fixed|vertical>&pages=<spineIndex><l|r|f>[,<spineIndex><l|r|f>]
 ```
+
+M4 で変更: ラッパーの引数はパスではなく spine index と配置（`l` 左半分 / `r` 右半分 / `f` 面全体）にした。
+例: `?kind=fixed&pages=1r,2l`（右綴じの見開き。読み順で p02 が右、p03 が左）、`?kind=vertical&pages=5r,5l`
+（縦書き章 5 を 2 フレームで）。`kind=fixed` は FXL、`kind=vertical` は縦書きリフローの見開き。`WebViewSpineRenderer.load`
+が付ける `__reader_load` クエリは既存のクエリに追記する。
 
 - `publicationID` はライブラリが払い出した UUID（00-overview §5.3）。`EPUBSchemeHandler` は
   `PublicationRegistry` でこの ID から `EPUBContainer` を引く。
@@ -111,6 +121,14 @@ JS で後から挿入する方法はカスケード順と初回描画のちら�
 リフロー文書は通常この meta を持たず、iOS の WKWebView はそれがないとレイアウトビューポートを 980 px にして
 多段組を縮小表示し、ページ境界が崩れる（05-spike-results §3）。文書が自前の viewport meta を持つ場合（FXL 文書）はそのまま通し、
 FXL 文書に meta がなければ警告する（FXL 仕様では必須）。
+
+M4 で変更: 注入の判断は書籍既定ではなく spine item ごとの `SpineItem.isFixedLayout` で行う（cole は本文がリフロー、
+絵画のページだけ FXL）。FXL 文書には before / after CSS、viewport meta、設定の `<style>` のどれも注入せず、
+`_reader/css/reader-fixed.css`（一時ハイライトの `::highlight()` 規則だけ）を `</head>` 直前に入れる。FXL のページは
+出版社のデザインそのものなので、フォント・色・余白の上書きは当てない（ダークテーマの減光も当てない）。
+viewport meta の有無の警告は Core が開いた時点で出す（01-core §7）。リフロー文書に注入する viewport meta には
+`user-scalable=no` を付け、iOS の WKWebView がピンチで拡大しないようにする（ズームは FXL の面だけ。§6.3）。
+見開きラッパー（§6.1）の viewport は FXL なら `maximum-scale=4`、縦書きリフローなら `user-scalable=no`。
 
 ### 3.3 整形式でない XHTML
 
@@ -208,7 +226,7 @@ Swift は縦書きの通知を受けるとフレームを 3 ページ分の高�
 
 | 関数 | 役割 |
 |---|---|
-| `layout({pageWidth, pageHeight, columnsPerPage, margins, ...})` | CSS 変数を更新し、`writing-mode` を判定して `{pageCount, writingMode}` を返す。`writingMode` は CSS の値（`horizontal-tb` / `vertical-rl` / `vertical-lr`） |
+| `layout({pageWidth, pageHeight, columnsPerPage, fixedLayout, margins, ...})` | CSS 変数を更新し、`writing-mode` を判定して `{pageCount, writingMode, columnsPerPage}` を返す。`writingMode` は CSS の値（`horizontal-tb` / `vertical-rl` / `vertical-lr`）。M4: `columnsPerPage`（1 / 2）は `--reader-columns` に入れる。縦書きでは常に 1 にして、実際の値を返す。`fixedLayout: true`（ラッパー内の FXL ページ）ならセンチネルも段組みも使わず `pageCount = 1` |
 | `goToPage(index)` | ページ数を測り直してから index をクランプし、スクロール位置を設定する。`{pageIndex, slot, pageCount, scrollLeft, scrollTop}` を返す（§1.2 のスロットと iOS の同期に使う） |
 | `pageForFragment(id)` | 文書内リンクと目次の `#fragment` が指す要素のページを返す |
 | `pageFor(cfi)` | CFI（点、または範囲の始点）を Range に解決し、その文字（要素なら要素）の矩形からページ番号を返す。解決できなければ null |
@@ -223,6 +241,17 @@ Swift は縦書きの通知を受けるとフレームを 3 ページ分の高�
 `layout` は `spineSteps`（`/6/4[chap01]` の形）も受け取り、生成する CFI の先頭に付ける。
 M3 で変更: `captureAnchor` / `pageForAnchor`（M1〜M2 の DOM アンカー）は削除した。`cfiForVisibleRange()` は
 使い道がまだないので実装していない。
+
+M4 で追加: `reader.js` は `forMainFrameOnly: false` で登録し、見開きラッパー（§6.1）の iframe の中でも動く。
+iframe 内の文書（`window.top !== window`）は Swift にメッセージを送らず、`setHost(fn)`（イベントの送り先）と
+`whenReady()`（`load` と `fonts.ready` 後に `{writingMode}` で解決）を公開する。ラッパー文書（`html[data-reader-spread]`）では
+同じスクリプトが「見開きコントローラ」になり、上の表と同じ API を Swift に見せる: 各 iframe の `load` → `whenReady()` を待って
+`ready` を送り、`layout` で iframe を配置・スケールしてから各 iframe の `layout` を呼び、`pageFor` / `rectsFor` /
+`setHighlights` / `setTransientHighlight` は CFI の spine ステップで iframe を選んで転送（id があれば id、なければ index で照合）、
+`cfiForPage` は読み順で最初の iframe から順に聞く。iframe から受けた `tap` / `highlightTap` / `selectionChanged` の座標は
+`iframe の位置 + 座標 × scale` でラッパー座標に直す（縦書きラッパーでは iframe の枠でクリップする）。親の reader ワールドから
+`iframe.contentWindow.__epubReader` が見えること（WebKit の content world はフレームをまたいで同じワールドの
+グローバルを共有する）は M4 の最初にスパイクで確認した。テスト用に `frameInfo()`（各 iframe の位置・大きさ・scale）を持つ。
 
 ### 4.2 JS → Swift
 
@@ -241,6 +270,11 @@ M3 で変更: `captureAnchor` / `pageForAnchor`（M1〜M2 の DOM アンカー�
 
 `a` のクリックは常に `preventDefault` し、ナビゲーションは Swift が決める。
 `WKNavigationDelegate.decidePolicyFor` でも初回読み込み以外は `.cancel` にして二重に防ぐ。
+
+M4 で変更: iframe 内の文書はこれらのメッセージを Swift に送らない（ホストに渡し、ラッパーが座標を直して送る。
+ホストがない iframe、つまり本文中の iframe はどこにも送らない）。ラッパーの `ready` は全 iframe の準備が終わってから、
+`writingMode` は縦書きラッパーなら中の文書の値、FXL なら `horizontal-tb`。縦書きラッパーの `pageCountChanged` は
+中の文書のページ数を 2 で割って切り上げた面数で送る。
 
 ### 4.3 CFI の JS 実装
 
@@ -288,6 +322,11 @@ M2 で決めた推定の規則: 比率を学習するのは 500 文字以上の�
 整数に丸めたページサイズ、見開き有無、`ReaderSettings.layoutKey`（フォント、サイズ、行間、余白）。テーマ色は含めない。
 `ReaderSession.totalProgression` は `BookPagination` のページ番号から求める（確定前は推定値ベース）。
 
+M4 で変更: 見開き有無は `LayoutKey.isSpread`（`SpreadPlan.hasTwoPageReflow`。リフロー章を 2 ページの面で見せるか）として
+入れた。ページサイズと `spreadPolicy` から決まる値だが、キーに明示する。見開きのときは 1 面に 2 ページ分の文字が
+入るので、推定の初期値（600 / 500 文字）を 2 倍にする。FXL のページは 1 spine item = 1 ページで数える（見開きの 2 ページは
+書籍ページ 2 つ。`currentPage` は面の先頭ページ）。見開き面の計測値は面の全メンバーに書く。
+
 ### 5.3 位置の復元
 
 読書位置は常に CFI（表示ページ先頭の `cfiForPage`）で持つ。設定変更、リサイズ、章の再読み込みの後は
@@ -319,6 +358,19 @@ FXL の spine item、および縦書き + 見開きのときは、ライブラ�
 - 縦書き + 見開き: 同じ spine item を 2 つの iframe に読み込み、左右で隣接ページに `scrollTop` を合わせる。
   文書を 2 回レイアウトするのでメモリは 2 倍になる。選択は iframe をまたげない（制限として受け入れる）。
 
+M4 で変更・確定した点:
+
+- ラッパーは `SpreadDocument`（EPUBRenderer）が生成する。`<html data-reader-spread="fixed|vertical" data-reader-progression="ltr|rtl">`
+  の下に `#__reader_stage` と iframe（`data-order` / `data-spine-index` / `data-spine-steps` / `data-width` / `data-height` /
+  `data-placement`、`scrolling="no"`）を置く。iframe は配置が終わるまで `visibility: hidden`。ラッパー自身は `text/html` で配信し、
+  viewport meta を持つ。`reader.js` は iframe の中でも動くので、中の文書も通常どおり注入済みの XHTML を読む（§3.2）。
+- FXL の面: 各 iframe を `viewport` の大きさ（`data-width` / `data-height`。viewport がない文書は可視領域の大きさ）で作り、
+  面の幅（単独なら全幅、ペアなら半分ずつ）と高さに収まる `scale` を取る。ペアは 2 ページで同じ scale を使い、全体を中央に置く。
+  左右どちらかだけの面（`l` / `r`）は中央線に接して置き、`f`（全面）は面の中央に置く。
+- 縦書きの面 k は中の文書のページ 2k（右）と 2k+1（左）を 2 つの iframe（各 W/2 × H）で見せ、面数は ceil(ページ数 / 2)。
+  最後の面が 1 ページなら 2 つ目の iframe を隠す。`vertical-rl` では最初のページが右、`vertical-lr` では左。
+- ラッパーはスロット 0 だけを使い、前後の面を隣のスロットには置かない（§1.2）。
+
 ### 6.2 見開きの組み立て
 
 `SpreadBuilder` が spine と `ReaderSettings`、可視領域の縦横比から「面の列」を作る。
@@ -329,10 +381,38 @@ FXL の spine item、および縦書き + 見開きのときは、ライブラ�
 - `center` は単独の面にする。
 - リフロー + 横書きの見開きは多段組 2 本（§3.4）でラッパーを使わない。
 
+M4 で変更・確定した点（`SpreadBuilder.plan(for:policy:viewportSize:)` → `SpreadPlan`）:
+
+- `SpreadPlan.Unit` は `.reflowable(spineIndex:twoPages:)` か `.fixed(pages: [FixedPage])`（`FixedPage` は spine index と
+  `placement: left / right / full`）。`ReaderSession.currentUnit` が今表示している面で、`visibleSpineIndices` / `isShowingSpread` は
+  そこから出す。
+- 見開きにするかは `ReaderSettings.spreadPolicy`（`auto` = 横長なら見開き、`never`、`always`）と書籍の `rendition:spread`
+  （`none` なら常に単ページ。`landscape` / `both` / `auto` は `auto` 扱い）で決める。itemref の `rendition:spread-*` 上書きも読む。
+  `rendition:orientation` は読むが、端末の向きの固定は行わない。
+- 単ページのとき FXL は `full` で 1 ページずつ、リフローは `twoPages = false`。
+- 見開きのとき: `page-spread-*` の指定どおりに置き、連続する FXL の線形 item で左右が噛み合えば 1 面にする。指定がない FXL
+  ページは「前の面の反対側」から始めて交互に置く（右綴じなら最初は右、左綴じなら左。これは「最初のページを左 / 右」の
+  上の記述を改めたもの。表紙や最初のページは綴じ側の反対に置くのが一般的なため）。`center` と `linear="no"` は単独の面。
+  リフロー item は `twoPages = true` で 1 面（横書きなら 2 段、縦書きならラッパー）。
+- 面をまたぐ判定（`unit(containing:)`、`isShowing(spineIndex:)`）で、見開きの右ページへの `go(toSpineIndex:)` / CFI 移動は
+  読み込み直しをしない。リサイズで単ページ ⇄ 見開きが変わるときは現在の CFI（`position`）の spine item を含む面を読み直す。
+
 ### 6.3 ズーム
 
 FXL のときだけ iOS の `scrollView.pinchGestureRecognizer` と macOS の `allowsMagnification` を有効にする。
 ズーム中はページめくりジェスチャを無効にし、倍率が 1 に戻ったら再開する。
+
+M4 で確定した点: `SpineRenderer` に `setZoomEnabled(_:)` / `resetZoom()` / `onZoomChanged` を足し、`ReaderSession` は面を
+読み込むたびに `setZoomEnabled(unit.isFixedLayout)` と `resetZoom()` を呼ぶ。倍率が 1.01 を超えたら `isZoomed = true` で
+`ReaderEvent.zoomChanged(true)` を送り、EPUBUI はスワイプ・トラックパッド・タップめくりを止める（`resetZoom()` で戻せる）。
+iOS では WebKit が viewport meta から scroll view の倍率範囲を決め直すので、`maximumZoomScale` を Swift から設定するのではなく
+viewport meta で制御する（§3.2。FXL ラッパーは `maximum-scale=4`、それ以外は `user-scalable=no`）。WKWebView の scroll view は
+ピンチ中に `zoomScale` の KVO を出さず、`pinchGestureRecognizer` も拡大可能になるまで nil なので、各文書の読み込み完了
+（`didFinish`）と許可の切り替えのたびに認識器を取り直してターゲットを足し、`isEnabled` を合わせる（iOS 27 Simulator で確認）。
+ズーム中だけ `scrollView.isScrollEnabled = true` にしてパンできるようにする。
+macOS は `ReaderWebView` が `magnification` / `setMagnification(_:centeredAt:)` / `magnify(with:)` / `smartMagnify(with:)` を
+上書きして `onMagnificationChanged` を出す。ズームはラッパー文書全体に掛かる（3 スロット幅のフレームごと動く。
+FXL の面はスロット 0 だけなので実害はないが、パンの範囲は面より広い。`TODO.md` 参照）。
 
 ## 7. スナップショットとめくり演出
 
@@ -383,7 +463,9 @@ iOS の `takeSnapshot` は画面に合成された見た目を撮る（macOS は
 ### 8.2 無効化
 
 `layoutKey` が変わる（設定変更、リサイズ、見開き切り替え）たびに `PaginationCache.select` が世代番号を上げ、
-古い世代の結果は `store` が捨てる。進行中の読み込みは `configure` でキャンセルし、隣接章のスナップショットも
+古い世代の結果は `store` が捨てる。M4 で変更: `configure` は `SpreadPlan` も受け取り、面（`Unit`）単位で読み込む。FXL の面は
+ラッパー URL を読み、メンバーの各 spine item に 1 ページずつ書く。縦書きリフローはまず単文書で読み、`writingMode` が縦書きで
+見開きの面なら縦書きラッパーで読み直す（`lastWritingMode` を次回のヒントにする）。進行中の読み込みは `configure` でキャンセルし、隣接章のスナップショットも
 捨てる（別レイアウトの画像だから）。キャッシュは `layoutKey` ごとに保持するので、設定を戻せば即座に確定値に戻る。
 ページサイズは整数 pt に丸めてキーにする（SwiftUI のレイアウトの端数で世代が変わらないように）。
 
@@ -433,7 +515,7 @@ sequenceDiagram
     participant J as reader.js
     S->>W: load(epub://id/OEBPS/ch01.xhtml)
     W->>H: GET ch01.xhtml
-    H->>H: 原文または修復済み XHTML（§3.3）に viewport meta と before/after CSS を注入
+    H->>H: 原文または修復済み XHTML（§3.3）に viewport meta と before/after CSS を注入（FXL は reader-fixed.css だけ。M4）
     H-->>W: 200 application/xhtml+xml
     W->>H: GET css / fonts / images
     W->>J: DOMContentLoaded（WKUserScript）

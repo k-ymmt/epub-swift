@@ -73,6 +73,10 @@ M2: `data(at:)` は `encryption.xml` に登録されたフォントの難読化�
 01-core §3 のとおり。`Metadata` は `title`、`authors: [String]`、`language`、`identifier`、
 `publisher`、`modified: Date?`、`rawMetadata: [String: [String]]`（property → 値）を持つ。
 
+M4 で追加: `Publication.orientation: RenditionOrientation`、`SpineItem.spread: RenditionSpread?` /
+`orientation: RenditionOrientation?` / `viewport: FixedLayoutViewport?` / `isFixedLayout`、`FixedLayoutViewport`
+（`width` / `height`、`init?(metaContent:)`）、`PublicationWarning.missingViewport(path:)`（01-core §3、§7）。
+
 ### 2.3 `CFI` / `CFIRange`
 
 01-core §5。`Codable` は文字列 1 つにエンコードする（`"epubcfi(...)"`）。
@@ -242,6 +246,22 @@ extension ReaderSession {
 `totalProgression` は `BookPagination` のページ番号から求める。`writingMode` は `reader.js` の判定値で、
 `WritingMode(cssValue:)` が `sideways-*` を縦書きに寄せる。
 
+M4 で追加（FXL と見開き。実装済み）:
+
+```swift
+extension ReaderSession {
+    public var visibleSpineIndices: [Int]      // 今の面に含まれる spine item（読み順）。単ページなら [currentSpineIndex]
+    public var isShowingSpread: Bool           // 今の面が 2 ページ（FXL のペア、リフローの 2 段 / 2 フレーム）か
+    public private(set) var isZoomed: Bool     // FXL の面がピンチで拡大されているか。true の間 EPUBUI はめくりを止める
+    public func resetZoom()                    // 倍率 1 に戻す（面の読み込み時にも戻る）
+}
+```
+
+`currentSpineIndex` は面の先頭（読み順で最初）の spine item。`chapterPageCount` / `currentPageIndex` は「面」の数と index
+（FXL の面は常に 1 ページ。縦書き見開きは ceil(ページ数 / 2)）。`position` は面の先頭ページ側の CFI で、見開きの右ページへ
+`go(toSpineIndex:)` / `go(to cfi:)` しても面は読み直さず、`position` だけ動く。`currentPage` / `BookPagination` は FXL の各ページを
+書籍ページ 1 つと数えるので、ペアの面を進めると 2 ページ進む。
+
 `go(to:)` 系は移動が完了（`ready` 受信と位置確定）するまで待つ。ジェスチャ中の先読みは
 `pageSnapshot(.next)` で行う。`PageSnapshot` は `image: CGImage`、`scale`、`size`（pt）、`spineIndex`、`pageIndex` を持つ。
 
@@ -300,6 +320,8 @@ public enum ReaderEvent: Sendable {
     case positionChanged(ReadingPosition)   // ページ・章の移動と、同じテキストのままの再レイアウト。ReaderSession.position と同じ値
     case highlightTapped(Highlight.ID, rects: [CGRect])   // 矩形は可視ページ座標
     case selectionChanged(SelectedText?)    // nil は解除。ReaderSession.currentSelection と同じ値
+    // M4 実装済み
+    case zoomChanged(Bool)                  // FXL の面のピンチズーム。true の間 EPUBUI はめくりジェスチャを止める。ReaderSession.isZoomed と同じ値
     // M5 以降で追加
     case internalLink(CFI)                  // 移動はライブラリが行う。通知のみ
     case noteref(NoteContent)               // html / text / 参照先 CFI（M5）
@@ -395,6 +417,9 @@ EPUBUI は `ReaderSession.isRightToLeft` に従って `PageTransitionContext.lay
 macOS のトラックパッドの 2 本指スワイプは `NSEvent.scrollWheel` の `phase` と `momentumPhase` から
 ドラッグ進捗に変換し、iOS のスワイプと同じ `PageTransitionContext.progress` を駆動する。
 
+M4 で追加: `ReaderSession.isZoomed` が true の間（FXL の面をピンチで拡大中）は、スワイプ・トラックパッドスワイプ・
+タップめくりのすべてを止め、ピンチとパンを WebView に渡す。倍率が 1 に戻ると再開する。
+
 ### 4.4 `SelectionAction`
 
 ```swift
@@ -424,6 +449,10 @@ M2 実装済み: セッションは再レイアウトの前に可視ページを
 再レイアウトは同じ操作の中で行い、位置を復元したら nil に戻す。`EPUBReaderView` は非 nil の間その画像を
 WebView の上に左上寄せで重ね、nil になったら 0.2 秒のフェードで外す。`layoutKey` も変わるので事前ページ化は
 新しいキーで再開し、以前のキーの確定値はキャッシュに残る。
+
+M4 で追加: サイズ変更で `SpreadPlan` も組み直し、単ページ ⇄ 見開きが変わる（iPad の回転など）ときは、現在の `position` の
+spine item を含む新しい面を読み込んで `pageFor(cfi)` で復元する。横書きリフローの 1 段 ⇄ 2 段は同じ文書の再レイアウトで済む。
+FXL 書籍では `relayoutSnapshot` は面全体の画像になる。
 
 アプリ側の注意: `viewportSize` が数 pt でも変わるとレイアウトキーが変わり、全章の計測がやり直しになる。
 ステータスバーなど `EPUBReaderView` の周囲の UI は、表示内容（推定中インジケータなど）で高さが変わらないようにする。

@@ -51,3 +51,16 @@
 - [ ] `Sources/EPUBUI/EPUBReaderView.swift`: `.selectionActions` の転送が `onChange(of: ids)` なので、id が同じまま title / systemImage / handler だけ変わった配列はセッションに反映されない（古いハンドラが呼ばれ続ける）。`SelectionAction` を `Equatable` にする（handler を除く比較 + 変更世代）か、毎回代入する。
 - [ ] `Examples/ReaderDemo/Sources/ReaderDemo/Annotations.swift` `BookStore.init`: 英数字以外をすべて `_` に置き換えてファイル名にするので、`A-B.epub` と `A_B.epub` のように異なる本が同じ JSON を共有し、ハイライトと位置を上書きし合う。ハッシュ（SHA-256）をファイル名にする。
 
+
+## M4 の積み残し（2026-11-09）
+
+- [ ] 縦書きリフローの見開き（`_reader/spread?kind=vertical`、同じ文書を 2 つの iframe に読む）は macOS の `swift test` だけで確認した。iOS 27 Simulator の草枕を横向きにして、2 フレームの `scrollTop` 合わせ・ページ数・位置復元・選択が動くか確認する（iOS の iframe は内容に合わせて伸びることがある）。
+- [ ] FXL のピンチズームは WKWebView 全体（3 スロット幅のフレーム）に掛かるので、iOS のパンは面の外（空白のスロット）まで動ける。ズーム中は `contentInset` / `contentSize` を面に合わせるか、ラッパー文書側で `transform` によるズームに切り替えるか検討する。macOS の `magnification` も同様。
+- [ ] 見開きラッパーでは選択が iframe をまたげない（設計どおりの制限）。縦書き見開きで右フレーム末尾から左フレーム先頭に続く文を選べない。必要なら 2 つの選択を 1 つの `CFIRange` に合成する。
+- [ ] `rendition:orientation`（書籍・itemref）は読んで `Publication.orientation` / `SpineItem.orientation` に入れるだけで、端末の向きの固定や「横向き専用」の表示（縦向きで 2 ページを縮めて見開きにする）はしていない。
+- [ ] 見開きの面で先頭ページに CFI を作れるテキストがないと（page-blanche の p01 のような白紙）、`cfiForPage` が次の iframe に進むので `position` / `currentSpineIndex` が面の 2 ページ目になる。Spread ポリシーを Never に切り替えると 2 ページ目（title）が表示される。先頭ページの spine ステップだけの CFI（`/6/2[p01]!`）を返すことを検討する。
+- [ ] `BookPagination` は FXL の各ページを書籍ページ 1 つと数えるので、見開きの面を 1 回めくると `currentPage` が 2 進む。面を単位にした進捗（`totalProgression`）を出すか、UI 側で「面」の番号を出すかを決める。
+- [ ] FXL の面には `ReaderSettings.theme` を当てない（出版社のページそのまま）ので、ダークテーマでは FXL の面だけ白く光る。ダークテーマ時の減光（`filter: brightness`）を FXL にも当てるか検討する。ラッパーの背景色も白固定。
+- [ ] 見開きラッパーは章内の前後の面を隣のスロットに置かないので、FXL の面のめくりはすべて destinationPending（到着後に撮る）経路になり、スナップショットでのめくり演出が 1 テンポ遅れる。隣の面を事前に 2 つ目のラッパーへ読み込むか、`PaginationService` の隣接面スナップショット（02-rendering §8.3）を面単位に広げる。
+- [ ] `Examples/ReaderDemo/Sources/ReaderDemo/Books/` の fixture の重複（M1 の積み残し）が FXL の 3 冊分（約 5 MB）増えた。
+- [ ] `Examples/ReaderDemo` の macOS 版は M4 でもビルドと `swift test` のみで、画面操作（見開き表示、ウィンドウリサイズでの単ページ ⇄ 見開き、トラックパッドのピンチ）は未確認。

@@ -81,6 +81,24 @@ UTF-16 コードユニット、`CFI` は spine ステップを保持し `Publica
 
 完了条件: `cole-voyage-of-life` と `haruko-html-jpeg` が見開きで表示され、iPad 縦では単ページに切り替わる。
 
+**完了（2026-11-09、コミット 990a1de〜b7ee780 と、その後の文書・仕上げコミット）。** 完了条件は iOS 27 Simulator
+（iPad Pro 11-inch (M4)）の `Examples/ReaderDemo` で確認した: `haruko-html-jpeg` は横向きで p01 が左半分に単独、めくると
+p02（右）+ p03（左）の右綴じ見開きになり、縦向きに回すと面全体の単ページに切り替わる。`page-blanche` は表紙が右に単独、
+次が 1+2 の見開き。`cole-voyage-of-life` は本文が 2 段の見開きで、絵画のページ（`rendition:spread-none`）は単独の全面。
+設定の Spread ピッカーで Never → 単ページ、Auto → 見開きに戻る。FXL の面ではピンチで拡大（ステータスバーに ZOOM）、
+拡大中はタップめくりが止まりパンでき、ピンチアウトで戻る。iPhone 17 Pro では縦が単ページ、横が見開きの面になる。
+macOS 27 は `swift test`（実 WKWebView、120 件）で FXL の配置・スケール・CFI 保持・リサイズでの単ページ ⇄ 見開き切り替え・
+スナップショットと、横書きリフローの 2 段 / 縦書きリフローの 2 フレーム、`allowsMagnification` の切り替えを検証した
+（デモアプリの画面操作による確認は今回もセッションに画面操作の許可がなく未実施）。
+実装中に設計を変えた点は各文書に「M4 で変更」として反映済み（01-core §2.2 / §3 / §7、02-rendering §1.2 / §2.1 / §3.2 / §4.1 /
+§4.2 / §5.2 / §6.1〜§6.3 / §8.2 / §11、03-api §2.2 / §3.2 / §3.4 / §4.3 / §4.5）。主な変更: ラッパー URL は
+`_reader/spread?kind=fixed|vertical&pages=1r,2l` の形、`reader.js` を iframe 内でも動かしラッパーが同じ API を Swift に見せる、
+FXL 文書には `reader-fixed.css` だけを注入し出版社のデザインに手を入れない、`page-spread-*` のない FXL ページは綴じの
+反対側から交互に置く、`LayoutKey.isSpread` と `SpreadPlan` 単位の事前ページ化、ズームは iOS では viewport meta と
+ピンチ認識器で制御する（`zoomScale` の KVO はピンチ中に出ない）、`missingViewport` は Core が開いた時点で出す。
+積み残しは `TODO.md` に置く（iOS での縦書きラッパーの確認、ズーム中のパン範囲、iframe をまたぐ選択、`rendition:orientation`
+の扱い、空ページを先頭に持つ面の `position` など）。
+
 ### M5. 脚注・画像・macOS 入力・仕上げ
 
 - `noteref` のポップアップ用イベント、内部リンク、外部リンク
@@ -118,9 +136,9 @@ IDPF epub3-samples（https://github.com/IDPF/epub3-samples）から次を `Tests
 | `moby-dick` | 横書きリフロー、長い書籍のページ化 |
 | `kusamakura-japanese-vertical-writing` | 縦書き、ルビ、右綴じ（M2 で追加。音声 mp3 は省いて 232 KB にしてあり、`missingResource` 警告が 2 件出る） |
 | `wasteland-otf-obf` | フォント難読化（IDPF 方式。M2 で追加） |
-| `cole-voyage-of-life` | FXL、`page-spread-*` |
-| `haruko-html-jpeg` | FXL 漫画、右綴じの見開き |
-| `page-blanche` | FXL、SVG |
+| `cole-voyage-of-life` | リフロー本文 + FXL の絵画 4 ページ（itemref の `rendition:layout-pre-paginated` / `spread-none` / `orientation-landscape`、viewport 1024×697）。`page-spread-*` は使っていない（M4 で追加） |
+| `haruko-html-jpeg` | FXL 漫画（JPEG）、右綴じ、`rendition:spread landscape`、p01〜p12 に `page-spread-left` / `right`、最後に リフローの About（M4 で追加） |
+| `page-blanche` | FXL（JPEG、viewport 1200×1577）、`page-spread-left` / `right`、`page-progression-direction` なし（M4 で追加。SVG ではない） |
 | `regime-anticancer-arabe` | RTL 言語、`dir` 属性 |
 
 Adobe 方式の難読化は公開サンプルがないので、テスト内で IDPF サンプルのフォントを Adobe 方式で難読化し直して検証する。
