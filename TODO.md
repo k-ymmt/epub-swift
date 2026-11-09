@@ -61,3 +61,9 @@
 ## 判断不要の不具合の修正（2026-11-09）の積み残し
 
 - [ ] `Sources/EPUBUI/EPUBReaderView.swift`: `selectionActions` を body の評価ごとに `ReaderSession.selectionActions`（`@ObservationIgnored` にした）へ代入するようにしたが、自動テストはない（EPUBUITests に SwiftUI をホストする仕組みがない）。id が同じでハンドラだけ変わった配列で新しいハンドラが呼ばれることを、デモか UI テストで確認する。
+
+## 最低 OS を iOS 26 / macOS 26 に下げた（2026-11-09）の積み残し
+
+- [ ] macOS 26 の実機・VM での動作確認は未実施。`swift test`（Renderer の実 WKWebView テストを含む）は macOS 27 でしか走らせていない。
+- [ ] iOS 26.5 Simulator（iPhone 17 Pro）では ReaderDemo の Moby-Dick と草枕（縦書き・右綴じ）を開き、表示・ページめくり・事前ページ化の完了までを確認しただけ。FXL、見開き、検索、ハイライト、リンク・脚注、画像ビューアは未確認。
+- [ ] iOS 26.5 Simulator を起動した直後の最初の 1 冊（草枕）で `loadTimeout(spineIndex: 0)` が 1 回出た。開き直しとアプリ再起動後には再現しない。WebContent プロセスのコールドスタートが読み込みのタイムアウトを超えたと見ているが、iOS 27 でも起こるか（Simulator の起動直後に限るか）を確かめ、起こるならタイムアウト時の再試行を検討する。

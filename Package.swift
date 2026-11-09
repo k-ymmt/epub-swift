@@ -1,5 +1,5 @@
 // swift-tools-version: 6.4
-// EPUB-Swift: a WebView-based EPUB 3 viewer library for iOS 27+ / macOS 27+.
+// EPUB-Swift: a WebView-based EPUB 3 viewer library for iOS 26+ / macOS 26+.
 // Target layering is described in docs/design/00-overview.md §4.
 
 import PackageDescription
@@ -11,8 +11,8 @@ let swiftSettings: [SwiftSetting] = [
 let package = Package(
     name: "EPUB-Swift",
     platforms: [
-        .iOS("27.0"),
-        .macOS("27.0"),
+        .iOS("26.0"),
+        .macOS("26.0"),
     ],
     products: [
         // Umbrella module re-exporting EPUBCore, EPUBRenderer and EPUBUI. Apps normally import only this.

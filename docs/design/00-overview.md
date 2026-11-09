@@ -30,7 +30,7 @@ EPUB-Swift は iOS / macOS 向けの EPUB 3 ビューワーライブラリであ
 | 項目 | 決定 |
 |---|---|
 | 描画エンジン | WKWebView（ネイティブ組版は採用しない。Apple Books も WebKit で描画している） |
-| 対応 OS | iOS 27 / macOS 27 以降 |
+| 対応 OS | iOS 26 / macOS 26 以降（開発と動作確認は iOS 27 / macOS 27 で行っている） |
 | UI | SwiftUI ファースト。内部で UIViewRepresentable / NSViewRepresentable を使う |
 | 依存 | Apple 標準のみ（Foundation、Compression、CryptoKit、WebKit、libxml2）。SwiftPM 依存は追加しない |
 | 利用者 | 自分のアプリ専用。API の後方互換は重視しない |

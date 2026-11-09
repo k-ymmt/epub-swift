@@ -1,6 +1,6 @@
 # EPUB-Swift
 
-An EPUB 3 reader library for iOS 27+ and macOS 27+, written in Swift 6 with strict concurrency.
+An EPUB 3 reader library for iOS 26+ and macOS 26+, written in Swift 6 with strict concurrency.
 
 WKWebView renders the content. The library handles everything else:
 
