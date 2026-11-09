@@ -8,11 +8,13 @@ import EPUBRenderer
 public struct ReaderGestures: Sendable, Hashable {
     /// Left / center / right width ratios for tap-to-turn. Default 0.25 / 0.5 / 0.25.
     public var tapZones: TapZones
-    /// Horizontal swipe turns the page.
+    /// Horizontal swipe turns the page (on macOS also a two-finger trackpad swipe: one swipe, one page).
     public var swipeEnabled: Bool
     /// Tapping the left or right zone turns the page.
     public var tapToTurnEnabled: Bool
-    /// macOS: ← → space PageUp / PageDown.
+    /// macOS keyboard: ← → follow the page progression (← is "next" in a right-bound book), ↓ PageDown space
+    /// next, ↑ PageUp ⇧space previous, Home / End the first / last page of the chapter. Ignored while a text field
+    /// or list elsewhere in the window has focus, and while a fixed-layout face is zoomed in.
     public var keyboardEnabled: Bool
 
     public init(tapZones: TapZones = .default, swipeEnabled: Bool = true, tapToTurnEnabled: Bool = true, keyboardEnabled: Bool = true) {

@@ -48,9 +48,10 @@ import AppKit
 
 struct ReaderPlatformView: NSViewRepresentable {
     let session: ReaderSession
-    /// Called for key presses and trackpad swipes while the view's window is key (docs/design/03-api.md §4.3).
-    var onKey: (@MainActor (ReaderKeyCommand) -> Void)?
-    var onScrollPhase: (@MainActor (ScrollPhaseEvent) -> Void)?
+    /// Called for key presses and trackpad scrolls while the view's window is key (docs/design/03-api.md §4.3).
+    /// Returning true consumes the event (the web view does not see it).
+    var onKey: (@MainActor (ReaderKey) -> Bool)?
+    var onScrollPhase: (@MainActor (ScrollPhaseEvent) -> Bool)?
 
     func makeNSView(context: Context) -> HostView {
         let view = HostView(content: session.platformView)
@@ -74,8 +75,8 @@ struct ReaderPlatformView: NSViewRepresentable {
                 needsLayout = true
             }
         }
-        var onKey: (@MainActor (ReaderKeyCommand) -> Void)?
-        var onScrollPhase: (@MainActor (ScrollPhaseEvent) -> Void)?
+        var onKey: (@MainActor (ReaderKey) -> Bool)?
+        var onScrollPhase: (@MainActor (ScrollPhaseEvent) -> Bool)?
         private var monitor: Any?
 
         init(content: NSView) {
@@ -101,20 +102,36 @@ struct ReaderPlatformView: NSViewRepresentable {
             if let monitor { NSEvent.removeMonitor(monitor); self.monitor = nil }
             guard window != nil else { return }
             // The web view is first responder for most of the time, so key and scroll events are observed with a
-            // local monitor restricted to this view's window. Events are passed through.
+            // local monitor restricted to this view's window. Handled events are consumed so the web view does not
+            // also scroll; everything else passes through.
             monitor = NSEvent.addLocalMonitorForEvents(matching: [.keyDown, .scrollWheel]) { [weak self] event in
                 guard let self, let window = self.window, event.window === window, window.isKeyWindow else { return event }
-                MainActor.assumeIsolated {
-                    if event.type == .keyDown, let command = ReaderKeyCommand(event: event) {
-                        self.onKey?(command)
-                    } else if event.type == .scrollWheel {
-                        let location = self.convert(event.locationInWindow, from: nil)
-                        guard self.bounds.contains(location) else { return }
-                        self.onScrollPhase?(ScrollPhaseEvent(event: event))
+                let key = event.type == .keyDown ? ReaderKey(event: event) : nil
+                let scroll = event.type == .scrollWheel ? ScrollPhaseEvent(event: event) : nil
+                let location = event.locationInWindow
+                let consumed = MainActor.assumeIsolated { () -> Bool in
+                    if let key {
+                        guard self.acceptsReaderKeys(in: window) else { return false }
+                        return self.onKey?(key) ?? false
                     }
+                    guard let scroll, self.bounds.contains(self.convert(location, from: nil)) else { return false }
+                    return self.onScrollPhase?(scroll) ?? false
                 }
-                return event
+                return consumed ? nil : event
             }
+        }
+
+        /// Keys belong to the reader unless something else in the window is taking text or list input (a search
+        /// field, a table): the first responder is the web view (or this view), or nothing in particular.
+        private func acceptsReaderKeys(in window: NSWindow) -> Bool {
+            guard let responder = window.firstResponder, responder !== window else { return true }
+            if let view = responder as? NSView, view === self || view.isDescendant(of: self) { return true }
+            if responder is NSText || responder is NSTableView || responder is NSCollectionView || responder is NSTextInputClient { return false }
+            if let view = responder as? NSView, view.enclosingScrollView != nil, !(view.enclosingScrollView!.isDescendant(of: self)) {
+                // A scrolling list or text view elsewhere uses the arrow keys itself.
+                return false
+            }
+            return true
         }
 
         isolated deinit {
@@ -123,37 +140,4 @@ struct ReaderPlatformView: NSViewRepresentable {
     }
 }
 
-enum ReaderKeyCommand {
-    case forward, backward
-
-    init?(event: NSEvent) {
-        guard event.modifierFlags.intersection([.command, .option, .control]).isEmpty else { return nil }
-        guard let chars = event.charactersIgnoringModifiers, let scalar = chars.unicodeScalars.first else { return nil }
-        switch Int(scalar.value) {
-        case NSRightArrowFunctionKey, NSPageDownFunctionKey, NSDownArrowFunctionKey: self = .forward
-        case NSLeftArrowFunctionKey, NSPageUpFunctionKey, NSUpArrowFunctionKey: self = .backward
-        case 0x20: self = event.modifierFlags.contains(.shift) ? .backward : .forward
-        default: return nil
-        }
-    }
-}
-
-/// Trackpad swipe sample (two-finger scroll with phases).
-struct ScrollPhaseEvent {
-    enum Phase { case began, changed, ended, cancelled, momentum, other }
-    var phase: Phase
-    var deltaX: CGFloat
-    var deltaY: CGFloat
-
-    init(event: NSEvent) {
-        if event.phase.contains(.began) { phase = .began }
-        else if event.phase.contains(.changed) { phase = .changed }
-        else if event.phase.contains(.ended) { phase = .ended }
-        else if event.phase.contains(.cancelled) { phase = .cancelled }
-        else if event.momentumPhase != [] { phase = .momentum }
-        else { phase = .other }
-        deltaX = event.scrollingDeltaX
-        deltaY = event.scrollingDeltaY
-    }
-}
 #endif

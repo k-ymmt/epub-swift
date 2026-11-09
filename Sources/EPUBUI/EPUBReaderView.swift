@@ -84,16 +84,35 @@ public struct EPUBReaderView: View {
         #else
         ReaderPlatformView(
             session: session,
-            onKey: { command in
-                guard gestures.keyboardEnabled else { return }
-                Task { await turn.turn(command == .forward ? .forward : .backward) }
+            onKey: { key in
+                // While a fixed-layout face is zoomed in the keys are left to the web view (M4 / M5).
+                guard gestures.keyboardEnabled, session.hasLoaded, !session.isZoomed else { return false }
+                perform(key.action(isRightToLeft: session.isRightToLeft))
+                return true
             },
             onScrollPhase: { event in
-                guard gestures.swipeEnabled, !session.isZoomed else { return }
-                turn.handleScroll(event, layoutDirection: layoutDirection)
+                guard gestures.swipeEnabled, !session.isZoomed else { return false }
+                return turn.handleScroll(event, layoutDirection: layoutDirection)
             }
         )
         #endif
+    }
+
+    /// Keyboard moves (03-api §4.3, M5): page turns go through the turn controller (with the effect); chapter
+    /// start / end jump without one.
+    private func perform(_ action: ReaderKeyAction) {
+        switch action {
+        case .forward:
+            Task { await turn.turn(.forward) }
+        case .backward:
+            Task { await turn.turn(.backward) }
+        case .chapterStart:
+            guard !turn.isActive else { return }
+            Task { await session.go(toPageInChapter: 0) }
+        case .chapterEnd:
+            guard !turn.isActive else { return }
+            Task { await session.go(toPageInChapter: max(0, session.chapterPageCount - 1)) }
+        }
     }
 
     private var dragGesture: some Gesture {
@@ -162,7 +181,9 @@ final class PageTurnController {
     @ObservationIgnored private var transition = AnyPageTransition(SlidePageTransition())
     @ObservationIgnored private var isBusy = false
     @ObservationIgnored private var interactivePreparation: Task<Void, Never>?
-    @ObservationIgnored private var scrollAccumulator: CGFloat = 0
+    @ObservationIgnored private var scrollAccumulator: CGSize = .zero
+    /// Axis the current trackpad gesture was locked to; nil until it has moved far enough to tell.
+    @ObservationIgnored private var scrollAxisIsHorizontal: Bool?
     @ObservationIgnored private var scrollTurnStarted = false
 
     var isActive: Bool { current != nil || isBusy }
@@ -311,25 +332,38 @@ final class PageTurnController {
     }
 
     #if canImport(AppKit)
-    /// Two-finger trackpad swipe: accumulates the horizontal delta while the gesture is active and commits when it
-    /// exceeds a quarter page, mapped onto the same interactive turn as a drag.
-    func handleScroll(_ event: ScrollPhaseEvent, layoutDirection: LayoutDirection) {
+    /// Two-finger trackpad swipe (03-api §4.3): once the fingers have moved a few points the gesture is locked to an
+    /// axis; a horizontal one drives the same interactive turn as a drag and commits (or cancels) when the fingers
+    /// lift. Momentum events after that are swallowed, so one swipe turns at most one page. Returns whether the event
+    /// was used (the web view then does not see it).
+    func handleScroll(_ event: ScrollPhaseEvent, layoutDirection: LayoutDirection) -> Bool {
         switch event.phase {
         case .began:
-            scrollAccumulator = 0
+            scrollAccumulator = .zero
+            scrollAxisIsHorizontal = nil
             scrollTurnStarted = false
+            return false
         case .changed:
-            scrollAccumulator += event.deltaX
-            guard abs(scrollAccumulator) > 8 else { return }
+            scrollAccumulator.width += event.deltaX
+            scrollAccumulator.height += event.deltaY
+            if scrollAxisIsHorizontal == nil, hypot(scrollAccumulator.width, scrollAccumulator.height) > 6 {
+                scrollAxisIsHorizontal = abs(scrollAccumulator.width) > abs(scrollAccumulator.height) * 1.2
+            }
+            guard scrollAxisIsHorizontal == true else { return false }
             scrollTurnStarted = true
-            dragChanged(translation: CGSize(width: scrollAccumulator, height: 0), layoutDirection: layoutDirection)
+            dragChanged(translation: CGSize(width: scrollAccumulator.width, height: 0), layoutDirection: layoutDirection)
+            return true
         case .ended, .cancelled:
-            guard scrollTurnStarted else { return }
+            defer { scrollAccumulator = .zero }
+            guard scrollTurnStarted else { return false }
             scrollTurnStarted = false
-            dragEnded(translation: CGSize(width: scrollAccumulator, height: 0), predictedTranslation: CGSize(width: scrollAccumulator * 2, height: 0), layoutDirection: layoutDirection)
-            scrollAccumulator = 0
-        case .momentum, .other:
-            break
+            let translation = CGSize(width: event.phase == .cancelled ? 0 : scrollAccumulator.width, height: 0)
+            dragEnded(translation: translation, predictedTranslation: CGSize(width: translation.width * 2, height: 0), layoutDirection: layoutDirection)
+            return true
+        case .momentum:
+            return scrollAxisIsHorizontal == true
+        case .other:
+            return false
         }
     }
     #endif
