@@ -11,6 +11,31 @@ final class ReaderWebView: WKWebView {
     /// Supplies the current actions and selection when the menu is about to be shown.
     var selectionMenuSource: SelectionMenuSource?
 
+    #if canImport(AppKit)
+    /// Called whenever `magnification` changes, by a pinch (`magnify(with:)`), a smart magnify or a programmatic set
+    /// (M4, 02-rendering §6.3). `WKWebView.magnification` is not KVO-compliant.
+    var onMagnificationChanged: (@MainActor (CGFloat) -> Void)?
+
+    override var magnification: CGFloat {
+        didSet { if magnification != oldValue { onMagnificationChanged?(magnification) } }
+    }
+
+    override func setMagnification(_ magnification: CGFloat, centeredAt point: NSPoint) {
+        super.setMagnification(magnification, centeredAt: point)
+        onMagnificationChanged?(self.magnification)
+    }
+
+    override func magnify(with event: NSEvent) {
+        super.magnify(with: event)
+        onMagnificationChanged?(magnification)
+    }
+
+    override func smartMagnify(with event: NSEvent) {
+        super.smartMagnify(with: event)
+        onMagnificationChanged?(magnification)
+    }
+    #endif
+
     private func menuEntries() -> (actions: [SelectionAction], selection: SelectedText)? {
         guard let source = selectionMenuSource else { return nil }
         let actions = source.actions()

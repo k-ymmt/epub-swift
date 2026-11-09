@@ -50,7 +50,8 @@ public struct EPUBReaderView: View {
         .background(Color(session.settings.theme.background))
         .animation(.easeOut(duration: 0.2), value: session.relayoutSnapshot == nil)
         .contentShape(Rectangle())
-        .gesture(dragGesture, isEnabled: gestures.swipeEnabled)
+        // While a fixed-layout page is zoomed in, drags pan the page instead of turning it (02-rendering §6.3, M4).
+        .gesture(dragGesture, isEnabled: gestures.swipeEnabled && !session.isZoomed)
         .onGeometryChange(for: CGSize.self, of: { $0.size }) { size in
             guard size.width > 0, size.height > 0 else { return }
             session.viewportSize = size
@@ -88,7 +89,7 @@ public struct EPUBReaderView: View {
                 Task { await turn.turn(command == .forward ? .forward : .backward) }
             },
             onScrollPhase: { event in
-                guard gestures.swipeEnabled else { return }
+                guard gestures.swipeEnabled, !session.isZoomed else { return }
                 turn.handleScroll(event, layoutDirection: layoutDirection)
             }
         )
@@ -110,7 +111,7 @@ public struct EPUBReaderView: View {
         case .tapped(let point, _):
             let zone = gestures.tapZones.zone(forX: point.x, width: session.viewportSize.width)
             eventHandler?.handle(.tapped(point, zone: zone))
-            guard gestures.tapToTurnEnabled, !turn.isActive else { return }
+            guard gestures.tapToTurnEnabled, !turn.isActive, !session.isZoomed else { return }
             switch zone {
             case .leading:
                 Task { await turn.turn(layoutDirection == .rightToLeft ? .forward : .backward) }

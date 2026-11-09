@@ -26,6 +26,12 @@ final class WebViewSpineRenderer: NSObject, SpineRenderer {
     var onMessage: (@MainActor (BridgeMessage) -> Void)?
     var onNavigationFailed: (@MainActor (Error) -> Void)?
     var onProcessTerminated: (@MainActor () -> Void)?
+    var onZoomChanged: (@MainActor (Bool) -> Void)?
+    private(set) var isZoomEnabled = false
+    private(set) var isZoomed = false
+    #if canImport(UIKit)
+    private var zoomObservation: NSKeyValueObservation?
+    #endif
     var selectionMenuSource: SelectionMenuSource? {
         get { webView.selectionMenuSource }
         set { webView.selectionMenuSource = newValue }
@@ -81,6 +87,55 @@ final class WebViewSpineRenderer: NSObject, SpineRenderer {
         webView.navigationDelegate = self
         messageBridge.owner = self
         controller.addScriptMessageHandler(messageBridge, contentWorld: Self.readerWorld, name: "reader")
+        #if canImport(UIKit)
+        webView.scrollView.minimumZoomScale = 1
+        webView.scrollView.maximumZoomScale = 1
+        webView.scrollView.pinchGestureRecognizer?.isEnabled = false
+        zoomObservation = webView.scrollView.observe(\.zoomScale, options: [.new]) { [weak self] scrollView, _ in
+            MainActor.assumeIsolated { self?.zoomScaleDidChange(scrollView.zoomScale) }
+        }
+        #else
+        webView.onMagnificationChanged = { [weak self] magnification in self?.zoomScaleDidChange(magnification) }
+        #endif
+    }
+
+    // MARK: - Zoom (fixed layout, 02-rendering §6.3)
+
+    func setZoomEnabled(_ enabled: Bool) {
+        guard enabled != isZoomEnabled else { return }
+        isZoomEnabled = enabled
+        if !enabled { resetZoom() }
+        #if canImport(UIKit)
+        webView.scrollView.maximumZoomScale = enabled ? 4 : 1
+        webView.scrollView.pinchGestureRecognizer?.isEnabled = enabled
+        #else
+        webView.allowsMagnification = enabled
+        #endif
+    }
+
+    func resetZoom() {
+        #if canImport(UIKit)
+        if webView.scrollView.zoomScale != 1 { webView.scrollView.setZoomScale(1, animated: false) }
+        webView.scrollView.isScrollEnabled = false
+        #else
+        if webView.magnification != 1 { webView.magnification = 1 }
+        #endif
+        zoomScaleDidChange(1)
+    }
+
+    /// While zoomed in, the page can be panned (iOS: the scroll view scrolls); at scale 1 the view is pinned to the
+    /// visible slot again and page turns take over.
+    private func zoomScaleDidChange(_ scale: CGFloat) {
+        let zoomed = scale > 1.01
+        #if canImport(UIKit)
+        if webView.scrollView.isScrollEnabled != zoomed {
+            webView.scrollView.isScrollEnabled = zoomed
+            if !zoomed { syncNativeScroll(to: CGPoint(x: slotRect(visibleSlot).minX, y: slotRect(visibleSlot).minY)) }
+        }
+        #endif
+        guard zoomed != isZoomed else { return }
+        isZoomed = zoomed
+        onZoomChanged?(zoomed)
     }
 
     // MARK: - Geometry

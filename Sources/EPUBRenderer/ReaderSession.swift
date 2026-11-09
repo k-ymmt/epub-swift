@@ -53,6 +53,10 @@ public final class ReaderSession {
     /// fixed-layout spread (M4). `currentSpineIndex` is the first of them.
     public var visibleSpineIndices: [Int] { currentUnit?.spineIndices ?? (hasLoaded ? [currentSpineIndex] : []) }
 
+    /// `true` while a fixed-layout face is pinch-zoomed in (M4, docs/design/02-rendering.md §6.3). EPUBUI turns its
+    /// page-turn gestures off meanwhile; loading another face resets the zoom.
+    public private(set) var isZoomed = false
+
     /// Whether pages progress right-to-left: `page-progression-direction="rtl"`, or a vertical-rl document when the
     /// package does not say otherwise. EPUBUI flips tap zones, swipes and the transition direction on this
     /// (docs/design/03-api.md §4.3).
@@ -210,6 +214,11 @@ public final class ReaderSession {
             actions: { [weak self] in self?.selectionActions ?? [] },
             selection: { [weak self] in self?.currentSelection }
         )
+        renderer.onZoomChanged = { [weak self] zoomed in
+            guard let self, self.isZoomed != zoomed else { return }
+            self.isZoomed = zoomed
+            self.emit(.zoomChanged(zoomed))
+        }
         renderer.setBackgroundColor(settings.theme.background)
         renderer.setContentHidden(true)
         schemeHandler.rootStyle = ContentInjector.rootStyle(settings: settings, pageSize: .zero, publicationID: container.id)
@@ -367,6 +376,11 @@ public final class ReaderSession {
         }
     }
 
+    /// Back to scale 1 after a pinch zoom on a fixed-layout face (M4).
+    public func resetZoom() {
+        renderer.resetZoom()
+    }
+
     /// Opens the first linear spine item if nothing has been loaded yet. `EPUBReaderView` calls this once it
     /// knows its size; apps that drive the session themselves can call it after setting `viewportSize`.
     public func loadIfNeeded() async {
@@ -419,6 +433,9 @@ public final class ReaderSession {
                 guard generation == loadGeneration else { return }
             }
             loadedAsWrapper = realization.isWrapper
+            // Pinch zoom is for fixed-layout pages only; a new face starts at scale 1.
+            renderer.setZoomEnabled(unit.isFixedLayout)
+            renderer.resetZoom()
             writingMode = layout.writingMode
             renderer.setWritingMode(layout.writingMode)
             let pageCount = layout.pageCount

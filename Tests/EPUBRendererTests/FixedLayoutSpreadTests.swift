@@ -188,3 +188,43 @@ import EPUBCore
         #expect(columns == "auto")
     }
 }
+
+/// Pinch zoom on fixed-layout faces (M4, 02-rendering §6.3). macOS: `allowsMagnification` / `magnification`.
+@Suite(.serialized) @MainActor struct FixedLayoutZoomTests {
+    @Test func zoomIsEnabledForFixedLayoutFacesOnlyAndResetsOnNavigation() async throws {
+        let host = try await SessionHost(url: FixedLayoutSpreadTests.cole, size: CGSize(width: 900, height: 600))
+        await host.session.loadIfNeeded()
+        let session = host.session
+        #expect(!session.isZoomed)
+        #if os(macOS)
+        #expect(host.renderer.webView.allowsMagnification == false) // reflowable text
+        #endif
+        await session.go(toSpineIndex: 2) // painting
+        var events: [Bool] = []
+        let stream = session.events
+        let collector = Task { @MainActor in
+            for await event in stream { if case .zoomChanged(let zoomed) = event { events.append(zoomed) } }
+        }
+        #if os(macOS)
+        #expect(host.renderer.webView.allowsMagnification == true)
+        host.renderer.webView.magnification = 2
+        #expect(session.isZoomed)
+        host.renderer.webView.magnification = 1
+        #expect(!session.isZoomed)
+        host.renderer.webView.magnification = 1.5
+        #expect(session.isZoomed)
+        session.resetZoom()
+        #expect(!session.isZoomed)
+        #expect(host.renderer.webView.magnification == 1)
+        host.renderer.webView.magnification = 2
+        #expect(session.isZoomed)
+        // Loading another face resets the zoom; a reflowable face cannot zoom.
+        await session.goForward()
+        #expect(!session.isZoomed)
+        #expect(host.renderer.webView.magnification == 1)
+        #expect(host.renderer.webView.allowsMagnification == false)
+        try await host.waitUntil { events == [true, false, true, false, true, false] }
+        #endif
+        collector.cancel()
+    }
+}

@@ -153,6 +153,13 @@ protocol SpineRenderer: AnyObject {
     func setBackgroundColor(_ color: ReaderColor)
     /// Hides the document (shown again after the first page of a load is positioned).
     func setContentHidden(_ hidden: Bool)
+    /// Allows pinch zoom (iOS: the scroll view's pinch; macOS: `allowsMagnification`). Fixed-layout faces only
+    /// (02-rendering §6.3, M4). Disabling also resets the zoom.
+    func setZoomEnabled(_ enabled: Bool)
+    /// Back to scale 1.
+    func resetZoom()
+    /// Reports zoom scale changes (`true` while the scale is above 1).
+    var onZoomChanged: (@MainActor (Bool) -> Void)? { get set }
 
     /// Starts loading `url`. Returns the URL actually requested: `url` plus a unique query that identifies this
     /// load in the document's `location.href` (the `ready` message carries it back).

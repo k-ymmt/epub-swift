@@ -19,6 +19,8 @@ public enum ReaderEvent: Sendable {
     case highlightTapped(Highlight.ID, rects: [CGRect])
     /// The text selection changed; nil when it was cleared (M3). Mirrors `ReaderSession.currentSelection`.
     case selectionChanged(SelectedText?)
+    /// A fixed-layout face was pinch-zoomed in (`true`) or returned to scale 1 (M4). Mirrors `ReaderSession.isZoomed`.
+    case zoomChanged(Bool)
 }
 
 /// Horizontal third of the page a tap landed in, as classified by the UI layer's tap zones.
