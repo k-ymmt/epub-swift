@@ -76,19 +76,24 @@ M2: `data(at:)` は `encryption.xml` に登録されたフォントの難読化�
 ### 2.3 `CFI` / `CFIRange`
 
 01-core §5。`Codable` は文字列 1 つにエンコードする（`"epubcfi(...)"`）。
-アプリの永続化はこの文字列をそのまま保存すればよい。
+アプリの永続化はこの文字列をそのまま保存すればよい。M3 実装済み。文字オフセットは UTF-16 コードユニット
+（01-core §5.1）。`Publication.spineIndex(of:)` で CFI から spine index を引く。
 
 ### 2.4 `ReadingPosition`
 
 ```swift
 public struct ReadingPosition: Codable, Hashable, Sendable {
-    public let cfi: CFI
-    public let spineIndex: Int
-    public let chapterTitle: String?          // toc から逆引き
-    public let progressionInChapter: Double   // 0...1
-    public let totalProgression: Double       // 0...1。ページ化が推定中なら推定値
+    public var cfi: CFI
+    public var spineIndex: Int
+    public var chapterTitle: String?          // toc から逆引き（その spine item を指す最後の目次項目）
+    public var progressionInChapter: Double   // 0...1
+    public var totalProgression: Double       // 0...1。ページ化が推定中なら推定値
 }
 ```
+
+M3 実装済み。位置は CFI だけで決まり、残りは記録時点の表示用の値。復元は `ReaderSession.go(to:)` に渡す。
+アプリが開いた直後に前回位置へ戻すには、最初の章が表示された（最初の `positionChanged`）あとで `go(to:)` を呼ぶ
+（`ReaderDemo` の `BookView` 参照）。読み込み前に `go(to:)` を受け付ける API は M3 では作っていない（`TODO.md`）。
 
 ### 2.5 `Highlight` / `Bookmark`
 
@@ -115,11 +120,13 @@ public struct Bookmark: Identifiable, Codable, Hashable, Sendable {
 }
 ```
 
-EPUBCore は SwiftUI を import しないので色は `ReaderColor`。EPUBUI に `Color` との相互変換を置く。
+EPUBCore は SwiftUI を import しないので色は `ReaderColor`。EPUBUI に `Color` との相互変換を置く
+（`Color(_ readerColor:)`）。M3 実装済み: `Highlight` の既定スタイルは黄色の背景（`0xFFE066`、alpha 0.6）、
+`spineIndex` を `range` から返す。`Bookmark` は型だけで、ライブラリは何もしない。
 
 ### 2.6 `SearchService`
 
-01-core §6。`ReaderSession.search(_:)` から間接的に使えるが、Core 単体でも呼べる。
+01-core §6。`ReaderSession.search(_:)` から間接的に使えるが、Core 単体でも呼べる。M3 実装済み。
 
 ## 3. EPUBRenderer
 
@@ -199,22 +206,27 @@ public final class ReaderSession {
 }
 ```
 
-M3 で追加（CFI 依存）:
+M3 で追加（CFI 依存。実装済み）:
 
 ```swift
 extension ReaderSession {
-    public var highlights: [Highlight]             // 変更で setHighlights
-    public private(set) var position: ReadingPosition?
+    public var highlights: [Highlight]             // 変更で現在章の分を setHighlights。章の表示前にも適用
+    public private(set) var position: ReadingPosition?   // 章の表示後は常に非 nil（02-rendering §5.3）
     public private(set) var currentSelection: SelectedText?
+    public var selectionActions: [SelectionAction] // M3 で変更: EPUBUI の .selectionActions がここに転送する
     public func go(to position: ReadingPosition) async
-    public func go(to cfi: CFI) async
+    public func go(to cfi: CFI) async              // 同じ章なら pageFor、別の章なら読み込んでから。未知の spine は無視
+    public func pageIndex(for position: ReadingPosition) -> Int?   // M3 で追加: 書籍全体のページ index（推定中は近似）
     public func search(_ query: String, options: SearchOptions = .default)
         -> AsyncThrowingStream<SearchResult, Error>
-    public func show(_ result: SearchResult) async     // 位置へ移動し一時ハイライト
+    public func show(_ result: SearchResult) async     // 位置へ移動し一時ハイライト。次のページ移動で消える
     public func clearSelection()
-    public func rects(for range: CFIRange) async -> [CGRect]   // ビュー座標
+    public func rects(for range: CFIRange) async -> [CGRect]   // 可視ページ座標。他章なら空
 }
 ```
+
+`SearchService` はセッションが遅延生成して保持する。`go(to:)` 系はすべて操作キューで直列化され、移動が
+完了するまで待つ。
 
 M2 で追加（実装済み）:
 
@@ -277,20 +289,21 @@ public struct BookPagination: Sendable, Hashable {
 ```swift
 public enum ReaderEvent: Sendable {
     // M1 実装済み
-    case pageChanged(spineIndex: Int, pageIndex: Int, pageCount: Int)   // M3 で positionChanged に統合
+    // case pageChanged(...)                // M3 で削除し positionChanged に統合
     case externalLink(URL)                  // 移動しない。アプリが開く
     case tapped(CGPoint, zone: TapZone)     // ジェスチャをアプリが処理するとき用
     case warning(PublicationWarning)
     case error(ReaderError)
     // M2 実装済み
     case paginationUpdated(BookPagination)  // 章の計測が進むたび。ReaderSession.pagination と同じ値
-    // M3 以降で追加
-    case positionChanged(ReadingPosition)
+    // M3 実装済み
+    case positionChanged(ReadingPosition)   // ページ・章の移動と、同じテキストのままの再レイアウト。ReaderSession.position と同じ値
+    case highlightTapped(Highlight.ID, rects: [CGRect])   // 矩形は可視ページ座標
+    case selectionChanged(SelectedText?)    // nil は解除。ReaderSession.currentSelection と同じ値
+    // M5 以降で追加
     case internalLink(CFI)                  // 移動はライブラリが行う。通知のみ
     case noteref(NoteContent)               // html / text / 参照先 CFI（M5）
     case imageTapped(TappedImage)           // src / alt / 画像データ取得クロージャ / 矩形（M5）
-    case highlightTapped(Highlight.ID, rects: [CGRect])
-    case selectionChanged(SelectedText?)
 }
 
 public enum ReaderError: Error, Sendable {
@@ -300,10 +313,10 @@ public enum ReaderError: Error, Sendable {
     case webContentTerminated                           // セッションは現在章を再読み込みする
 }
 
-public struct SelectedText: Sendable {
+public struct SelectedText: Sendable, Hashable {
     public let range: CFIRange
     public let text: String
-    public let rects: [CGRect]
+    public let rects: [CGRect]              // 可視ページ座標
 }
 ```
 
@@ -325,7 +338,8 @@ extension View {
 ```
 
 修飾子は SwiftUI の `Environment` で `EPUBReaderView` に届ける。既定は `.slide`、`.default` ジェスチャ、
-選択アクションなし。M1 実装済み（`selectionActions` は M3）。
+選択アクションなし。M1 実装済み。`selectionActions` は M3 実装済みで、`EPUBReaderView` が環境値を
+`ReaderSession.selectionActions` に転送する（§4.4）。
 
 ### 4.2 `PageTransition`
 
@@ -385,12 +399,18 @@ macOS のトラックパッドの 2 本指スワイプは `NSEvent.scrollWheel` 
 
 ```swift
 public struct SelectionAction: Identifiable, Sendable {
-    public var id: String
+    public var id: String                   // 省略時は title
     public var title: String
     public var systemImage: String?
     public var handler: @MainActor (SelectedText) -> Void
+    public init(id: String? = nil, title: String, systemImage: String? = nil, handler: @escaping @MainActor (SelectedText) -> Void)
 }
 ```
+
+M3 で変更: `SelectionAction` は EPUBUI ではなく EPUBRenderer に置く（umbrella の `EPUB` からは同じように見える）。
+メニューを組み立てるのは WebView のサブクラス（02-rendering §10）で、SwiftUI を使わないアプリも
+`ReaderSession.selectionActions` に直接設定できるようにするため。ハンドラには、メニューを開いた時点でセッションが
+保持していた選択（`currentSelection`）が渡る。
 
 ### 4.5 リサイズ
 

@@ -210,16 +210,19 @@ Swift は縦書きの通知を受けるとフレームを 3 ページ分の高�
 |---|---|
 | `layout({pageWidth, pageHeight, columnsPerPage, margins, ...})` | CSS 変数を更新し、`writing-mode` を判定して `{pageCount, writingMode}` を返す。`writingMode` は CSS の値（`horizontal-tb` / `vertical-rl` / `vertical-lr`） |
 | `goToPage(index)` | ページ数を測り直してから index をクランプし、スクロール位置を設定する。`{pageIndex, slot, pageCount, scrollLeft, scrollTop}` を返す（§1.2 のスロットと iOS の同期に使う） |
-| `captureAnchor(slot, margins)` / `pageForAnchor()` | M1〜M2 の暫定。可視ページ先頭のテキスト位置（`caretRangeFromPoint`）か要素を reader world 内の DOM アンカーとして保持し、再レイアウト後にそれを含むページを返す。縦書きではページ先頭は右上で、スロットのオフセットは y 方向（M2）。M3 で `cfiForPage` / `pageFor(cfi)` に置き換える |
 | `pageForFragment(id)` | 文書内リンクと目次の `#fragment` が指す要素のページを返す |
-| `pageFor(cfi)` | CFI を Range に解決し、`getBoundingClientRect` からページ番号を返す |
-| `cfiForPage(index)` | そのページの先頭に見えるテキスト位置の CFI を返す（`caretRangeFromPoint` を使う） |
-| `cfiForVisibleRange()` | 現在ページの先頭と末尾の CFI 範囲を返す |
-| `setHighlights([{id, cfiRange, color, style}])` | CSS Custom Highlight API（`CSS.highlights`）で描画する。DOM を変更しない |
-| `rectsFor(cfiRange)` | WebView 座標の矩形配列を返す（ハイライトのメニュー位置に使う） |
+| `pageFor(cfi)` | CFI（点、または範囲の始点）を Range に解決し、その文字（要素なら要素）の矩形からページ番号を返す。解決できなければ null |
+| `cfiForPage(index, margins)` | そのページの先頭に見えるテキスト位置の CFI を返す。3 スロットのフレーム内のページは `caretRangeFromPoint` を余白の内側から何点か試す。フレーム外のページ（`caretRangeFromPoint` が効かない）はテキストノードの矩形を走査し、ページ境界をまたぐノードは文字の矩形を二分探索して先頭文字を決める。テキストがなければ 1 ページに収まる要素、それもなければ葉要素（ページより大きい画像など）の CFI。何もなければ null（M3） |
+| `setHighlights([{id, cfiRange, color, style}])` | CSS Custom Highlight API（`CSS.highlights`、キー `reader-h-<id>`）で描画する。DOM を変更しない。`style` は `background` / `underline` で、`<style id="__reader_highlights">` に `::highlight()` 規則を書く。解決できた id の配列を返す |
+| `setTransientHighlight(cfiRange)` | 検索結果用の一時ハイライト 1 つ（キー `reader-transient`、`reader-before.css` でスタイル）。null で消す（M3） |
+| `rectsFor(cfiRange)` | WebView（3 スロットのフレーム）座標の矩形配列を返す。Swift 側がスロットのオフセットを引いて可視ページ座標にする |
 | `applySettings({...})` | CSS 変数とフォント上書き属性を更新する。必要なら `layout` を再実行する |
 | `currentSelection()` | 選択中の `{cfiRange, text, rects}` を返す |
 | `clearSelection()` | 選択を解除する |
+
+`layout` は `spineSteps`（`/6/4[chap01]` の形）も受け取り、生成する CFI の先頭に付ける。
+M3 で変更: `captureAnchor` / `pageForAnchor`（M1〜M2 の DOM アンカー）は削除した。`cfiForVisibleRange()` は
+使い道がまだないので実装していない。
 
 ### 4.2 JS → Swift
 
@@ -232,8 +235,9 @@ Swift は縦書きの通知を受けるとフレームを 3 ページ分の高�
 | `link` | `{href, isExternal}` | `a` のクリック（`preventDefault` 済み） |
 | `noteref` | `{href, html, text}` | `a[epub\:type~="noteref"]` のクリック。同一文書内なら参照先要素の `innerHTML` と `textContent` を同梱する |
 | `imageTap` | `{src, alt, rect}` | `img` または `svg image` のタップ |
-| `selectionChanged` | `{cfiRange, text, rects}` または `null` | `selectionchange` |
-| `tap` | `{x, y}` | リンクでも画像でもない場所のタップ。タップゾーン判定に使う |
+| `selectionChanged` | `{selection: {cfiRange, text, rects} \| null}` | `selectionchange`（120 ms デバウンス）。空白だけの選択は null |
+| `highlightTap` | `{id, rects}` | `setHighlights` で描いた範囲へのクリック。リンク → ハイライト → `tap` の順で判定する（M3） |
+| `tap` | `{x, y}` | リンクでもハイライトでもない場所のタップ。タップゾーン判定に使う |
 
 `a` のクリックは常に `preventDefault` し、ナビゲーションは Swift が決める。
 `WKNavigationDelegate.decidePolicyFor` でも初回読み込み以外は `.cancel` にして二重に防ぐ。
@@ -241,8 +245,11 @@ Swift は縦書きの通知を受けるとフレームを 3 ページ分の高�
 ### 4.3 CFI の JS 実装
 
 EPUBCore と同じ規則（01-core §5）で DOM を数える。WebKit の DOM には コメントノードが残るので
-`nodeType` が ELEMENT / TEXT 以外は読み飛ばし、隣接テキストは結合して数える。
-`Range` ↔ CFI の変換と、ID アサーションによる復元を実装する。
+`nodeType` が ELEMENT / TEXT / CDATA 以外は読み飛ばし、隣接テキスト（コメントで分断されたものを含む）は
+結合して 1 つの論理テキストノードとして数える。オフセットは UTF-16 コードユニット（DOM の単位そのまま）。
+`Range` ↔ CFI の変換、ID アサーションによる復元、テキストアサーションの照合と本文検索による再解決を実装する。
+テスト用に `describe` / `canonical` / `rangeParts` を公開し、`CFIScriptTests` が EPUBCore と同じ
+`cfi-vectors.json` を実 WKWebView で流す（M3）。
 
 ## 5. ページ分割とページ番号
 
@@ -286,10 +293,12 @@ M2 で決めた推定の規則: 比率を学習するのは 500 文字以上の�
 読書位置は常に CFI（表示ページ先頭の `cfiForPage`）で持つ。設定変更、リサイズ、章の再読み込みの後は
 `pageFor(cfi)` で同じテキストが含まれるページに戻す。ページ番号は復元の手段には使わない。
 
-M1〜M2 の暫定: CFI は M3 で入るため、それまでは `reader.js` が可視ページ先頭の DOM アンカー（§4.1 `captureAnchor`）を
-保持し、同じ文書の再レイアウト後に `pageForAnchor()` で戻す。アンカーは文書の再読み込みをまたげないので、
-章の再読み込み時は章内の進捗率（`currentPageIndex / (chapterPageCount - 1)`）で近似する。
-アプリに公開する位置は M3 まで spine index とページ index（03-api §3.2）。
+M3 実装済み: `ReaderSession` は章の読み込み、ページ移動、設定変更、`pageCountChanged` のたびに `cfiForPage` を呼び、
+`position: ReadingPosition`（CFI、spine index、目次の章名、章内・全体の進捗）を更新して
+`ReaderEvent.positionChanged` を出す。再レイアウトは `applySettings` の前に `cfiForPage(currentPageIndex)` を取り、
+後に `pageFor` で戻す（解決できなければ章内の進捗率で近似）。WebContent プロセスの終了後の再読み込みも
+`position.cfi` で戻す。テキストのないページ（画像だけの表紙）は要素の CFI、それもなければ章の `body` の CFI を
+位置にするので、章を表示した後は `position` が nil になることはない。M1〜M2 の DOM アンカーは削除した。
 
 再レイアウト中の見た目（M2）: `ReaderSession` は再レイアウトの前に可視ページのスナップショットを撮って
 `relayoutSnapshot` に置き、位置を復元し終えたら nil に戻す。表示用 WebView のページサイズ変更も再レイアウトの
@@ -400,12 +409,19 @@ iOS の `takeSnapshot` は画面に合成された見た目を撮る（macOS は
 
 ## 10. 選択と編集メニュー
 
-- iOS: `WKWebView` のサブクラスで `buildMenu(with:)` を上書きし、`SelectionAction` を `UIAction` として追加する。
-  実行時に `currentSelection()` で `{cfiRange, text}` を取り、アプリのハンドラに渡す。
-  「コピー」「調べる」「共有」はシステムのまま残す。
-- macOS: `WKWebView` のサブクラスで `willOpenMenu(_:with:)` を上書きし、`NSMenuItem` を追加する。
+- iOS: `WKWebView` のサブクラス `ReaderWebView` で `buildMenu(with:)` を上書きし、`SelectionAction` を `UIAction` の
+  インラインメニューとして `.standardEdit` の後ろに追加する。「コピー」「調べる」「共有」はシステムのまま残す。
+- macOS: 同じサブクラスで `willOpenMenu(_:with:)` を上書きし、`NSMenuItem` をメニューの先頭に追加する
+  （後ろに区切り線）。
+- M3 で変更: メニューを組み立てる時点では JS を同期的に呼べないので、`currentSelection()` を実行時に呼ぶのではなく、
+  `selectionChanged` メッセージで `ReaderSession.currentSelection` に保持している最新の選択をハンドラに渡す。
+  選択が未確定（デバウンス中）のときはアプリの項目を追加しない。アクションと選択は `SelectionMenuSource`
+  （2 つのクロージャ）でセッションから WebView に渡し、WebView はセッションを参照しない。
 - 既存ハイライトのタップは `reader.js` が `CSS.highlights` の範囲と当たり判定し、
-  `ReaderEvent.highlightTapped(id, rects)` を出す。メニュー表示はアプリ側。
+  `ReaderEvent.highlightTapped(id, rects)` を出す（矩形は可視ページ座標）。メニュー表示はアプリ側。
+- ハイライトの描画はセッションが `highlights` の変更時と各章の表示前（`setContentHidden(false)` の前）に
+  現在章の分だけ `setHighlights` で行う。`CSS.highlights` の `Range` は生きているので、同じ文書の再レイアウトでは
+  描き直さない。
 
 ## 11. 章の読み込み手順（まとめ）
 

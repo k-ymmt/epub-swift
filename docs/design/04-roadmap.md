@@ -56,6 +56,23 @@ macOS 27 は `swift test`（実 WKWebView）で縦書きのページ数・`scrol
 
 完了条件: ハイライトを保存して再起動後に同じ位置に出る。検索結果から該当ページへ飛べる。
 
+**完了（2026-11-09、コミット d2da1e2〜3640747 と、その後の文書・仕上げコミット）。** 完了条件は iOS 27 Simulator（iPhone 17 Pro）の
+`Examples/ReaderDemo` で確認した: moby-dick で "Call me Ishmael" を検索して結果をタップすると Chapter 1 の該当ページに移動し
+一時ハイライトが出る。長押しの編集メニューに Highlight / Underline が並び、Highlight で単語に黄色のハイライトが付く。
+アプリを終了して再起動し同じ本を開くと、同じ章・ページ（Chapter 6 / Page 1）に戻り、ハイライトが再描画される。
+ハイライト一覧からのジャンプと、ハイライトのタップ → 削除アラートも動く。macOS 27 は `swift test`（実 WKWebView）で
+選択 → `selectionChanged` と CFI 範囲、ハイライトの章ごとの適用と削除、ハイライトのタップ、検索結果への移動と一時ハイライト
+（横書き・縦書き）、コンテキストメニューへの項目追加とハンドラ呼び出しを検証した（デモアプリの画面操作による確認は
+今回もセッションに画面操作の許可がなく未実施）。
+実装中に設計を変えた点は各文書に「M3 で変更」として反映済み（01-core §5.1 / §5.2 / §5.3 / §6.1 / §6.2、
+02-rendering §4.1 / §4.2 / §4.3 / §5.3 / §10、03-api §2.3〜§2.6 / §3.2 / §3.4 / §4.1 / §4.4）。主な変更: CFI の文字オフセットは
+UTF-16 コードユニット、`CFI` は spine ステップを保持し `Publication.spineIndex(of:)` が idref を優先して解決する、
+`SelectionAction` は EPUBRenderer に置き `ReaderSession.selectionActions` を公開する、選択メニューは `currentSelection()` を
+その場で呼ばずデバウンス済みの `currentSelection` を使う、`cfiForVisibleRange` は未実装、`TextLength` は `TextMap` に統合、
+`SearchResult.matchedText` と `ReaderSession.pageIndex(for:)` を追加。
+積み残しは `TODO.md` に置く（読み込み前の初期位置指定、`cfiForPage` の確率的な先頭判定、iOS の選択メニューの自動テスト、
+ハイライトのスタイル更新時の差分適用など）。
+
 ### M4. FXL と見開き
 
 - ラッパー文書と `SpreadBuilder`、`page-spread-*` の尊重

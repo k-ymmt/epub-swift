@@ -182,43 +182,63 @@ EPUB CFI 1.1 のサブセットを実装する。
 | spine ステップ `/6/4[chap01]!` | 対応。パッケージ文書内の `spine` 要素の子 index から spineIndex を求める |
 | 要素ステップ `/4/2` | 対応（偶数 = 要素、奇数 = テキスト） |
 | ID アサーション `[id]` | 対応。index が合わない場合は id を優先して復元する |
-| 文字オフセット `:12` | 対応 |
-| テキストアサーション `[before,after]` | 生成時に前後 10 文字を付け、解決時に照合して補正する |
-| 範囲 `,start,end` | 対応（`CFIRange`） |
+| 文字オフセット `:12` | 対応。**UTF-16 コードユニット**で数える（M3 で変更。下記） |
+| テキストアサーション `[before,after]` | 生成時に前後 10 ユニット（同じテキストノード内）を付け、解決時に照合して補正する |
+| 範囲 `,start,end` | 対応（`CFIRange`）。共通の親パスでくくって書き出す |
 | 時間・空間オフセット `~` `@` | 非対応（パースは通し無視する） |
-| サイドバイアス `;s=` | 非対応 |
+| サイドバイアス `;s=` | 非対応（パースは通し捨てる） |
+
+M3 で変更: 文字オフセットの単位は UTF-16 コードユニットにした。WebKit の DOM（`Range` の offset、
+`caretRangeFromPoint`、`Text.data.length`）がこの単位なので、`reader.js` と EPUBCore が同じ数を出せる。
+サロゲートペア（絵文字など）は 2 と数える。CFI 1.1 は Unicode 文字を単位にしているが、他リーダーとの
+CFI 互換は目標にしていない（00-overview）。
+
+テキストノードの数え方: 隣接するテキスト / CDATA と、コメントで分断されたテキストは 1 つの論理テキストノードとして
+数える。EPUBCore の `XMLDocument` はコメントと CDATA を畳み込むので自然にそうなり、`reader.js` 側で同じ規則を
+実装している（02-rendering §4.3）。
 
 ### 5.2 型
 
 ```swift
 public struct CFI: Hashable, Codable, Sendable, Comparable, LosslessStringConvertible {
-    public let spineIndex: Int
-    public let steps: [Step]            // 文書内のステップ
-    public let characterOffset: Int?
-    public let textAssertion: TextAssertion?
+    public var spineSteps: [Step]       // `/6/4[chap01]`（`!` の前）。M3 で変更: spineIndex ではなくステップを持つ
+    public var steps: [Step]            // 文書内のステップ
+    public var characterOffset: Int?
+    public var textAssertion: TextAssertion?
+    public var spineIndex: Int          // spineSteps の最後の index から計算（index / 2 - 1）
     public init?(_ description: String)
     public var description: String      // "epubcfi(/6/4[chap01]!/4/2/1:10)"
+    public var withoutAssertions: CFI
 }
 
-public struct CFIRange: Hashable, Codable, Sendable {
-    public let start: CFI
-    public let end: CFI
+public struct CFIRange: Hashable, Codable, Sendable, LosslessStringConvertible {
+    public var start: CFI
+    public var end: CFI
+    public init(at cfi: CFI)            // 折りたたまれた範囲
+    public func contains(_ cfi: CFI) -> Bool
 }
 ```
 
-`Comparable` は spineIndex、各ステップの index、文字オフセットの順で比較する。
-同じ文書内のハイライトの並び替えやページ内判定に使う。
+M3 で変更: `CFI` は spine ステップをそのまま保持する。spineIndex はステップの index から求まるが、文書を跨いで
+正しく解決するには itemref の `idref` アサーションも必要なので、`Publication.spineIndex(of:)` が id を優先して
+spine item を探す（id が合わなければ index で引く。どちらも合わなければ nil）。`Codable` は単一の文字列。
+
+`Comparable` は spineIndex、各ステップの index（短い方が前）、文字オフセット（nil は 0）の順で比較する。
+同じ文書内のハイライトの並び替えやページ内判定に使う。アサーションは比較に関与しない。
 
 ### 5.3 生成と解決
 
 - `CFIGenerator`（EPUBCore）は軽量 DOM 上のノード + オフセットから CFI を作る。検索結果に使う。
 - `CFIResolver`（EPUBCore）は CFI を軽量 DOM 上のノード + オフセットに解決する。テスト用と、
   検索スニペットの切り出しに使う。
-- 文字列アサーション（`[text]`）は生成時に常に付け、解決時はステップが指す位置のテキストと照合する。
-  一致しなければ同じ spine item 内で前後に近いテキストを探して再解決する（修復を諦めた文書と、
-  libxml2 の回復規則が変わった後の壊れた文書のための後ろ盾。§4.1）。
-- 同じアルゴリズムを `reader.js` に実装し、WebView 内では DOM `Range` と相互変換する（02-rendering §5）。
-- 両実装は同じテストベクタで検証する（`Tests/Fixtures/cfi-vectors.json`）。
+- 文字列アサーション（`[before,after]`）は生成時に常に付け、解決時はステップが指す位置のテキストと照合する。
+  一致しなければ同じ spine item の本文全体から `before + after` を探し、構造的な位置に最も近い出現に
+  再解決する（修復を諦めた文書と、libxml2 の回復規則が変わった後の壊れた文書のための後ろ盾。§4.1）。
+  ID アサーションは常に index より優先する。
+- 同じアルゴリズムを `reader.js` に実装し、WebView 内では DOM `Range` と相互変換する（02-rendering §4.3）。
+- 両実装は同じテストベクタで検証する（`Tests/Fixtures/cfi-vectors.json`: resolve / parse / ranges / order /
+  spineIndex。Core は `CFITests`、JS は実 WKWebView 上の `CFIScriptTests`）。ベクタの対象文書は
+  `Tests/Fixtures/cfi-sample.epub`（コメント分断テキスト、CDATA、ruby、サロゲートペア、全角・ダイアクリティクスを含む）。
 
 spine ステップの生成には OPF の `package` 要素の子要素順が必要なので、`Publication` は
 `spineElementIndex`（`package` 直下での `spine` の位置から計算した偶数 index）と、各 itemref の
@@ -229,36 +249,47 @@ spine ステップの生成には OPF の `package` 要素の子要素順が必�
 ### 6.1 抽出
 
 spine item ごとに軽量 DOM を深さ優先で走査し、テキストノードを連結する。
-`TextMap` として「連結文字列上のオフセット → (ノードパス, ノード内オフセット)」の対応表を持つ。
-ブロック要素（p, div, h1-h6, li, td, br など）の境界には改行を挟み、スニペットが行をまたがないようにする。
-`ruby` の `rt` / `rp` は検索対象から除く（本文は親文字だけ）。
+`TextMap` として「連結文字列上の UTF-16 オフセット → (ノードパス, ノード内オフセット)」の対応表
+（`segments`）を持ち、`location(ofUTF16Offset:)` / `utf16Offset(of:)` で双方向に引ける。
+ブロック要素（p, div, h1-h6, li, td, br など）の境界には改行を挟み、スニペットが行をまたがないようにする
+（改行には segment を作らない）。`ruby` の `rt` / `rp`、`script` / `style` / `template`、`head` / `title` は
+検索対象から除く（本文は親文字だけ）。
+
+M3 で変更: `TextLength.characterCount`（M2 のページ数推定）は `TextMap.collapsedCharacterCount` に置き換えた。
+推定とテキスト抽出が同じ規則で数える。
 
 ### 6.2 検索
 
 ```swift
 public actor SearchService {
     public init(container: EPUBContainer)
-    public func search(_ query: String, options: SearchOptions = .default)
-        -> AsyncThrowingStream<SearchResult, Error>
+    public func prepare()                                   // バックグラウンドで抽出を始める
+    public nonisolated func search(_ query: String, options: SearchOptions = .default)
+        -> AsyncThrowingStream<SearchResult, Error>         // 線形 spine item を読書順に
+    public func results(for query: String, options: SearchOptions = .default, spineIndex: Int) async -> [SearchResult]
+    public func textMap(forSpineIndex index: Int) async -> TextMap?
 }
 
-public struct SearchOptions: Sendable {
+public struct SearchOptions: Sendable, Hashable {
     public var caseInsensitive = true
     public var diacriticInsensitive = true
     public var widthInsensitive = true     // 全角半角を同一視
 }
 
-public struct SearchResult: Sendable, Identifiable {
+public struct SearchResult: Sendable, Identifiable, Hashable {
     public let id: UUID
     public let spineIndex: Int
     public let range: CFIRange
-    public let snippet: String             // 前後 40 文字程度
+    public let snippet: String             // 前後 40 ユニット程度。改行で切る
     public let matchRangeInSnippet: Range<String.Index>
+    public let matchedText: String         // M3 で追加: 文書中の一致文字列（幅・大文字小文字の違いを含む）
 }
 ```
 
 - `NSString.range(of:options:range:locale:)` に `.caseInsensitive`、`.diacriticInsensitive`、
   `.widthInsensitive` を渡す。Foundation の比較はロケール対応で、日本語の全角半角を扱える。
+  ロケールは `metadata.language` から作る。一致範囲は `TextMap` で CFI 範囲に変換する
+  （`CFIGenerator` でテキストアサーション付き）。
 - 抽出結果は spine item ごとに actor 内でキャッシュする。初回検索時に順に構築し、
   `AsyncThrowingStream` で章ごとに結果を流す。UI は到着順に表示できる。
 - 構築した `characterCount` を `SpineItem` に反映し、ページ数推定の精度を上げる。
