@@ -105,7 +105,7 @@ struct BookView: View {
                     status = "Warning: \(warning)"
                 case .tapped(_, let zone):
                     if zone == .center { status = "" }
-                case .pageChanged, .paginationUpdated:
+                case .positionChanged, .paginationUpdated, .highlightTapped, .selectionChanged:
                     break
                 }
             }

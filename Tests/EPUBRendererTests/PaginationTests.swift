@@ -73,7 +73,7 @@ import EPUBCore
         #expect(pagination.totalPages > 100)
         #expect(host.session.currentPage == pagination.pageRange(ofSpineIndex: 2).lowerBound)
         #expect(events.count >= 10)
-        #expect(events.last == pagination)
+        try await host.waitUntil { events.last == pagination } // the collector appends asynchronously
 
         // Neighbours of the current chapter have snapshots; the session hands them out at the chapter boundary.
         let service = host.session.paginationService

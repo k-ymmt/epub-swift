@@ -153,8 +153,6 @@ protocol SpineRenderer: AnyObject {
     func layout(_ parameters: LayoutParameters) async throws -> LayoutResult
     func applySettings(_ parameters: LayoutParameters) async throws -> LayoutResult
     func goToPage(_ index: Int) async throws -> GoToPageResult
-    func captureAnchor(slot: Int, margins: PageMargins) async throws -> Bool
-    func pageForAnchor() async throws -> Int?
     func pageForFragment(_ fragment: String) async throws -> Int?
     /// CFI of the first text on page `index` (nil for a page without content).
     func cfiForPage(_ index: Int, margins: PageMargins) async throws -> CFI?

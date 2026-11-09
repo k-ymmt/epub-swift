@@ -233,7 +233,7 @@ final class SessionHost {
         #expect(host.session.currentPageIndex > pageBefore)
     }
 
-    @Test func emitsPageChangedAndTapEvents() async throws {
+    @Test func emitsPositionChangedEvents() async throws {
         let host = try await SessionHost(url: Self.mobyDick)
         var received: [ReaderEvent] = []
         let stream = host.session.events
@@ -242,18 +242,59 @@ final class SessionHost {
         }
         await host.session.loadIfNeeded()
         await host.session.goForward()
-        func pageChanges() -> [ReaderEvent] {
-            received.filter { if case .pageChanged = $0 { return true }; return false }
+        func positions() -> [ReadingPosition] {
+            received.compactMap { if case .positionChanged(let p) = $0 { return p }; return nil }
         }
-        try await host.waitUntil { pageChanges().count >= 2 }
+        try await host.waitUntil { positions().count >= 2 }
         collector.cancel()
-        guard case .pageChanged(let spine, let page, _) = pageChanges()[1] else {
-            Issue.record("expected pageChanged, got \(received)")
-            return
-        }
         #expect(received.contains { if case .paginationUpdated = $0 { return true }; return false })
-        #expect(spine == host.session.currentSpineIndex)
-        #expect(page == 1)
+        let last = positions()[1]
+        #expect(last.spineIndex == host.session.currentSpineIndex)
+        #expect(last == host.session.position)
+        #expect(last.cfi.spineIndex == host.session.currentSpineIndex)
+        // The title page is a single image: the position points at the element, not at a character.
+        #expect(last.cfi.characterOffset == nil)
+        #expect(last.cfi.steps.count >= 1)
+        #expect(last.progressionInChapter > 0)
+        #expect(last.chapterTitle == "Moby-Dick")
+    }
+
+    /// `position` is a CFI that `go(to:)` brings back after moving elsewhere, and that survives a chapter reload
+    /// and a layout change (docs/design/02-rendering.md §5.3).
+    @Test func positionRoundTripsThroughCFI() async throws {
+        let host = try await SessionHost(url: Self.mobyDick)
+        await host.session.loadIfNeeded()
+        await host.session.go(toSpineIndex: 6)
+        for _ in 0..<3 { await host.session.goForward() }
+        let position = try #require(host.session.position)
+        #expect(position.spineIndex == 6)
+        #expect(position.cfi.description.hasPrefix("epubcfi(/6/14[xchapter_001]!/4"))
+        #expect(position.chapterTitle?.hasPrefix("Chapter 1.") == true)
+        let page = host.session.currentPageIndex
+        #expect(page == 3)
+
+        // Somewhere else, then back by CFI: same chapter, same page.
+        await host.session.go(toSpineIndex: 8)
+        #expect(host.session.currentSpineIndex == 8)
+        await host.session.go(to: position)
+        #expect(host.session.currentSpineIndex == 6)
+        #expect(host.session.currentPageIndex == page)
+        #expect(host.session.position?.cfi.withoutAssertions == position.cfi.withoutAssertions)
+
+        // Within the chapter, by a CFI of a later page.
+        await host.session.go(toPageInChapter: 7)
+        let later = try #require(host.session.position?.cfi)
+        await host.session.go(to: position.cfi)
+        #expect(host.session.currentPageIndex == page)
+        await host.session.go(to: later)
+        #expect(host.session.currentPageIndex == 7)
+        #expect(host.session.pageIndex(for: position) == host.session.pagination.pageIndex(spineIndex: 6, pageIndex: page))
+
+        // A chapter-level CFI (no text offset) lands on the chapter's first page; an unknown spine step is ignored.
+        await host.session.go(to: CFI("epubcfi(/6/14[xchapter_001]!/4)")!)
+        #expect(host.session.currentPageIndex == 0)
+        await host.session.go(to: CFI("epubcfi(/6/999[nope]!/4)")!)
+        #expect(host.session.currentSpineIndex == 6)
     }
 }
 

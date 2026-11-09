@@ -22,7 +22,6 @@
     pageHeight: 0,
     pageCount: 1,
     writingMode: "horizontal-tb",
-    anchor: null,
     readySent: false,
     // Spine steps of this document ("/6/14[xchapter_001]"), set by `layout`; prefixed to every generated CFI.
     spineSteps: [],
@@ -179,119 +178,6 @@
     const sc = scroller();
     if (isVertical()) { return pageForDocumentY(rect.top + sc.scrollTop); }
     return pageForDocumentX(rect.left + sc.scrollLeft);
-  }
-
-  // Remember what is at the start of the page currently in `slot`, so that the same text can be found
-  // again after a relayout (settings change, resize). The anchor is a DOM Range held in this world;
-  // it is not a position format and never leaves the page.
-  // Horizontal: the page starts at its top-left. Vertical (vertical-rl): at its top-right, and the page's
-  // slot offset is along y (the frame is three pages tall).
-  function captureAnchor(slot, margins) {
-    state.anchor = null;
-    if (!state.pageWidth || !state.pageHeight) { return false; }
-    const mh = (margins && margins.horizontal) || 0;
-    const mv = (margins && margins.vertical) || 0;
-    const vertical = isVertical();
-    const originX = vertical ? 0 : (slot || 0) * state.pageWidth;
-    const originY = vertical ? (slot || 0) * state.pageHeight : 0;
-    let xs, ys;
-    if (vertical) {
-      const right = state.pageWidth - mh;
-      xs = [right - 2, right - 16, right - 48, right - 96, right - state.pageWidth / 3, state.pageWidth / 2, mh + 8];
-      ys = [mv + 2, mv + state.pageHeight / 4, mv + state.pageHeight / 2];
-    } else {
-      xs = [mh + 2, mh + state.pageWidth / 4, mh + state.pageWidth / 2];
-      ys = [mv + 2, mv + 16, mv + 48, mv + 96, mv + state.pageHeight / 3, mv + state.pageHeight / 2, state.pageHeight - mv - 8];
-    }
-    let fallbackElement = null;
-    const outer = vertical ? xs : ys;
-    const inner = vertical ? ys : xs;
-    for (const o of outer) {
-      for (const i of inner) {
-        const cx = originX + (vertical ? o : i);
-        const cy = originY + (vertical ? i : o);
-        const range = document.caretRangeFromPoint ? document.caretRangeFromPoint(cx, cy) : null;
-        if (range && range.startContainer && range.startContainer.nodeType === Node.TEXT_NODE) {
-          const text = range.startContainer.data || "";
-          if (text.trim().length > 0) {
-            state.anchor = { kind: "range", node: range.startContainer, offset: range.startOffset };
-            return true;
-          }
-        }
-        if (!fallbackElement) {
-          const el = document.elementFromPoint(cx, cy);
-          if (el && el !== document.body && el !== root() && el.id !== SENTINEL_ID) { fallbackElement = el; }
-        }
-      }
-    }
-    // No text at the probe points (e.g. a page with only an image or a short last page): take the first text node
-    // that has a box inside the page. Walking the text nodes is slower but only happens on relayout.
-    const inPage = firstTextInPage(originX, originY);
-    if (inPage) {
-      state.anchor = inPage;
-      return true;
-    }
-    // Last resort: an element, but only one that fits in a page. A container that spans many columns
-    // (a chapter <div>) would restore to the page where it starts, far from the current page.
-    if (fallbackElement) {
-      let el = fallbackElement;
-      while (el && el !== document.body && el !== root()) {
-        const r = el.getBoundingClientRect();
-        if (r.width <= state.pageWidth + 1 && r.height <= state.pageHeight + 1) {
-          state.anchor = { kind: "element", node: el };
-          return true;
-        }
-        el = el.parentElement;
-      }
-    }
-    return false;
-  }
-
-  function firstTextInPage(originX, originY) {
-    const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
-    const r = document.createRange();
-    const right = originX + state.pageWidth;
-    const bottom = originY + state.pageHeight;
-    const vertical = isVertical();
-    let node;
-    while ((node = walker.nextNode())) {
-      if (!node.data || node.data.trim().length === 0) { continue; }
-      r.selectNodeContents(node);
-      const rects = r.getClientRects();
-      for (let k = 0; k < rects.length; k++) {
-        const rect = rects[k];
-        if (rect.width <= 0 || rect.height <= 0) { continue; }
-        if (rect.right <= originX || rect.left >= right || rect.bottom <= originY || rect.top >= bottom) { continue; }
-        const px = vertical ? rect.left + rect.width / 2 : Math.max(rect.left, originX) + 1;
-        const py = vertical ? Math.max(rect.top, originY) + 1 : rect.top + rect.height / 2;
-        const caret = document.caretRangeFromPoint ? document.caretRangeFromPoint(px, py) : null;
-        if (caret && caret.startContainer === node) {
-          return { kind: "range", node: node, offset: caret.startOffset };
-        }
-        return { kind: "range", node: node, offset: 0 };
-      }
-    }
-    return null;
-  }
-
-  // Page index that now contains the captured anchor, or null when there is none.
-  function pageForAnchor() {
-    const a = state.anchor;
-    if (!a || !a.node || !a.node.isConnected) { return null; }
-    let rect = null;
-    if (a.kind === "range") {
-      const r = document.createRange();
-      const len = (a.node.data || "").length;
-      const off = Math.min(a.offset, len);
-      r.setStart(a.node, off);
-      r.setEnd(a.node, Math.min(len, off + 1));
-      const rects = r.getClientRects();
-      rect = rects.length > 0 ? rects[0] : r.getBoundingClientRect();
-    } else {
-      rect = a.node.getBoundingClientRect();
-    }
-    if (!rect || (rect.width === 0 && rect.height === 0 && rect.left === 0 && rect.top === 0)) { return null; }
-    return pageForRect(rect);
   }
 
   // Page index of the element with the given id (URL fragment), or null.
@@ -840,6 +726,8 @@
         if (r.width <= state.pageWidth + 1 && r.height <= state.pageHeight + 1) { return { node: el, offset: null }; }
         el = el.parentElement;
       }
+      // A leaf (an image taller than a page) has nothing finer to point at; its start is the nearest position.
+      if (fallbackElement.children.length === 0) { return { node: fallbackElement, offset: null }; }
     }
     return null;
   }
@@ -1105,8 +993,6 @@
     version: 1,
     layout: layout,
     goToPage: goToPage,
-    captureAnchor: captureAnchor,
-    pageForAnchor: pageForAnchor,
     pageForFragment: pageForFragment,
     applySettings: applySettings,
     cfiForPage: cfiForPage,

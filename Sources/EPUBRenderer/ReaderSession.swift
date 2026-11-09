@@ -8,9 +8,9 @@ import UIKit
 
 /// The reading state of one publication (docs/design/03-api.md §3.2).
 ///
-/// M1 scope: load a spine item into the web view, page within it, cross chapter boundaries, apply
-/// `ReaderSettings` with position restoration, and provide page snapshots for the UI layer's page-turn effects.
-/// CFI-based positions, highlights, selection and search arrive with M3.
+/// Loads a spine item into the web view, pages within it, crosses chapter boundaries, applies `ReaderSettings`
+/// with position restoration, provides page snapshots for the UI layer's page-turn effects (M1 / M2), and keeps
+/// the reading position as a CFI (`position`), the selection, the highlights and the search (M3).
 @MainActor
 @Observable
 public final class ReaderSession {
@@ -62,6 +62,11 @@ public final class ReaderSession {
     /// restored in the new layout; nil otherwise. `EPUBReaderView` shows it over the web view and cross-fades it
     /// away (docs/design/03-api.md §4.5).
     public private(set) var relayoutSnapshot: PageSnapshot?
+
+    /// The reading position: the CFI of the first text on the visible page, refreshed after every page change and
+    /// relayout (docs/design/02-rendering.md §5.3). nil until the first chapter is shown, or for a page without
+    /// text (an image-only page keeps the previous value). `ReaderEvent.positionChanged` mirrors it.
+    public private(set) var position: ReadingPosition?
 
     /// Size of one visible page. Set by `EPUBReaderView`; changing it re-layouts and restores the position.
     public var viewportSize: CGSize = .zero {
@@ -160,8 +165,8 @@ public final class ReaderSession {
         renderer.onProcessTerminated = { [weak self] in
             guard let self else { return }
             self.emit(.error(.webContentTerminated))
-            let page = self.currentPageIndex
-            self.enqueue { [weak self] in await self?.loadChapter(self?.currentSpineIndex ?? 0, target: .page(page)) }
+            let target: LoadTarget = self.position.map { .cfi($0.cfi) } ?? .page(self.currentPageIndex)
+            self.enqueue { [weak self] in await self?.loadChapter(self?.currentSpineIndex ?? 0, target: target) }
         }
         renderer.setBackgroundColor(settings.theme.background)
         renderer.setContentHidden(true)
@@ -242,6 +247,33 @@ public final class ReaderSession {
         }
     }
 
+    /// Moves to the page that holds `cfi` (loading its chapter when needed). An unresolvable CFI in a known
+    /// chapter lands on the chapter's first page.
+    public func go(to cfi: CFI) async {
+        guard let spineIndex = publication.spineIndex(of: cfi) else { return }
+        await run { [self] in
+            if spineIndex == currentSpineIndex, hasLoaded {
+                let page = (try? await renderer.pageFor(cfi)) ?? nil
+                await goToPageInChapter(page ?? currentPageIndex)
+            } else {
+                await loadChapter(spineIndex, target: .cfi(cfi))
+            }
+        }
+    }
+
+    /// Restores a position recorded earlier (`position`), for example at the next launch.
+    public func go(to position: ReadingPosition) async {
+        await go(to: position.cfi)
+    }
+
+    /// Book page index of a recorded position, from the chapter's current page count and the position's
+    /// in-chapter progression. Approximate for chapters that are still estimates; nil for non-linear items.
+    public func pageIndex(for position: ReadingPosition) -> Int? {
+        guard let chapter = pagination.chapter(spineIndex: position.spineIndex) else { return nil }
+        let inChapter = Int((position.progressionInChapter * Double(max(0, chapter.pageCount - 1))).rounded())
+        return pagination.pageIndex(spineIndex: position.spineIndex, pageIndex: inChapter)
+    }
+
     /// Snapshot of the current, next or previous page for the UI's page-turn effect. At a chapter boundary the
     /// neighbouring chapter's first / last page comes from the pre-pagination web view (02-rendering §8.3); nil when
     /// it has not been captured yet (the UI substitutes the background color).
@@ -297,6 +329,7 @@ public final class ReaderSession {
         case last
         case page(Int)
         case fragment(String)
+        case cfi(CFI)
     }
 
     func loadChapter(_ spineIndex: Int, target: LoadTarget) async {
@@ -326,6 +359,7 @@ public final class ReaderSession {
             case .last: targetPage = pageCount - 1
             case .page(let p): targetPage = min(max(0, p), pageCount - 1)
             case .fragment(let fragment): targetPage = (try? await renderer.pageForFragment(fragment)) ?? 0
+            case .cfi(let cfi): targetPage = ((try? await renderer.pageFor(cfi)) ?? nil) ?? 0
             }
             let result = try await renderer.goToPage(targetPage)
             guard generation == loadGeneration else { return }
@@ -335,9 +369,9 @@ public final class ReaderSession {
             isLoading = false
             hasLoaded = true
             renderer.setContentHidden(false)
-            emit(.pageChanged(spineIndex: spineIndex, pageIndex: result.pageIndex, pageCount: result.pageCount))
             recordChapterMeasurement(spineIndex: spineIndex, pageCount: result.pageCount)
             paginationService.setCurrentSpineIndex(spineIndex)
+            await refreshPosition()
         } catch {
             guard generation == loadGeneration else { return }
             isLoading = false
@@ -360,8 +394,8 @@ public final class ReaderSession {
             let result = try await renderer.goToPage(clamped)
             currentPageIndex = result.pageIndex
             chapterPageCount = result.pageCount
-            emit(.pageChanged(spineIndex: currentSpineIndex, pageIndex: result.pageIndex, pageCount: result.pageCount))
             recordChapterMeasurement(spineIndex: currentSpineIndex, pageCount: result.pageCount)
+            await refreshPosition()
             return true
         } catch {
             emit(.error(.scriptFailed(error.localizedDescription)))
@@ -445,7 +479,8 @@ public final class ReaderSession {
     }
 
     /// Re-applies the CSS variables, then returns to the page that holds the text that was at the top of the
-    /// page before (02-rendering §5.3; an in-document DOM anchor until CFI arrives with M3).
+    /// page before: the CFI of the page start is taken before the relayout and resolved after it
+    /// (02-rendering §5.3). Falls back to the in-chapter ratio when the page has no text.
     private func relayoutPreservingPosition() async {
         guard hasLoaded else { isLoading = false; return }
         isLoading = true
@@ -458,13 +493,13 @@ public final class ReaderSession {
         }
         selectLayout()
         do {
-            let anchored = try await renderer.captureAnchor(slot: renderer.visibleSlot, margins: settings.pageMargins)
+            let anchor = (try? await renderer.cfiForPage(currentPageIndex, margins: settings.pageMargins)) ?? position?.cfi
             let ratio = chapterPageCount > 1 ? Double(currentPageIndex) / Double(chapterPageCount - 1) : 0
             applyPageSize()
             let layout = try await renderer.applySettings(LayoutParameters(pageSize: viewportSize, settings: settings, rootStyle: schemeHandler.rootStyle, spineSteps: publication.cfiSpineSteps(forSpineIndex: currentSpineIndex)))
             chapterPageCount = layout.pageCount
             var targetPage = min(currentPageIndex, layout.pageCount - 1)
-            if anchored, let page = try await renderer.pageForAnchor() {
+            if let anchor, let page = try await renderer.pageFor(anchor) {
                 targetPage = page
             } else if layout.pageCount > 1 {
                 targetPage = Int((ratio * Double(layout.pageCount - 1)).rounded())
@@ -472,11 +507,62 @@ public final class ReaderSession {
             let result = try await renderer.goToPage(targetPage)
             currentPageIndex = result.pageIndex
             chapterPageCount = result.pageCount
-            emit(.pageChanged(spineIndex: currentSpineIndex, pageIndex: result.pageIndex, pageCount: result.pageCount))
             recordChapterMeasurement(spineIndex: currentSpineIndex, pageCount: result.pageCount)
+            await refreshPosition()
         } catch {
             emit(.error(.scriptFailed(error.localizedDescription)))
         }
+    }
+
+    // MARK: - Position
+
+    /// Reads the CFI of the visible page's first text and publishes it as `position` / `positionChanged`.
+    private func refreshPosition() async {
+        guard hasLoaded else { return }
+        let spineIndex = currentSpineIndex
+        let pageIndex = currentPageIndex
+        let cfi: CFI?
+        do {
+            cfi = try await renderer.cfiForPage(pageIndex, margins: settings.pageMargins)
+        } catch {
+            logger.debug("cfiForPage failed: \(error.localizedDescription)")
+            cfi = nil
+        }
+        // The page may have moved on while the script ran; only publish a position for the page still shown.
+        guard spineIndex == currentSpineIndex, pageIndex == currentPageIndex else { return }
+        // A page with nothing addressable (an empty page) keeps the chapter's last position, or falls back to the
+        // chapter's body element so `position` is never nil once a chapter has loaded.
+        let fallback = position?.spineIndex == spineIndex ? position?.cfi : nil
+        let cfiToPublish = cfi ?? fallback ?? CFI(spineSteps: publication.cfiSpineSteps(forSpineIndex: spineIndex), steps: [CFI.Step(index: 4)])
+        let updated = ReadingPosition(
+            cfi: cfiToPublish,
+            spineIndex: spineIndex,
+            chapterTitle: chapterTitle(forSpineIndex: spineIndex),
+            progressionInChapter: chapterProgression,
+            totalProgression: totalProgression
+        )
+        position = updated
+        emit(.positionChanged(updated))
+    }
+
+    /// Label of the last table-of-contents entry (document order) that points at the spine item.
+    private func chapterTitle(forSpineIndex index: Int) -> String? {
+        func search(_ entries: [TOCEntry]) -> String? {
+            var found: String?
+            for entry in entries {
+                if entry.spineIndex == index { found = entry.label }
+                if let nested = search(entry.children) { found = nested }
+            }
+            return found
+        }
+        return search(publication.toc)
+    }
+
+    /// Viewport (three-slot frame) rectangles → visible page coordinates.
+    func pageRects(fromViewport rects: [CGRect]) -> [CGRect] {
+        let dx = writingMode.isVertical ? 0 : CGFloat(renderer.visibleSlot) * viewportSize.width
+        let dy = writingMode.isVertical ? CGFloat(renderer.visibleSlot) * viewportSize.height : 0
+        return rects.map { $0.offsetBy(dx: -dx, dy: -dy) }
     }
 
     // MARK: - Pagination
@@ -532,7 +618,8 @@ public final class ReaderSession {
             if currentPageIndex >= chapterPageCount {
                 enqueue { [weak self] in await self?.goToPageInChapter((self?.chapterPageCount ?? 1) - 1) }
             } else {
-                emit(.pageChanged(spineIndex: currentSpineIndex, pageIndex: currentPageIndex, pageCount: chapterPageCount))
+                // The text at the page start is unchanged but the progressions moved.
+                enqueue { [weak self] in await self?.refreshPosition() }
             }
         case .link(let href, let isExternal):
             handleLink(href: href, isExternal: isExternal)
@@ -545,8 +632,13 @@ public final class ReaderSession {
                 ? (pageX < viewportSize.width * 0.25 ? .leading : (pageX >= viewportSize.width * 0.75 ? .trailing : .center))
                 : .center
             emit(.tapped(point, zone: zone))
-        case .highlightTap, .selectionChanged:
-            break // M3 step 3 wires these to ReaderEvent
+        case .highlightTap(let id, let rects):
+            if let uuid = UUID(uuidString: id) {
+                emit(.highlightTapped(uuid, rects: pageRects(fromViewport: rects)))
+            }
+        case .selectionChanged(let selection):
+            let selected = selection.map { SelectedText(range: $0.range, text: $0.text, rects: pageRects(fromViewport: $0.rects)) }
+            emit(.selectionChanged(selected))
         }
     }
 

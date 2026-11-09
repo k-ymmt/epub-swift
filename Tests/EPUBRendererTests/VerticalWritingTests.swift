@@ -4,7 +4,7 @@ import EPUBCore
 @_spi(EPUBUI) @testable import EPUBRenderer
 
 /// Vertical writing (`kusamakura-japanese-vertical-writing`): writing-mode detection, column stacking along y,
-/// paging with `scrollTop`, the three-slot frame along y and the DOM anchor (docs/design/02-rendering.md §3.4, §1.2).
+/// paging with `scrollTop`, the three-slot frame along y and the CFI position restore (docs/design/02-rendering.md §3.4, §1.2, §5.3).
 @Suite(.serialized) @MainActor struct VerticalWritingTests {
     static let kusamakura = ReaderSessionTests.fixtures.appendingPathComponent("kusamakura-japanese-vertical-writing.epub")
 

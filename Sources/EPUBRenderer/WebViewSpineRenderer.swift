@@ -190,19 +190,6 @@ final class WebViewSpineRenderer: NSObject, SpineRenderer {
         #endif
     }
 
-    func captureAnchor(slot: Int, margins: PageMargins) async throws -> Bool {
-        let result = try await call(
-            "return window.__epubReader.captureAnchor(slot, margins)",
-            arguments: ["slot": slot, "margins": ["horizontal": margins.horizontal, "vertical": margins.vertical]]
-        )
-        return (result as? Bool) ?? false
-    }
-
-    func pageForAnchor() async throws -> Int? {
-        let result = try await call("return window.__epubReader.pageForAnchor()")
-        return result as? Int
-    }
-
     func pageForFragment(_ fragment: String) async throws -> Int? {
         let result = try await call("return window.__epubReader.pageForFragment(fragment)", arguments: ["fragment": fragment])
         return result as? Int
