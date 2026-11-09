@@ -616,6 +616,11 @@ public final class ReaderSession {
         let target: LoadTarget
         if let retry {
             (spineIndex, target) = retry
+            // The crash can come after the load's `ready` (it was already in flight when the process died): the load
+            // is then in a script call to the dead document, which fails with WKError 5 ("unsupported type") rather
+            // than with `webContentTerminated`. A new generation stops that load at its next check so the failure is
+            // not reported as `loadFailed`; the reload below takes over.
+            loadGeneration += 1
         } else if hasLoaded {
             spineIndex = position.flatMap { isShowing(spineIndex: $0.spineIndex) ? $0.spineIndex : nil } ?? currentSpineIndex
             target = position.map { .cfi($0.cfi) } ?? .page(currentPageIndex)

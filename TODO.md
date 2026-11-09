@@ -60,5 +60,4 @@
 
 ## 判断不要の不具合の修正（2026-11-09）の積み残し
 
-- [ ] `Tests/EPUBRendererTests/RecoveryTests.swift` `crashWhileAChapterLoadsRetriesThatLoad` が不安定（修正前の main でも 5 回中 4 回失敗した）。WebContent を SIGKILL した後の読み直しで `ready` は届くが、続く `window.__epubReader.layout(params)` が「JavaScript execution returned a result of an unsupported type」で失敗し `loadFailed` が出る。新しいプロセスの起動直後に古い文書へスクリプトが届いている可能性がある。原因を調べ、読み直し直後のスクリプト失敗を 1 回だけ再試行するなどで直す。
 - [ ] `Sources/EPUBUI/EPUBReaderView.swift`: `selectionActions` を body の評価ごとに `ReaderSession.selectionActions`（`@ObservationIgnored` にした）へ代入するようにしたが、自動テストはない（EPUBUITests に SwiftUI をホストする仕組みがない）。id が同じでハンドラだけ変わった配列で新しいハンドラが呼ばれることを、デモか UI テストで確認する。
