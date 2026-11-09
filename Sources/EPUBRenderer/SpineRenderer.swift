@@ -81,6 +81,10 @@ enum BridgeMessage: Sendable {
     case highlightTap(id: String, rects: [CGRect])
     /// The document selection changed; nil when it was cleared or collapsed.
     case selectionChanged(BridgeSelection?)
+    /// A noteref was tapped (M5). `rect` is in viewport coordinates.
+    case noteref(BridgeNoteref)
+    /// An image was tapped (M5). `rect` and the point are in viewport coordinates.
+    case imageTap(src: String, alt: String?, rect: CGRect, x: Double, y: Double)
 
     init?(body: Any) {
         guard let dict = body as? [String: Any], let type = dict["type"] as? String else { return nil }
@@ -101,6 +105,25 @@ enum BridgeMessage: Sendable {
             self = .highlightTap(id: id, rects: BridgeMessage.rects(from: payload["rects"]))
         case "selectionChanged":
             self = .selectionChanged(BridgeSelection(payload["selection"]))
+        case "noteref":
+            guard let href = payload["href"] as? String else { return nil }
+            self = .noteref(BridgeNoteref(
+                href: href,
+                rect: BridgeMessage.rects(from: [payload["rect"]].compactMap { $0 }).first ?? .zero,
+                isSameDocument: payload["sameDocument"] as? Bool ?? false,
+                html: payload["html"] as? String,
+                text: payload["text"] as? String,
+                cfi: (payload["cfi"] as? String).flatMap(CFI.init)
+            ))
+        case "imageTap":
+            guard let src = payload["src"] as? String else { return nil }
+            self = .imageTap(
+                src: src,
+                alt: payload["alt"] as? String,
+                rect: BridgeMessage.rects(from: [payload["rect"]].compactMap { $0 }).first ?? .zero,
+                x: payload["x"] as? Double ?? 0,
+                y: payload["y"] as? Double ?? 0
+            )
         default:
             return nil
         }
@@ -115,6 +138,16 @@ enum BridgeMessage: Sendable {
             return CGRect(x: x, y: y, width: width, height: height)
         }
     }
+}
+
+/// `{href, rect, sameDocument, html?, text?, cfi?}` from a `noteref` message (M5).
+struct BridgeNoteref: Sendable {
+    var href: String
+    var rect: CGRect
+    var isSameDocument: Bool
+    var html: String?
+    var text: String?
+    var cfi: CFI?
 }
 
 /// `{cfiRange, text, rects}` from `currentSelection` / `selectionChanged`. Rects are viewport coordinates.

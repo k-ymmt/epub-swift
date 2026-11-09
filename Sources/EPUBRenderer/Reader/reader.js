@@ -8,6 +8,9 @@
 //   ready {writingMode, href}       after `load` and `document.fonts.ready` (writingMode: computed value, e.g. "vertical-rl")
 //   pageCountChanged {pageCount}    when late image loads change the layout
 //   link {href, isExternal}         click on <a>; the default is prevented, Swift decides navigation
+//   noteref {href, rect, sameDocument, html?, text?, cfi?}   click on <a epub:type="noteref"> (M5); the note's content
+//                                   when it is in the same document
+//   imageTap {src, alt, rect, x, y} click on <img> / SVG <image> outside a link (M5); not on fixed-layout pages
 //   highlightTap {id, rects}        click/tap inside a highlight set with setHighlights
 //   tap {x, y}                      click/tap on anything that is not a link (viewport coordinates)
 //   selectionChanged {cfiRange, text, rects} | null   the selection changed (debounced)
@@ -43,6 +46,15 @@
   // In an iframe (a spread wrapper's page, or an iframe inside a content document). Framed documents never post to
   // Swift: the wrapper proxies for them, and an iframe inside a chapter has no say in the chapter's pagination.
   const framed = (function () { try { return window.top !== window; } catch (e) { return true; } })();
+
+  const OPS_NS = "http://www.idpf.org/2007/ops";
+  const XLINK_NS = "http://www.w3.org/1999/xlink";
+  // `epub:type` tokens: the namespaced attribute in XHTML, a plain `epub:type` attribute in a document parsed as HTML.
+  function hasEpubType(el, type) {
+    if (!el || !el.getAttributeNS) { return false; }
+    const value = el.getAttributeNS(OPS_NS, "type") || el.getAttribute("epub:type") || "";
+    return value.split(/\s+/).indexOf(type) >= 0;
+  }
 
   function root() { return document.documentElement; }
   function scroller() { return document.scrollingElement || document.documentElement; }
@@ -1097,6 +1109,18 @@
           case "link":
             post("link", payload);
             break;
+          case "noteref": {
+            const out = Object.assign({}, payload);
+            if (payload.rect) { out.rect = mapRects(frame, [payload.rect], false)[0] || null; }
+            post("noteref", out);
+            break;
+          }
+          case "imageTap": {
+            const p = toParent(frame, payload.x || 0, payload.y || 0);
+            const rect = payload.rect ? (mapRects(frame, [payload.rect], kind === "vertical")[0] || null) : null;
+            post("imageTap", { src: payload.src, alt: payload.alt, rect: rect, x: p.x, y: p.y });
+            break;
+          }
           case "tap": {
             const p = toParent(frame, payload.x || 0, payload.y || 0);
             post("tap", { x: p.x, y: p.y, viewportWidth: sp.pageWidth, viewportHeight: sp.pageHeight });
@@ -1323,6 +1347,26 @@
     return;
   }
 
+  // --- notes (M5) ----------------------------------------------------------------------------------
+  // Footnote / endnote / rearnote asides that a noteref in this document points at are read in a popup, so they
+  // are taken out of the page flow (`data-reader-note`, display: none in reader-before.css). Notes that nothing
+  // here refers to (a separate notes document, notes reached only by plain links) stay visible. The DOM itself is
+  // unchanged, so CFIs are not affected.
+  function hideReferencedNotes() {
+    const NOTE_TYPES = ["footnote", "endnote", "rearnote"];
+    const anchors = document.querySelectorAll("a[href], a[*|href]");
+    for (let k = 0; k < anchors.length; k++) {
+      const a = anchors[k];
+      if (!hasEpubType(a, "noteref")) { continue; }
+      const target = sameDocumentTarget(resolveHref(a) || "");
+      const aside = target && target.closest ? target.closest("aside") : null;
+      if (aside && NOTE_TYPES.some(function (t) { return hasEpubType(aside, t); })) {
+        aside.setAttribute("data-reader-note", "hidden");
+      }
+    }
+  }
+  try { hideReferencedNotes(); } catch (e) { /* never block the document on this */ }
+
   // --- selection ----------------------------------------------------------------------------------
 
   function selectionPayload() {
@@ -1355,11 +1399,77 @@
 
   // --- events -----------------------------------------------------------------------------------
 
-  function resolveHref(a) {
-    let raw = a.getAttribute("href");
-    if (raw === null && a.href && typeof a.href === "object" && a.href.baseVal !== undefined) { raw = a.href.baseVal; }
+  // `href` (HTML) or `xlink:href` / `href` (SVG `a` and `image`), resolved against the document.
+  function resolveHref(el) {
+    let raw = el.getAttribute("href");
+    if (raw === null) { raw = el.getAttributeNS(XLINK_NS, "href"); }
+    if (raw === null && el.href && typeof el.href === "object" && el.href.baseVal !== undefined) { raw = el.href.baseVal; }
     if (raw === null || raw === undefined) { return null; }
     try { return new URL(raw, document.baseURI).href; } catch (e) { return raw; }
+  }
+
+  // The client rect of `el` under the point (an inline link can wrap onto several lines), else its bounding box.
+  function rectAt(el, x, y) {
+    const rects = el.getClientRects();
+    for (let k = 0; k < rects.length; k++) {
+      const r = rects[k];
+      if (x >= r.left - 1 && x <= r.right + 1 && y >= r.top - 1 && y <= r.bottom + 1) { return r; }
+    }
+    return rects.length ? rects[0] : el.getBoundingClientRect();
+  }
+  function rectObject(r) { return { x: r.left, y: r.top, width: r.width, height: r.height }; }
+
+  // Element of this document a same-document URL's fragment names, or null (another document, no fragment).
+  function sameDocumentTarget(href) {
+    let url;
+    try { url = new URL(href); } catch (e) { return null; }
+    if (url.origin !== location.origin || url.pathname !== location.pathname || !url.hash) { return null; }
+    let id = url.hash.slice(1);
+    try { id = decodeURIComponent(id); } catch (e) { /* keep raw */ }
+    return document.getElementById(id);
+  }
+
+  // The element whose content a note popup shows: the note itself, or the block around an inline anchor that only
+  // marks where the note starts (`<p><a id="fn1"/>1. Text</p>`).
+  function noteElement(target) {
+    if (!target) { return null; }
+    const inline = /^(a|span|sup|sub|b|i|em|strong|small)$/i;
+    if (inline.test(target.localName)) {
+      const block = target.parentElement && target.parentElement.closest("aside, li, p, dd, dt, div, section, blockquote, td");
+      if (block && block !== document.body) { return block; }
+    }
+    return target;
+  }
+
+  // noteref click (02-rendering §4.2, M5): the note's markup and text when it is in this document.
+  function noteref(a, href, x, y) {
+    const payload = { href: href, rect: rectObject(rectAt(a, x, y)), sameDocument: false };
+    const target = sameDocumentTarget(href);
+    if (target) {
+      const note = noteElement(target);
+      payload.sameDocument = true;
+      payload.html = note.innerHTML;
+      payload.text = (note.textContent || "").replace(/\s+/g, " ").trim();
+      payload.cfi = CFI.fromNode(note, null);
+    }
+    post("noteref", payload);
+  }
+
+  // img / SVG image tap (M5). Not on a fixed-layout page: the picture is the page, and taps there turn pages.
+  function imageTap(img, x, y) {
+    let src = null;
+    if (img.localName === "img") { src = img.currentSrc || img.src || resolveHref(img); }
+    else { src = resolveHref(img); }
+    if (!src) { return false; }
+    let alt = img.getAttribute("alt");
+    if (!alt) { alt = img.getAttribute("aria-label"); }
+    if (!alt) {
+      const svg = img.closest("svg");
+      const title = svg && svg.querySelector("title");
+      if (title) { alt = (title.textContent || "").trim(); }
+    }
+    post("imageTap", { src: src, alt: alt || null, rect: rectObject(img.getBoundingClientRect()), x: x, y: y });
+    return true;
   }
 
   document.addEventListener("click", function (e) {
@@ -1370,10 +1480,13 @@
       e.stopPropagation();
       const href = resolveHref(a);
       if (href) {
-        post("link", { href: href, isExternal: /^(https?|mailto|tel|sms):/i.test(href) });
+        if (hasEpubType(a, "noteref")) { noteref(a, href, e.clientX, e.clientY); }
+        else { post("link", { href: href, isExternal: !/^(epub|about|data|blob):/i.test(href) }); }
       }
       return;
     }
+    const img = target && target.closest && !state.fixedLayout ? target.closest("img, image") : null;
+    if (img && imageTap(img, e.clientX, e.clientY)) { return; }
     const highlight = highlightAt(e.clientX, e.clientY);
     if (highlight) {
       post("highlightTap", { id: highlight.id, rects: rectList(highlight.range.getClientRects()) });

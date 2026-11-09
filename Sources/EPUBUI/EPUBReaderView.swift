@@ -111,18 +111,32 @@ public struct EPUBReaderView: View {
         case .tapped(let point, _):
             let zone = gestures.tapZones.zone(forX: point.x, width: session.viewportSize.width)
             eventHandler?.handle(.tapped(point, zone: zone))
-            guard gestures.tapToTurnEnabled, !turn.isActive, !session.isZoomed else { return }
-            switch zone {
-            case .leading:
-                Task { await turn.turn(layoutDirection == .rightToLeft ? .forward : .backward) }
-            case .trailing:
-                Task { await turn.turn(layoutDirection == .rightToLeft ? .backward : .forward) }
-            case .center:
-                break
-            }
+            turnForTap(in: zone)
+        case .imageTapped(let image):
+            // A picture that fills the page (a cover, an illustration) would otherwise swallow every tap: in a side
+            // zone the tap turns the page as anywhere else, and only a tap in the centre opens the image (M5).
+            let zone = gestures.tapZones.zone(forX: image.point.x, width: session.viewportSize.width)
+            if zone != .center, turnForTap(in: zone) { return }
+            eventHandler?.handle(event)
         default:
             eventHandler?.handle(event)
         }
+    }
+
+    /// Turns the page for a tap in a side zone. Returns false when tap-to-turn does not apply (centre, disabled,
+    /// zoomed in, a turn already running).
+    @discardableResult
+    private func turnForTap(in zone: TapZone) -> Bool {
+        guard gestures.tapToTurnEnabled, !session.isZoomed else { return false }
+        let direction: PageDirection
+        switch zone {
+        case .leading: direction = layoutDirection == .rightToLeft ? .forward : .backward
+        case .trailing: direction = layoutDirection == .rightToLeft ? .backward : .forward
+        case .center: return false
+        }
+        guard !turn.isActive else { return true }
+        Task { await turn.turn(direction) }
+        return true
     }
 }
 

@@ -20,3 +20,10 @@ The repository stores each sample as an unpacked directory under `30/`. The `.ep
 
 Hand-written XHTML documents that are not well-formed XML, copied from `Spikes/Sources/SpikeKit/Fixtures.swift`
 (`Fixtures.brokenDocs`). Written for this project; no external source.
+
+## Hand-written EPUBs
+
+| File | Source | Purpose |
+|---|---|---|
+| `cfi-sample.epub` | `cfi-sample/` (see its README) | CFI test vectors and search (M3). Written for this project. |
+| `links-sample.epub` | `links-sample/` (see its README) | Links, noterefs, hidden notes and image taps, including a fixed-layout page (M5). Written for this project; `picture.png` is a generated gradient. |

@@ -55,3 +55,32 @@ public enum CFIGenerator {
         return assertion.isEmpty ? nil : assertion
     }
 }
+
+extension CFIGenerator {
+    /// The CFI of the element with this `id` (a link's fragment), prefixed with `spineSteps`; nil when the document
+    /// has no such element (M5, internal links and noterefs into other documents).
+    public static func cfi(forElementWithID id: String, in document: XMLDocument, spineSteps: [CFI.Step]) -> CFI? {
+        guard let path = document.path(ofElementWithID: id) else { return nil }
+        return cfi(for: DocumentLocation(path: path), in: document, spineSteps: spineSteps)
+    }
+}
+
+extension XMLDocument {
+    /// Path of the element whose content a note popup shows for a link to `id`: the element itself, or, when that is
+    /// an inline anchor marking where the note starts (`<p><a id="fn1"/>1. Text</p>`), the nearest enclosing block
+    /// (M5; the same rule as `reader.js` `noteElement`). nil when the document has no such element.
+    public func notePath(forElementWithID id: String) -> [Int]? {
+        guard var path = path(ofElementWithID: id) else { return nil }
+        let inline: Set<String> = ["a", "span", "sup", "sub", "b", "i", "em", "strong", "small"]
+        let blocks: Set<String> = ["aside", "li", "p", "dd", "dt", "div", "section", "blockquote", "td"]
+        guard let element = element(at: path), inline.contains(element.name.lowercased()) else { return path }
+        while !path.isEmpty {
+            path.removeLast()
+            guard let ancestor = self.element(at: path) else { return nil }
+            let name = ancestor.name.lowercased()
+            if name == "body" { break }
+            if blocks.contains(name) { return path }
+        }
+        return self.path(ofElementWithID: id)
+    }
+}

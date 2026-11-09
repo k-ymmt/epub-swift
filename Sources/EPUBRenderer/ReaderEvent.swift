@@ -21,6 +21,77 @@ public enum ReaderEvent: Sendable {
     case selectionChanged(SelectedText?)
     /// A fixed-layout face was pinch-zoomed in (`true`) or returned to scale 1 (M4). Mirrors `ReaderSession.isZoomed`.
     case zoomChanged(Bool)
+    /// A link inside the publication was followed (M5). The session has already moved there; the CFI is the link's
+    /// target element (the fragment), or the first text of the target document when the link has no fragment.
+    case internalLink(CFI)
+    /// A tap on a noteref (`<a epub:type="noteref">`, M5). The session does not move; the app shows the note
+    /// (a popover, a sheet) or goes to `NoteContent.cfi`.
+    case noteref(NoteContent)
+    /// A tap on an image (`<img>`, SVG `<image>`) that is not inside a link, on a reflowable page (M5).
+    case imageTapped(TappedImage)
+}
+
+/// The note a noteref points at (docs/design/03-api.md §3.4, M5).
+///
+/// For a note in the same document the content comes from the rendered DOM (`html` is the note element's
+/// `innerHTML`, `text` its whitespace-collapsed text). For a note in another document of the publication, `text`
+/// comes from EPUBCore's parse of that document and `html` is nil. `cfi` addresses the note element in both cases,
+/// so the app can `go(to:)` it.
+public struct NoteContent: Sendable, Hashable {
+    /// Container path of the document that holds the note.
+    public let path: String
+    /// Fragment of the link (the note element's id), if any.
+    public let fragment: String?
+    /// Spine index of the note's document; nil when the document is not in the spine.
+    public let spineIndex: Int?
+    /// The note element; nil when the target could not be resolved.
+    public let cfi: CFI?
+    /// The note's markup (same-document notes only).
+    public let html: String?
+    /// The note's text with whitespace collapsed; nil when the target could not be resolved.
+    public let text: String?
+    /// `true` when the note is in the document that holds the noteref.
+    public let isInSameDocument: Bool
+    /// The noteref's box on the visible page (anchor for a popover).
+    public let sourceRect: CGRect
+
+    public init(path: String, fragment: String?, spineIndex: Int?, cfi: CFI?, html: String?, text: String?, isInSameDocument: Bool, sourceRect: CGRect) {
+        self.path = path
+        self.fragment = fragment
+        self.spineIndex = spineIndex
+        self.cfi = cfi
+        self.html = html
+        self.text = text
+        self.isInSameDocument = isInSameDocument
+        self.sourceRect = sourceRect
+    }
+}
+
+/// An image the reader tapped (docs/design/03-api.md §3.4, M5).
+public struct TappedImage: Sendable {
+    /// The image URL as the document resolved it (`epub://…` for publication resources).
+    public let url: URL
+    /// Container path of the image; nil when it is not a publication resource (a `data:` URL).
+    public let path: String?
+    /// `alt` (or the SVG's `aria-label` / `<title>`); nil when there is none.
+    public let alt: String?
+    /// The image's box on the visible page (it may extend past the page).
+    public let rect: CGRect
+    /// Where the tap landed, on the visible page. EPUBUI turns the page instead of reporting the image when this is
+    /// in a side tap zone.
+    public let point: CGPoint
+    /// Reads the image bytes from the container (font-obfuscation rules do not apply to images), or decodes a
+    /// `data:` URL.
+    public let data: @Sendable () async throws -> Data
+
+    public init(url: URL, path: String?, alt: String?, rect: CGRect, point: CGPoint, data: @escaping @Sendable () async throws -> Data) {
+        self.url = url
+        self.path = path
+        self.alt = alt
+        self.rect = rect
+        self.point = point
+        self.data = data
+    }
 }
 
 /// Horizontal third of the page a tap landed in, as classified by the UI layer's tap zones.

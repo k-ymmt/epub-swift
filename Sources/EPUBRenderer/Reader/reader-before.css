@@ -108,3 +108,14 @@ ruby {
 ::highlight(reader-transient) {
   background-color: rgba(255, 170, 0, 0.45);
 }
+
+/* Notes read in a popup (M5, 02-rendering §4.2): reader.js marks the footnote / endnote / rearnote asides that a
+   noteref in the same document points at. They leave the page flow; the DOM (and every CFI) is unchanged. */
+[data-reader-note="hidden"] {
+  display: none !important;
+}
+
+/* The `hidden` attribute wins over publisher rules such as `aside { display: block }` (M5). */
+[hidden]:not([hidden="until-found" i]) {
+  display: none !important;
+}

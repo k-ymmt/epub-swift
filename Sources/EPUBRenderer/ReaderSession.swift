@@ -785,6 +785,13 @@ public final class ReaderSession {
         return search(publication.toc)
     }
 
+    /// Viewport (three-slot frame) point → visible page coordinates: the slot offset is along the paging axis.
+    func pagePoint(x: Double, y: Double) -> CGPoint {
+        let pageX = writingMode.isVertical ? x : x - Double(renderer.visibleSlot) * viewportSize.width
+        let pageY = writingMode.isVertical ? y - Double(renderer.visibleSlot) * viewportSize.height : y
+        return CGPoint(x: pageX, y: pageY)
+    }
+
     /// Viewport (three-slot frame) rectangles → visible page coordinates.
     func pageRects(fromViewport rects: [CGRect]) -> [CGRect] {
         let dx = writingMode.isVertical ? 0 : CGFloat(renderer.visibleSlot) * viewportSize.width
@@ -856,15 +863,16 @@ public final class ReaderSession {
                 // The text at the page start is unchanged but the progressions moved.
                 enqueue { [weak self] in await self?.refreshPosition() }
             }
-        case .link(let href, let isExternal):
-            handleLink(href: href, isExternal: isExternal)
+        case .link(let href, _):
+            handleLink(href: href)
+        case .noteref(let note):
+            handleNoteref(note)
+        case .imageTap(let src, let alt, let rect, let x, let y):
+            handleImageTap(src: src, alt: alt, rect: rect, x: x, y: y)
         case .tap(let x, let y):
-            // Viewport coordinates → visible page coordinates: the slot offset is along the paging axis.
-            let pageX = writingMode.isVertical ? x : x - Double(renderer.visibleSlot) * viewportSize.width
-            let pageY = writingMode.isVertical ? y - Double(renderer.visibleSlot) * viewportSize.height : y
-            let point = CGPoint(x: pageX, y: pageY)
+            let point = pagePoint(x: x, y: y)
             let zone: TapZone = viewportSize.width > 0
-                ? (pageX < viewportSize.width * 0.25 ? .leading : (pageX >= viewportSize.width * 0.75 ? .trailing : .center))
+                ? (point.x < viewportSize.width * 0.25 ? .leading : (point.x >= viewportSize.width * 0.75 ? .trailing : .center))
                 : .center
             emit(.tapped(point, zone: zone))
         case .highlightTap(let id, let rects):
@@ -879,34 +887,92 @@ public final class ReaderSession {
         }
     }
 
-    private func handleLink(href: String, isExternal: Bool) {
-        guard let url = URL(string: href) else { return }
-        if isExternal || url.scheme != EPUBSchemeHandler.scheme {
+    // MARK: - Links, notes, images (M5)
+
+    /// A tap on a link: external URLs go to the app, links inside the publication are followed here and reported as
+    /// `internalLink` once the target is on screen (02-rendering §4.2).
+    private func handleLink(href: String) {
+        switch LinkDestination.resolve(href, publicationID: container.id, publication: publication, contains: container.contains(path:)) {
+        case .external(let url):
             emit(.externalLink(url))
-            return
+        case .spineItem(let index, let path, let fragment):
+            enqueue { [weak self] in await self?.followInternalLink(spineIndex: index, path: path, fragment: fragment) }
+        case .resource(let path):
+            logger.debug("link to a non-spine resource ignored: \(path)")
+        case .missing(let path):
+            emit(.warning(.missingResource(path: path, referencedFrom: publication.readingOrder[currentSpineIndex].path)))
+        case .ignored:
+            logger.debug("link ignored: \(href)")
         }
-        guard url.host == container.id.description else {
-            emit(.externalLink(url))
-            return
-        }
-        let path = ContainerPath.normalize(url.path.removingPercentEncoding ?? url.path)
-        let fragment = url.fragment
-        if let spineIndex = publication.spineIndex(ofPath: path) {
-            if isShowing(spineIndex: spineIndex), let fragment {
-                enqueue { [weak self] in
-                    guard let self else { return }
-                    if let page = try? await self.renderer.pageForFragment(fragment) {
-                        await self.goToPageInChapter(page)
-                    }
-                }
-            } else if isShowing(spineIndex: spineIndex), currentUnit?.isFixedLayout == true {
-                // The other page of the visible spread: nothing to load.
-            } else {
-                enqueue { [weak self] in await self?.loadChapter(spineIndex, target: fragment.map { .fragment($0) } ?? .first) }
+    }
+
+    /// Moves to a spine item (and the element its fragment names), then emits `internalLink`.
+    private func followInternalLink(spineIndex: Int, path: String, fragment: String?) async {
+        if isShowing(spineIndex: spineIndex), hasLoaded {
+            // The same document (or the other page of the visible fixed-layout spread): only the page may change.
+            if let fragment, let page = try? await renderer.pageForFragment(fragment) {
+                await goToPageInChapter(page)
             }
         } else {
-            emit(.warning(.missingResource(path: path, referencedFrom: publication.readingOrder[currentSpineIndex].path)))
+            await loadChapter(spineIndex, target: fragment.map { .fragment($0) } ?? .first)
         }
+        guard hasLoaded, isShowing(spineIndex: spineIndex) else { return }
+        let cfi = await FragmentLookup.cfi(path: path, fragment: fragment, spineIndex: spineIndex, in: container)
+            ?? position.flatMap { publication.spineIndex(of: $0.cfi) == spineIndex ? $0.cfi : nil }
+            ?? CFI(spineSteps: publication.cfiSpineSteps(forSpineIndex: spineIndex), steps: [CFI.Step(index: 4)])
+        emit(.internalLink(cfi))
+    }
+
+    private func handleNoteref(_ note: BridgeNoteref) {
+        let rect = pageRects(fromViewport: [note.rect]).first ?? .zero
+        let destination = LinkDestination.resolve(note.href, publicationID: container.id, publication: publication, contains: container.contains(path:))
+        let path: String
+        let fragment: String?
+        let spineIndex: Int?
+        switch destination {
+        case .spineItem(let index, let p, let f):
+            path = p; fragment = f; spineIndex = index
+        case .resource(let p):
+            path = p; fragment = URL(string: note.href)?.fragment; spineIndex = nil
+        case .external, .missing, .ignored:
+            // A noteref that leaves the publication is an ordinary link.
+            handleLink(href: note.href)
+            return
+        }
+        if note.isSameDocument {
+            emit(.noteref(NoteContent(path: path, fragment: fragment, spineIndex: spineIndex, cfi: note.cfi, html: note.html, text: note.text, isInSameDocument: true, sourceRect: rect)))
+            return
+        }
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            let found = if let fragment { await FragmentLookup.note(path: path, fragment: fragment, spineIndex: spineIndex, in: self.container) } else { nil as (cfi: CFI?, text: String)? }
+            self.emit(.noteref(NoteContent(path: path, fragment: fragment, spineIndex: spineIndex, cfi: found?.cfi, html: nil, text: found?.text, isInSameDocument: false, sourceRect: rect)))
+        }
+    }
+
+    private func handleImageTap(src: String, alt: String?, rect: CGRect, x: Double, y: Double) {
+        guard let url = URL(string: src) else { return }
+        let path: String?
+        switch LinkDestination.resolve(src, publicationID: container.id, publication: publication, contains: container.contains(path:)) {
+        case .resource(let p), .missing(let p): path = p
+        case .spineItem(_, let p, _): path = p
+        case .external, .ignored: path = nil
+        }
+        let container = self.container
+        let data: @Sendable () async throws -> Data = {
+            if let path { return try await container.data(at: path) }
+            if url.scheme?.lowercased() == "data" { return try Data(contentsOf: url) }
+            throw ReaderError.loadFailed(spineIndex: -1, underlying: "not a publication resource: \(src)")
+        }
+        let image = TappedImage(
+            url: url,
+            path: path,
+            alt: alt.flatMap { $0.isEmpty ? nil : $0 },
+            rect: pageRects(fromViewport: [rect]).first ?? .zero,
+            point: pagePoint(x: x, y: y),
+            data: data
+        )
+        emit(.imageTapped(image))
     }
 
     // MARK: - Helpers

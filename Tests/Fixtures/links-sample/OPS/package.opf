@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<package xmlns="http://www.idpf.org/2007/opf" version="3.0" unique-identifier="uid" prefix="rendition: http://www.idpf.org/vocab/rendition/#">
+  <metadata xmlns:dc="http://purl.org/dc/elements/1.1/">
+    <dc:identifier id="uid">urn:uuid:5c0e8f4e-9d7a-4c55-9f0e-1b6f2a0c5d11</dc:identifier>
+    <dc:title>Links, notes and images</dc:title>
+    <dc:language>en</dc:language>
+    <meta property="dcterms:modified">2026-11-09T00:00:00Z</meta>
+  </metadata>
+  <manifest>
+    <item id="nav" href="nav.xhtml" media-type="application/xhtml+xml" properties="nav"/>
+    <item id="c1" href="c1.xhtml" media-type="application/xhtml+xml"/>
+    <item id="c2" href="c2.xhtml" media-type="application/xhtml+xml"/>
+    <item id="fxl" href="fxl.xhtml" media-type="application/xhtml+xml"/>
+    <item id="notes" href="notes.xhtml" media-type="application/xhtml+xml"/>
+    <item id="picture" href="picture.png" media-type="image/png"/>
+  </manifest>
+  <spine>
+    <itemref idref="c1"/>
+    <itemref idref="c2"/>
+    <itemref idref="fxl" properties="rendition:layout-pre-paginated rendition:spread-none"/>
+    <itemref idref="notes" linear="no"/>
+  </spine>
+</package>
