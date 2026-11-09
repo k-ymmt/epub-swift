@@ -83,3 +83,11 @@
 - [ ] 横書き多段組のスクロール範囲を `html::after` で広げる対策（02-rendering §3.4）は WebKit の挙動に依存している。WebKit が末尾 padding を含めるように変わっても箱がページ数ちょうどなので害はないが、`PageAlignmentTests` が落ちたら最初に疑う。
 - [ ] iOS 27 Simulator の通し確認（iPhone 17 Pro / iPad Pro 11-inch）は、この M5 では links-sample・アラビア語・The Waste Land（難読化フォント、検索）を中心に行い、Moby-Dick・草枕・はるこ・Page blanche・Voyage of Life は M4 までの確認に頼った。
 
+## M5 の積み残し（2026-11-09 の Codex 敵対的レビューで確認した不具合。いずれも未修正）
+
+- [ ] `Sources/EPUBRenderer/ReaderSession.swift` `followInternalLink`: 表示中の文書を指すフラグメントなしのリンク（4 ページ目にいるときの `href="c1.xhtml"`）でページが動かない。同じ文書の分岐は `fragment` があるときだけ `goToPageInChapter` を呼ぶので、そのまま 4 ページ目に留まり、`internalLink` も現在の `position` の CFI で出る。別文書の分岐と同じく `fragment == nil` なら 0 ページ目へ移動し、CFI は本文の先頭にする。
+- [ ] `Sources/EPUBRenderer/LinkDestination.swift` `resolve` と `reader.js` `pageForFragment`: フラグメントを Swift 側で `removingPercentEncoding` したあと、`reader.js` が `decodeURIComponent` でもう一度戻すので、`id="foo%20bar"` を指す `href="#foo%2520bar"` が `foo bar` を探して見つからない（同じ文書では動かず、別文書では先頭ページに落ちる）。`pageForFragment` には復号済みの id を渡す取り決めにして JS 側の復号をやめる（`reader.js` 内で生の href から呼んでいる箇所があれば、そこで 1 回だけ復号する）。
+- [ ] `Sources/EPUBRenderer/ReaderSession.swift` `handleNoteref`: spine 外の文書（`.resource`）を指す noteref は `URL(string:)?.fragment` を復号せずに `FragmentLookup.note` に渡すので、`notes.xhtml#%E6%B3%A8` のような非 ASCII の id の注が見つからず、`NoteContent.text` が nil になる。`LinkDestination.resolve` と同じ復号を通す（`.resource` にもフラグメントを持たせるのが素直）。
+- [ ] `reader.js` `hideReferencedNotes` と `SearchService`: noteref から参照される aside は `display: none` で隠すが、検索の索引（EPUBCore の `TextMap`）には aside の本文が入るので、links-sample で「first footnote」を検索して `show(_:)` しても注は表示されず、ページも動かず、一時ハイライトも見えない。検索で隠れた注に当たったら noteref と同じ `NoteContent` を出すか、索引から隠れる注を除くか、`show` の間だけ注を表示するかを決める。
+- [ ] `Sources/EPUBRenderer/ReaderSession.swift` `webContentProcessDidTerminate`: 章 8 の `ready` 待ちの間に `go(toSpineIndex: 9)` がキューに入った状態で WebContent が落ちると、章 8 の読み直しがキューの末尾に追加されるので、章 9 を開いたあとに章 8 へ戻ってしまう。読み直しの操作に `loadGeneration` を持たせ、その後に新しいナビゲーションが始まっていたら捨てる（またはキューの先頭に入れる）。
+- [ ] `Sources/EPUBRenderer/ReaderSession.swift` `webContentProcessDidTerminate`: 30 秒以内の自動読み直しが上限（3 回）に達して読み直しをやめたあとも `hasLoaded` / 表示中の unit が残るので、`go(to: position)` などが「表示中の章」の分岐でスクリプトを呼ぶだけになり、白いままの web view が読み直されない（制御フローから推定。4 回落とす実機確認はしていない）。上限で止めるときは `hasLoaded = false` にして、次のナビゲーションが `loadChapter` を通るようにする。
