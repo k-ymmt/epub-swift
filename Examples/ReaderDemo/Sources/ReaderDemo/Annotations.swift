@@ -27,9 +27,21 @@ final class BookStore {
         // A hash of the id, so that ids differing only in punctuation (`A-B.epub`, `A_B.epub`) get separate files.
         let name = SHA256.hash(data: Data(bookID.utf8)).map { String(format: "%02x", $0) }.joined()
         url = directory.appendingPathComponent("\(name).json")
+        Self.migrateLegacyFile(bookID: bookID, in: directory, to: url)
         let contents = (try? Data(contentsOf: url)).flatMap { try? JSONDecoder().decode(Contents.self, from: $0) } ?? Contents()
         highlights = contents.highlights
         position = contents.position
+    }
+
+    /// Earlier versions named the file after the book id with every non-alphanumeric character replaced by `_`
+    /// (`moby-dick` → `moby_dick.json`). The first book to open with such a file takes it over (moved, not copied:
+    /// ids that differ only in punctuation shared that file, and the contents should not appear under two books).
+    static func migrateLegacyFile(bookID: String, in directory: URL, to url: URL) {
+        let fileManager = FileManager.default
+        let legacyName = bookID.unicodeScalars.map { CharacterSet.alphanumerics.contains($0) ? String($0) : "_" }.joined()
+        let legacy = directory.appendingPathComponent("\(legacyName).json")
+        guard legacy != url, !fileManager.fileExists(atPath: url.path), fileManager.fileExists(atPath: legacy.path) else { return }
+        try? fileManager.moveItem(at: legacy, to: url)
     }
 
     private func save() {

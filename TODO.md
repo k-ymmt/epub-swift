@@ -61,5 +61,4 @@
 ## 判断不要の不具合の修正（2026-11-09）の積み残し
 
 - [ ] `Tests/EPUBRendererTests/RecoveryTests.swift` `crashWhileAChapterLoadsRetriesThatLoad` が不安定（修正前の main でも 5 回中 4 回失敗した）。WebContent を SIGKILL した後の読み直しで `ready` は届くが、続く `window.__epubReader.layout(params)` が「JavaScript execution returned a result of an unsupported type」で失敗し `loadFailed` が出る。新しいプロセスの起動直後に古い文書へスクリプトが届いている可能性がある。原因を調べ、読み直し直後のスクリプト失敗を 1 回だけ再試行するなどで直す。
-- [ ] `Examples/ReaderDemo/Sources/ReaderDemo/Annotations.swift` `BookStore`: 保存ファイル名を book ID の SHA-256 に変えたので、以前の名前（英数字以外を `_` にしたもの、例 `moby_dick.json`）に保存したハイライトと位置が読まれなくなった（Codex レビューで確認）。旧ファイルがあれば読み込んで新しい名前に移すかを決める。旧名は別の本と衝突していた可能性があるので、移すなら同じ旧名に対応する本が 1 冊だけのときに限るなど。
 - [ ] `Sources/EPUBUI/EPUBReaderView.swift`: `selectionActions` を body の評価ごとに `ReaderSession.selectionActions`（`@ObservationIgnored` にした）へ代入するようにしたが、自動テストはない（EPUBUITests に SwiftUI をホストする仕組みがない）。id が同じでハンドラだけ変わった配列で新しいハンドラが呼ばれることを、デモか UI テストで確認する。
