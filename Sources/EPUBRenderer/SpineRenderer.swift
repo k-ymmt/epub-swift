@@ -13,6 +13,8 @@ public typealias PlatformView = UIView
 struct LayoutResult: Sendable {
     var pageCount: Int
     var writingMode: WritingMode
+    /// Columns per page in effect (2 for a horizontal reflowable spread; 1 otherwise, M4).
+    var columnsPerPage: Int = 1
 }
 
 /// Result of `reader.js` `goToPage`.
@@ -35,6 +37,9 @@ struct LayoutParameters: Sendable {
     var rootStyle: String? = nil
     /// Spine steps of the document being laid out (`/6/14[xchapter_001]`), prefixed to the CFIs the script generates.
     var spineSteps: [CFI.Step] = []
+    /// 2 shows a horizontal reflowable chapter as two facing pages (two columns per page stride; M4, 02-rendering
+    /// §6.2). Vertical writing ignores it (the renderer uses the vertical wrapper instead).
+    var columnsPerPage: Int = 1
 
     var dictionary: [String: Any] {
         var dict: [String: Any] = [
@@ -53,6 +58,7 @@ struct LayoutParameters: Sendable {
         dict["fontFamily"] = ContentInjector.fontFamilyCSS(settings.font) ?? ""
         if let rootStyle { dict["rootStyle"] = rootStyle }
         dict["spineSteps"] = CFI.render(steps: spineSteps)
+        dict["columnsPerPage"] = columnsPerPage
         return dict
     }
 }

@@ -252,7 +252,11 @@ final class WebViewSpineRenderer: NSObject, SpineRenderer {
         guard let dict = result as? [String: Any], let pageCount = dict["pageCount"] as? Int else {
             throw ReaderError.scriptFailed("layout returned \(String(describing: result))")
         }
-        return LayoutResult(pageCount: max(1, pageCount), writingMode: WritingMode(cssValue: dict["writingMode"] as? String ?? "horizontal-tb"))
+        return LayoutResult(
+            pageCount: max(1, pageCount),
+            writingMode: WritingMode(cssValue: dict["writingMode"] as? String ?? "horizontal-tb"),
+            columnsPerPage: dict["columnsPerPage"] as? Int ?? 1
+        )
     }
 
     // MARK: - Snapshots

@@ -35,6 +35,8 @@
     highlights: [],
     // Pre-paginated document inside a spread wrapper: one page, no columns (M4).
     fixedLayout: false,
+    // Columns per page asked for (2 for a reflowable spread in horizontal writing; vertical writing ignores it, M4).
+    columnsPerPage: 1,
     // Inside a spread wrapper: the controller's callback that receives this document's events (M4).
     host: null,
   };
@@ -93,6 +95,14 @@
 
   function isVertical() { return state.writingMode.indexOf("vertical") === 0 || state.writingMode.indexOf("sideways") === 0; }
 
+  // Two columns per page only make sense in horizontal writing (vertical columns stack along y; a vertical
+  // spread is two frames, 02-rendering §6.2). Returns the columns in effect.
+  function applyColumns() {
+    const columns = isVertical() ? 1 : state.columnsPerPage;
+    setVar("--reader-columns", String(columns));
+    return columns;
+  }
+
   // Page count from the end sentinel's document position (not scrollWidth: in the 3-page-wide frame
   // scrollWidth never goes below the viewport width; 05-spike-results §2.3).
   function computePageCount() {
@@ -118,6 +128,7 @@
       setVar("--reader-margin-h", p.margins.horizontal + "px");
       setVar("--reader-margin-v", p.margins.vertical + "px");
     }
+    if (p.columnsPerPage) { state.columnsPerPage = Math.max(1, Math.min(2, Math.floor(p.columnsPerPage))); }
     if (p.fontScale !== undefined && p.fontScale !== null) { setVar("--reader-font-size", String(p.fontScale)); }
     if (p.lineHeight !== undefined && p.lineHeight !== null) { setVar("--reader-line-height", String(p.lineHeight)); }
     if (p.theme) {
@@ -160,12 +171,13 @@
     if (state.fixedLayout) {
       // The page is the publisher's fixed design: no sentinel, no columns, exactly one page (02-rendering §6.1).
       state.pageCount = 1;
-      return { pageCount: 1, writingMode: state.writingMode };
+      return { pageCount: 1, writingMode: state.writingMode, columnsPerPage: 1 };
     }
+    const columns = applyColumns();
     ensureSentinel();
     void root().offsetWidth; // flush layout
     state.pageCount = computePageCount();
-    return { pageCount: state.pageCount, writingMode: state.writingMode };
+    return { pageCount: state.pageCount, writingMode: state.writingMode, columnsPerPage: columns };
   }
 
   // Scroll so that page `index` is visible. The frame may be wider than one page (three slots, the
@@ -228,9 +240,10 @@
   // Update CSS variables / font override and re-measure. Returns {pageCount}.
   function applySettings(params) {
     applyParams(params);
+    const columns = state.fixedLayout ? 1 : applyColumns();
     void root().offsetWidth;
     state.pageCount = computePageCount();
-    return { pageCount: state.pageCount, writingMode: state.writingMode };
+    return { pageCount: state.pageCount, writingMode: state.writingMode, columnsPerPage: columns };
   }
 
   // --- CFI ------------------------------------------------------------------------------------
@@ -1145,6 +1158,8 @@
         // The page keeps the publisher's design (reader-fixed.css only): no settings style, no font override.
         delete p.rootStyle;
         delete p.fontFamily;
+      } else {
+        p.columnsPerPage = 1;
       }
       return p;
     }
@@ -1162,7 +1177,7 @@
         } else {
           sp.pageCount = 1;
         }
-        return { pageCount: sp.pageCount, writingMode: sp.writingMode };
+        return { pageCount: sp.pageCount, writingMode: sp.writingMode, columnsPerPage: 1 };
       });
     }
     function goToPage(index) {

@@ -11,7 +11,10 @@
   --reader-page-height: 700px;
   --reader-margin-h: 24px;
   --reader-margin-v: 20px;
-  --reader-column-width: calc(var(--reader-page-width) - 2 * var(--reader-margin-h));
+  /* Columns per page: 2 for a reflowable spread in horizontal writing (M4, 02-rendering §6.2). The page stride
+     stays one page width; each column is one facing page with its own horizontal margins. */
+  --reader-columns: 1;
+  --reader-column-width: calc((var(--reader-page-width) - 2 * var(--reader-columns) * var(--reader-margin-h)) / var(--reader-columns));
   --reader-column-height: calc(var(--reader-page-height) - 2 * var(--reader-margin-v));
   --reader-column-gap: calc(2 * var(--reader-margin-h));
   --reader-font-size: 1;
@@ -28,7 +31,8 @@ html {
   /* Content box = one page minus the margins; the margins are the root's padding so that every
      column (page) gets them. The column gap equals two horizontal margins, so the column stride
      is exactly one page width. */
-  width: var(--reader-column-width) !important;
+  /* The content box spans all columns of one page (one page width minus the outer margins). */
+  width: calc(var(--reader-page-width) - 2 * var(--reader-margin-h)) !important;
   height: var(--reader-column-height) !important;
   min-width: 0 !important;
   min-height: 0 !important;

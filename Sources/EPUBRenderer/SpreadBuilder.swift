@@ -70,6 +70,11 @@ public struct SpreadPlan: Sendable, Hashable {
     public func unit(containing spineIndex: Int) -> Unit? {
         unitIndex(containing: spineIndex).map { units[$0] }
     }
+
+    /// Whether any reflowable chapter is shown as two facing pages in this plan.
+    public var hasTwoPageReflow: Bool {
+        units.contains { if case .reflowable(_, true) = $0 { return true } else { return false } }
+    }
 }
 
 /// Builds a `SpreadPlan` from the publication's rendition properties, the reader's spread policy and the viewport.

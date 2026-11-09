@@ -8,11 +8,15 @@ struct LayoutKey: Hashable, Sendable {
     var pageWidth: Int
     var pageHeight: Int
     var settings: ReaderSettings.LayoutKey
+    /// Whether reflowable chapters are shown as two facing pages in this layout (M4). Follows from the page size
+    /// and the spread policy for a given book, but is recorded so the key says it outright.
+    var isSpread: Bool
 
-    init(pageSize: CGSize, settings: ReaderSettings) {
+    init(pageSize: CGSize, settings: ReaderSettings, isSpread: Bool = false) {
         pageWidth = Int(pageSize.width.rounded())
         pageHeight = Int(pageSize.height.rounded())
         self.settings = settings.layoutKey
+        self.isSpread = isSpread
     }
 }
 

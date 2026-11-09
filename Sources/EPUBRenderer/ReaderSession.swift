@@ -39,6 +39,9 @@ public final class ReaderSession {
 
     /// The face being shown (M4): one reflowable item, or one or two fixed-layout pages. nil until the first load.
     private(set) var currentUnit: SpreadPlan.Unit?
+    /// Whether the visible face is a spread wrapper document (fixed layout, or a vertical-writing chapter shown as
+    /// two frames) rather than the chapter itself (M4). The wrapper has no neighbour page slots.
+    @ObservationIgnored private var loadedAsWrapper = false
     /// How the reading order is cut into faces for the current viewport and `settings.spreadPolicy` (M4).
     private(set) var spreadPlan = SpreadPlan(units: [])
 
@@ -402,15 +405,20 @@ public final class ReaderSession {
         // The face that holds the item: a fixed-layout page loads through the spread wrapper, with its partner (M4).
         let unit = spreadPlan.unit(containing: spineIndex) ?? .reflowable(spineIndex: spineIndex, twoPages: false)
         let leading = unit.leadingSpineIndex
-        let url = SpreadDocument.url(publicationID: container.id, unit: unit)
-            ?? EPUBSchemeHandler.url(publicationID: container.id, path: publication.readingOrder[leading].path)
-        logger.debug("load spine \(spineIndex) unit \(unit.spineIndices) \(url.lastPathComponent)")
+        logger.debug("load spine \(spineIndex) unit \(unit.spineIndices)")
         do {
-            let mode = try await withReady(generation: generation) { renderer.load(url) }
-            // The frame's slot axis must match the document before it is measured (three pages tall for vertical writing).
-            renderer.setWritingMode(mode)
-            let layout = try await renderer.layout(LayoutParameters(pageSize: viewportSize, settings: settings, spineSteps: publication.cfiSpineSteps(forSpineIndex: leading)))
+            // A two-page reflowable face is two columns in horizontal writing and the vertical wrapper in vertical
+            // writing; the document's mode is known only after loading, so the current chapter's mode is the guess
+            // and a wrong guess reloads the other way (02-rendering §6.2).
+            var realization = Self.realization(of: unit, publicationID: container.id, publication: publication, writingModeHint: writingMode)
+            var layout = try await load(realization, generation: generation, spineSteps: publication.cfiSpineSteps(forSpineIndex: leading))
             guard generation == loadGeneration else { return }
+            if case .reflowable(let index, true) = unit, realization.isWrapper != layout.writingMode.isVertical {
+                realization = Self.realization(of: .reflowable(spineIndex: index, twoPages: true), publicationID: container.id, publication: publication, writingModeHint: layout.writingMode)
+                layout = try await load(realization, generation: generation, spineSteps: publication.cfiSpineSteps(forSpineIndex: leading))
+                guard generation == loadGeneration else { return }
+            }
+            loadedAsWrapper = realization.isWrapper
             writingMode = layout.writingMode
             renderer.setWritingMode(layout.writingMode)
             let pageCount = layout.pageCount
@@ -430,7 +438,8 @@ public final class ReaderSession {
             currentSpineIndex = leading
             chapterPageCount = result.pageCount
             currentPageIndex = result.pageIndex
-            isLoading = false
+            // A resize waiting for its debounce re-lays out right after this load: stay "loading" until then.
+            isLoading = pendingResize != nil
             hasLoaded = true
             renderer.setContentHidden(false)
             recordChapterMeasurement(unit: unit, pageCount: result.pageCount)
@@ -446,6 +455,36 @@ public final class ReaderSession {
                 emit(.error(.loadFailed(spineIndex: spineIndex, underlying: error.localizedDescription)))
             }
         }
+    }
+
+    /// How a face is loaded: which URL, and how many columns per page the document is asked for.
+    struct Realization {
+        var url: URL
+        var columnsPerPage: Int
+        var isWrapper: Bool
+    }
+
+    static func realization(of unit: SpreadPlan.Unit, publicationID: PublicationID, publication: Publication, writingModeHint: WritingMode) -> Realization {
+        switch unit {
+        case .fixed:
+            return Realization(url: SpreadDocument.url(publicationID: publicationID, unit: unit)!, columnsPerPage: 1, isWrapper: true)
+        case .reflowable(let index, let twoPages):
+            if twoPages, writingModeHint.isVertical {
+                return Realization(url: SpreadDocument.verticalURL(publicationID: publicationID, spineIndex: index, writingMode: writingModeHint), columnsPerPage: 1, isWrapper: true)
+            }
+            let url = EPUBSchemeHandler.url(publicationID: publicationID, path: publication.readingOrder[index].path)
+            return Realization(url: url, columnsPerPage: twoPages ? 2 : 1, isWrapper: false)
+        }
+    }
+
+    /// Loads a realization and lays it out.
+    private func load(_ realization: Realization, generation: Int, spineSteps: [CFI.Step]) async throws -> LayoutResult {
+        let mode = try await withReady(generation: generation) { renderer.load(realization.url) }
+        // The frame's slot axis must match the document before it is measured (three pages tall for vertical writing).
+        renderer.setWritingMode(mode)
+        var parameters = LayoutParameters(pageSize: viewportSize, settings: settings, spineSteps: spineSteps)
+        parameters.columnsPerPage = realization.columnsPerPage
+        return try await renderer.layout(parameters)
     }
 
     /// Returns false when the document could not be asked (not loaded, or the script call failed); the page state
@@ -552,24 +591,43 @@ public final class ReaderSession {
         captureRelayoutSnapshotIfNeeded()
         await relayoutSnapshotTask?.value
         defer {
-            isLoading = false
-            // A resize that arrived meanwhile re-lays out again right away; keep covering the web view until then.
-            if pendingResize == nil { relayoutSnapshot = nil }
+            // A resize that arrived meanwhile re-lays out again right away; stay "loading" and keep covering the web
+            // view until then (otherwise `isLoading` would flip to false for a moment between the two relayouts).
+            if pendingResize == nil {
+                isLoading = false
+                relayoutSnapshot = nil
+            }
         }
         selectLayout()
         do {
             let anchor = (try? await renderer.cfiForPage(currentPageIndex, margins: settings.pageMargins)) ?? position?.cfi
             let ratio = chapterPageCount > 1 ? Double(currentPageIndex) / Double(chapterPageCount - 1) : 0
-            // The new viewport or policy may cut the reading order differently (single page ↔ spread, M4): then the
-            // face is reloaded at the same position instead of re-laid out in place.
-            if let unit = currentUnit, let replacement = spreadPlan.unit(containing: currentSpineIndex), replacement != unit {
-                // The anchor may sit on the second page of the spread (the first one blank): keep that page.
-                let anchorIndex = anchor.flatMap { publication.spineIndex(of: $0) }.flatMap { isShowing(spineIndex: $0) ? $0 : nil } ?? currentSpineIndex
-                await loadChapter(anchorIndex, target: anchor.map { .cfi($0) } ?? .page(currentPageIndex))
-                return
+            // The new viewport or policy may cut the reading order differently (single page ↔ spread, M4). A
+            // horizontal chapter switches between one and two columns in place; anything else (a fixed-layout face,
+            // the vertical wrapper) is reloaded at the same position.
+            var columns = 1
+            if let unit = currentUnit, let replacement = spreadPlan.unit(containing: currentSpineIndex) {
+                let inPlace: Bool
+                switch (unit, replacement) {
+                case (.reflowable(let a, _), .reflowable(let b, let twoPages)) where a == b && !loadedAsWrapper && !writingMode.isVertical:
+                    inPlace = true
+                    columns = twoPages ? 2 : 1
+                default:
+                    inPlace = replacement == unit
+                    if case .reflowable(_, let twoPages) = unit, !loadedAsWrapper { columns = twoPages ? 2 : 1 }
+                }
+                if !inPlace {
+                    // The anchor may sit on the second page of the spread (the first one blank): keep that page.
+                    let anchorIndex = anchor.flatMap { publication.spineIndex(of: $0) }.flatMap { isShowing(spineIndex: $0) ? $0 : nil } ?? currentSpineIndex
+                    await loadChapter(anchorIndex, target: anchor.map { .cfi($0) } ?? .page(currentPageIndex))
+                    return
+                }
+                currentUnit = replacement
             }
             applyPageSize()
-            let layout = try await renderer.applySettings(LayoutParameters(pageSize: viewportSize, settings: settings, rootStyle: schemeHandler.rootStyle, spineSteps: publication.cfiSpineSteps(forSpineIndex: currentSpineIndex)))
+            var parameters = LayoutParameters(pageSize: viewportSize, settings: settings, rootStyle: schemeHandler.rootStyle, spineSteps: publication.cfiSpineSteps(forSpineIndex: currentSpineIndex))
+            parameters.columnsPerPage = columns
+            let layout = try await renderer.applySettings(parameters)
             chapterPageCount = layout.pageCount
             var targetPage = min(currentPageIndex, layout.pageCount - 1)
             if let anchor, let page = try await renderer.pageFor(anchor) {
@@ -724,7 +782,7 @@ public final class ReaderSession {
     private func selectLayout() {
         guard viewportSize.width > 0, viewportSize.height > 0 else { return }
         spreadPlan = SpreadBuilder.plan(for: publication, policy: settings.spreadPolicy, viewportSize: viewportSize)
-        let key = LayoutKey(pageSize: viewportSize, settings: settings)
+        let key = LayoutKey(pageSize: viewportSize, settings: settings, isSpread: spreadPlan.hasTwoPageReflow)
         if paginationCache.select(key) {
             paginationService.configure(pageSize: viewportSize, settings: settings, plan: spreadPlan, generation: paginationCache.generation, currentSpineIndex: hasLoaded ? currentSpineIndex : nil)
             rebuildPagination()
@@ -744,10 +802,12 @@ public final class ReaderSession {
     }
 
     private func rebuildPagination() {
+        // A two-page face holds twice the text of a single page (M4).
+        let perPage = BookPagination.defaultCharactersPerPage(writingMode: writingMode) * (spreadPlan.hasTwoPageReflow ? 2 : 1)
         let updated = BookPagination.make(
             publication: publication,
             measured: paginationCache.measured,
-            defaultCharactersPerPage: BookPagination.defaultCharactersPerPage(writingMode: writingMode)
+            defaultCharactersPerPage: perPage
         )
         guard updated != pagination else { return }
         pagination = updated
@@ -839,8 +899,8 @@ public final class ReaderSession {
         currentUnit?.contains(spineIndex: spineIndex) ?? (spineIndex == currentSpineIndex)
     }
 
-    /// The visible face is a spread wrapper document (fixed layout), not the chapter itself (M4).
-    private var isShowingWrapper: Bool { currentUnit?.isFixedLayout ?? false }
+    /// The visible face is a spread wrapper document (fixed layout or vertical two-page), not the chapter itself (M4).
+    private var isShowingWrapper: Bool { loadedAsWrapper }
 
     /// First linear spine item after the face that holds `index` (M4: the partner page of a spread is skipped).
     private func nextLinearSpineIndex(after index: Int) -> Int? {

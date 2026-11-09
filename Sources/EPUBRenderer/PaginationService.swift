@@ -38,6 +38,8 @@ final class PaginationService {
     private var workerToken = 0
     private var readyContinuation: CheckedContinuation<WritingMode, any Error>?
     private var pendingLoadURL: URL?
+    /// Writing mode of the last chapter measured: the guess for how a two-page reflowable face is realized (M4).
+    private var lastWritingMode: WritingMode = .horizontalTB
     private(set) var isPaused = false
     /// Snapshots per spine index for the current generation; only the neighbours of the current chapter are kept.
     private(set) var snapshots: [Int: ChapterSnapshots] = [:]
@@ -230,13 +232,17 @@ final class PaginationService {
         guard stillCurrent() else { throw CancellationError() }
         let unit = unit(containing: spineIndex)
         let leading = unit.leadingSpineIndex
-        let url = SpreadDocument.url(publicationID: container.id, unit: unit)
-            ?? EPUBSchemeHandler.url(publicationID: container.id, path: publication.readingOrder[leading].path)
-        let mode = try await withReady { renderer.load(url) }
+        let steps = publication.cfiSpineSteps(forSpineIndex: leading)
+        // Same guess-and-reload as ReaderSession.loadChapter for a two-page reflowable face (M4).
+        var realization = ReaderSession.realization(of: unit, publicationID: container.id, publication: publication, writingModeHint: lastWritingMode)
+        var layout = try await load(realization, spineSteps: steps)
         guard stillCurrent() else { throw CancellationError() }
-        renderer.setWritingMode(mode)
-        _ = try await renderer.layout(LayoutParameters(pageSize: pageSize, settings: settings, spineSteps: publication.cfiSpineSteps(forSpineIndex: leading)))
-        guard stillCurrent() else { throw CancellationError() }
+        if case .reflowable(let index, true) = unit, realization.isWrapper != layout.writingMode.isVertical {
+            realization = ReaderSession.realization(of: .reflowable(spineIndex: index, twoPages: true), publicationID: container.id, publication: publication, writingModeHint: layout.writingMode)
+            layout = try await load(realization, spineSteps: steps)
+            guard stillCurrent() else { throw CancellationError() }
+        }
+        lastWritingMode = layout.writingMode
         // goToPage re-measures and positions page 0 (slot 0), whose snapshot the UI wants for a forward turn.
         let first = try await renderer.goToPage(0)
         var pageCount = first.pageCount
@@ -281,6 +287,14 @@ final class PaginationService {
                 gate.resume(.failure(ReaderError.loadTimeout(spineIndex: -1)))
             }
         }
+    }
+
+    private func load(_ realization: ReaderSession.Realization, spineSteps: [CFI.Step]) async throws -> LayoutResult {
+        let mode = try await withReady { renderer.load(realization.url) }
+        renderer.setWritingMode(mode)
+        var parameters = LayoutParameters(pageSize: pageSize, settings: settings, spineSteps: spineSteps)
+        parameters.columnsPerPage = realization.columnsPerPage
+        return try await renderer.layout(parameters)
     }
 
     private func pageSnapshot(slot: Int, spineIndex: Int, pageIndex: Int) async throws -> PageSnapshot? {

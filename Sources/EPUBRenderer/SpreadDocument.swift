@@ -38,6 +38,14 @@ enum SpreadDocument {
         return url(publicationID: publicationID, kind: .fixed, pages: pages.map { Page(spineIndex: $0.spineIndex, placement: $0.placement) })
     }
 
+    /// The wrapper that shows a vertical-writing reflowable chapter as two facing pages: the same document in both
+    /// frames, the first page of the pair on the side the writing mode starts on (right for vertical-rl).
+    static func verticalURL(publicationID: PublicationID, spineIndex: Int, writingMode: WritingMode) -> URL {
+        let first: SpreadPlan.Placement = writingMode == .verticalLR ? .left : .right
+        let second: SpreadPlan.Placement = first == .left ? .right : .left
+        return url(publicationID: publicationID, kind: .vertical, pages: [Page(spineIndex: spineIndex, placement: first), Page(spineIndex: spineIndex, placement: second)])
+    }
+
     /// Parses the query of a wrapper URL. nil when it is malformed.
     static func parse(query items: [URLQueryItem]?) -> (kind: Kind, pages: [Page])? {
         guard let items, let kindValue = items.first(where: { $0.name == "kind" })?.value, let kind = Kind(rawValue: kindValue),
