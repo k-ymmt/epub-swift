@@ -46,11 +46,15 @@ public enum CFIGenerator {
     }
 
     /// Up to `assertionContextLength` UTF-16 code units before and after `offset` in `text`.
+    /// Only the context is sliced out (index arithmetic on the UTF-16 view), so long text nodes with many matches
+    /// do not cost a copy per call.
     public static func textAssertion(in text: String, offset: Int) -> CFI.TextAssertion? {
-        let utf16 = Array(text.utf16)
-        let clamped = min(max(0, offset), utf16.count)
-        let before = String(decoding: utf16[max(0, clamped - assertionContextLength)..<clamped], as: UTF16.self)
-        let after = String(decoding: utf16[clamped..<min(utf16.count, clamped + assertionContextLength)], as: UTF16.self)
+        let utf16 = text.utf16
+        let position = utf16.index(utf16.startIndex, offsetBy: max(0, offset), limitedBy: utf16.endIndex) ?? utf16.endIndex
+        let lower = utf16.index(position, offsetBy: -assertionContextLength, limitedBy: utf16.startIndex) ?? utf16.startIndex
+        let upper = utf16.index(position, offsetBy: assertionContextLength, limitedBy: utf16.endIndex) ?? utf16.endIndex
+        let before = String(decoding: Array(utf16[lower..<position]), as: UTF16.self)
+        let after = String(decoding: Array(utf16[position..<upper]), as: UTF16.self)
         let assertion = CFI.TextAssertion(before: before, after: after)
         return assertion.isEmpty ? nil : assertion
     }

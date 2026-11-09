@@ -29,30 +29,42 @@ enum ContentInjector {
             return (data, false)
         }
         let hadViewport = hasViewportMeta(text)
+        // A prefixed root (`<x:html xmlns:x="…xhtml">`) has no default namespace: the inserted elements take the same
+        // prefix so that they are XHTML elements.
+        let headTag = startTag(named: "head", in: text)
+        let htmlTag = startTag(named: "html", in: text)
+        let prefix = (headTag ?? htmlTag)?.prefix
+        func name(_ local: String) -> String { prefix.map { "\($0):\(local)" } ?? local }
+        func stylesheet(_ url: String) -> String {
+            "<\(name("link")) rel=\"stylesheet\" type=\"text/css\" href=\"\(escapeAttribute(url))\"/>"
+        }
+
         let head: String
         var tail: String
         if let fixed = injection.fixedStylesheetURL {
             head = ""
-            tail = "<link rel=\"stylesheet\" type=\"text/css\" href=\"\(escapeAttribute(fixed))\"/>"
+            tail = stylesheet(fixed)
         } else {
-            head = "<link rel=\"stylesheet\" type=\"text/css\" href=\"\(escapeAttribute(injection.beforeStylesheetURL))\"/>"
-                + ((injection.injectViewport && !hadViewport) ? viewportMeta : "")
-            tail = "<link rel=\"stylesheet\" type=\"text/css\" href=\"\(escapeAttribute(injection.afterStylesheetURL))\"/>"
+            let viewport = (injection.injectViewport && !hadViewport)
+                ? viewportMeta.replacingOccurrences(of: "<meta ", with: "<\(name("meta")) ") : ""
+            head = stylesheet(injection.beforeStylesheetURL) + viewport
+            tail = stylesheet(injection.afterStylesheetURL)
             if !injection.rootStyle.isEmpty {
-                tail += "<style id=\"__reader_settings\">\(injection.rootStyle)</style>"
+                tail += "<\(name("style")) id=\"__reader_settings\">\(injection.rootStyle)</\(name("style"))>"
             }
         }
 
-        if let headOpen = range(ofTag: "head", in: text) {
-            text.insert(contentsOf: head, at: headOpen.upperBound)
-            if let headClose = text.range(of: "</head", options: .caseInsensitive, range: headOpen.upperBound..<text.endIndex) {
+        if let headOpen = headTag {
+            text.insert(contentsOf: head, at: headOpen.range.upperBound)
+            let afterHead = text.index(headOpen.range.upperBound, offsetBy: head.count)
+            if let headClose = text.range(of: "</\(headOpen.qualifiedName)", options: .caseInsensitive, range: afterHead..<text.endIndex) {
                 text.insert(contentsOf: tail, at: headClose.lowerBound)
             } else {
                 // Unterminated head: put everything at the head start.
-                text.insert(contentsOf: tail, at: text.index(headOpen.upperBound, offsetBy: head.count))
+                text.insert(contentsOf: tail, at: afterHead)
             }
-        } else if let htmlOpen = range(ofTag: "html", in: text) {
-            text.insert(contentsOf: "<head>" + head + tail + "</head>", at: htmlOpen.upperBound)
+        } else if let htmlOpen = htmlTag {
+            text.insert(contentsOf: "<\(name("head"))>" + head + tail + "</\(name("head"))>", at: htmlOpen.range.upperBound)
         } else {
             // No <html> start tag at all (text/html fallback of a fragment). Prepend; the parser will cope.
             text = "<head>" + head + tail + "</head>" + text
@@ -65,22 +77,41 @@ enum ContentInjector {
         text.range(of: #"<meta\s+[^>]*name\s*=\s*["']viewport["']"#, options: [.regularExpression, .caseInsensitive]) != nil
     }
 
-    /// Range of the start tag `<name ...>` (the whole tag including `>`), skipping the XML declaration, doctype
-    /// and comments. Case-insensitive.
+    struct StartTag {
+        /// The whole tag including `>`.
+        var range: Range<String.Index>
+        /// The name as written (`head`, `x:head`).
+        var qualifiedName: String
+        var prefix: String? {
+            qualifiedName.firstIndex(of: ":").map { String(qualifiedName[..<$0]) }
+        }
+    }
+
+    /// Range of the start tag `<name ...>` (the whole tag including `>`). Case-insensitive.
     static func range(ofTag name: String, in text: String) -> Range<String.Index>? {
+        startTag(named: name, in: text)?.range
+    }
+
+    /// The first start tag whose local name is `name`, with or without a namespace prefix (`<head>`, `<x:head>`),
+    /// skipping the XML declaration, doctype, comments, end tags and longer names (`<header>`). Case-insensitive.
+    static func startTag(named name: String, in text: String) -> StartTag? {
         var searchStart = text.startIndex
-        while let open = text.range(of: "<\(name)", options: .caseInsensitive, range: searchStart..<text.endIndex) {
-            // Must be followed by whitespace, '>' or '/' to be this tag (not <header>, <html5>...).
-            let afterName = open.upperBound
-            if afterName < text.endIndex {
-                let c = text[afterName]
-                if !(c.isWhitespace || c == ">" || c == "/") {
-                    searchStart = afterName
-                    continue
-                }
+        while let open = text.range(of: "<", range: searchStart..<text.endIndex) {
+            searchStart = open.upperBound
+            guard open.upperBound < text.endIndex else { return nil }
+            if text[open.upperBound...].hasPrefix("!--") {
+                // Skip the whole comment: it may contain markup.
+                guard let end = text.range(of: "-->", range: open.upperBound..<text.endIndex) else { return nil }
+                searchStart = end.upperBound
+                continue
             }
-            guard let close = text.range(of: ">", range: open.upperBound..<text.endIndex) else { return nil }
-            return open.lowerBound..<close.upperBound
+            let nameEnd = text[open.upperBound...].firstIndex { $0.isWhitespace || $0 == ">" || $0 == "/" } ?? text.endIndex
+            let qualified = text[open.upperBound..<nameEnd]
+            guard let first = qualified.first, first.isLetter || first == "_" else { continue }
+            let local = qualified.split(separator: ":", maxSplits: 1, omittingEmptySubsequences: false).last ?? qualified
+            guard local.caseInsensitiveCompare(name) == .orderedSame else { continue }
+            guard let close = text.range(of: ">", range: nameEnd..<text.endIndex) else { return nil }
+            return StartTag(range: open.lowerBound..<close.upperBound, qualifiedName: String(qualified))
         }
         return nil
     }
@@ -132,8 +163,13 @@ enum ContentInjector {
         }
     }
 
+    /// Never traps: values outside `Int` (a fixed-layout viewport of `width=1e30`) are formatted without conversion.
     static func cssLength(_ value: Double) -> String {
-        if value == value.rounded() { return "\(Int(value))px" }
+        guard value.isFinite else { return "0px" }
+        if value == value.rounded() {
+            if let integer = Int(exactly: value) { return "\(integer)px" }
+            return String(format: "%.0fpx", value)
+        }
         return String(format: "%.2fpx", value)
     }
 }

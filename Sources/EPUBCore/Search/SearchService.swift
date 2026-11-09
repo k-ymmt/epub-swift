@@ -54,7 +54,7 @@ public actor SearchService {
         }
     }
 
-    /// All matches in one spine item, in document order.
+    /// All matches in one spine item, in document order. Stops early (partial results) when the task is cancelled.
     public func results(for query: String, options: SearchOptions = .default, spineIndex: Int) async -> [SearchResult] {
         guard let map = await textMap(forSpineIndex: spineIndex), let document = documents[spineIndex] else { return [] }
         let spineSteps = publication.cfiSpineSteps(forSpineIndex: spineIndex)
@@ -66,7 +66,7 @@ public actor SearchService {
         var results: [SearchResult] = []
         var searchRange = NSRange(location: 0, length: text.length)
         let locale = publication.metadata.language.map { Locale(identifier: $0) }
-        while searchRange.length > 0 {
+        while searchRange.length > 0, !Task.isCancelled {
             let found = text.range(of: query, options: compare, range: searchRange, locale: locale)
             guard found.location != NSNotFound, found.length > 0 else { break }
             if let result = makeResult(match: found, in: map, text: text, document: document, spineIndex: spineIndex, spineSteps: spineSteps) {

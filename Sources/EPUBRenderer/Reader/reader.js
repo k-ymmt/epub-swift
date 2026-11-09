@@ -268,11 +268,10 @@
     return pageForDocumentX(rect.left + sc.scrollLeft);
   }
 
-  // Page index of the element with the given id (URL fragment), or null.
-  function pageForFragment(fragment) {
-    if (!fragment) { return null; }
-    let id = fragment;
-    try { id = decodeURIComponent(fragment); } catch (e) { /* keep raw */ }
+  // Page index of the element with the given id, or null. `id` is already percent-decoded (Swift decodes link and
+  // table-of-contents fragments once); decoding again would miss ids that contain "%".
+  function pageForFragment(id) {
+    if (!id) { return null; }
     const el = document.getElementById(id) || document.querySelector('[name="' + CSS.escape(id) + '"]');
     if (!el) { return null; }
     return pageForRect(el.getBoundingClientRect());
@@ -676,24 +675,25 @@
     }
 
     // A (container, offset) boundary as a CFI point. An element container with a child offset is moved into the
-    // nearest text position so the point is a text location when possible.
+    // nearest text position so the point is a text location when possible. Children that are neither text nor
+    // elements (comments, processing instructions) have no CFI and are skipped.
     function boundaryToPoint(container, offset) {
       let node = container, off = offset;
       if (!isText(node)) {
         const children = node.childNodes;
-        if (off < children.length) {
-          let child = children[off];
+        let placed = false;
+        for (let k = off; k < children.length && !placed; k++) {
+          const child = children[k];
           // Descend to the first text in the child, else use the element itself.
           const first = firstTextIn(child);
-          if (first) { node = first; off = 0; }
-          else if (child.nodeType === Node.ELEMENT_NODE) { node = child; off = null; }
-          else { return null; }
-        } else if (children.length) {
-          const last = lastTextIn(node);
+          if (first) { node = first; off = 0; placed = true; }
+          else if (child.nodeType === Node.ELEMENT_NODE) { node = child; off = null; placed = true; }
+        }
+        if (!placed) {
+          // Nothing addressable after the boundary: the end of the last text in the container, else the container.
+          const last = children.length ? lastTextIn(node) : null;
           if (last) { node = last; off = last.data.length; }
-          else { node = node; off = null; }
-        } else {
-          off = null;
+          else { off = null; }
         }
       }
       const located = stepsFor(node, off === null ? 0 : off);
@@ -967,11 +967,27 @@
     return applied;
   }
 
-  // A single temporary highlight (search result). null removes it. Styled by reader-before.css.
+  // Whether a CFI's spine steps name this document (a CFI without spine steps, or a document laid out without
+  // them, is taken as this one). Compared by itemref id when both carry one, else by step index.
+  function addressesThisDocument(cfiString) {
+    const parsed = CFI.parse(cfiString);
+    if (!parsed || !parsed[0].spineSteps.length || !state.spineSteps.length) { return true; }
+    const a = parsed[0].spineSteps, b = state.spineSteps;
+    if (a.length !== b.length) { return false; }
+    for (let k = 0; k < a.length; k++) {
+      if (a[k].id && b[k].id) { if (a[k].id !== b[k].id) { return false; } }
+      else if (a[k].index !== b[k].index) { return false; }
+    }
+    return true;
+  }
+
+  // A single temporary highlight (search result). null removes it. Styled by reader-before.css. A range of another
+  // document is refused (its steps would resolve to unrelated text here).
   function setTransientHighlight(cfiRange) {
     if (typeof CSS === "undefined" || !CSS.highlights) { return false; }
     CSS.highlights.delete(TRANSIENT_KEY);
     if (!cfiRange) { return true; }
+    if (!addressesThisDocument(cfiRange)) { return false; }
     const range = CFI.toRange(cfiRange);
     if (!range || range.collapsed) { return false; }
     CSS.highlights.set(TRANSIENT_KEY, new Highlight(range));

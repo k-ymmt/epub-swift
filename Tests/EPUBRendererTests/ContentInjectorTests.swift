@@ -57,6 +57,40 @@ import EPUBCore
         #expect(text.contains("<HEAD lang=\"en\"><link rel=\"stylesheet\""))
     }
 
+    @Test func prefixedRootAndHeadAreRecognized() throws {
+        let source = """
+        <?xml version="1.0" encoding="UTF-8"?>
+        <!-- <head> in a comment -->
+        <x:html xmlns:x="http://www.w3.org/1999/xhtml"><x:head><x:title>t</x:title></x:head><x:body><x:p>p</x:p></x:body></x:html>
+        """
+        let (data, _) = ContentInjector.inject(Data(source.utf8), isXML: true, injection: injection)
+        #expect(XMLDocument.isWellFormed(data))
+        let tree = try XMLDocument(data: data)
+        #expect(tree.root.name == "html")
+        let head = try #require(tree.root.firstChild(named: "head"))
+        let links = head.childElements.filter { $0.name == "link" }
+        #expect(links.count == 2)
+        #expect(links.allSatisfy { $0.namespaceURI == XMLNamespace.xhtml })
+        #expect(head.childElements.last?.name == "style")
+        #expect(tree.root.childElements.count == 2)
+    }
+
+    @Test func prefixedRootWithoutHeadGetsAPrefixedHead() throws {
+        let source = #"<x:html xmlns:x="http://www.w3.org/1999/xhtml"><x:body><x:p>p</x:p></x:body></x:html>"#
+        let (data, _) = ContentInjector.inject(Data(source.utf8), isXML: true, injection: injection)
+        let tree = try XMLDocument(data: data)
+        #expect(tree.root.childElements.map(\.name) == ["head", "body"])
+        #expect(tree.root.firstChild(named: "head")?.namespaceURI == XMLNamespace.xhtml)
+    }
+
+    @Test func cssLengthNeverTraps() {
+        #expect(ContentInjector.cssLength(390) == "390px")
+        #expect(ContentInjector.cssLength(12.5) == "12.50px")
+        #expect(ContentInjector.cssLength(9_223_372_036_854_775_808) == "9223372036854775808px")
+        #expect(ContentInjector.cssLength(.infinity) == "0px")
+        #expect(FixedLayoutViewport(metaContent: "width=9223372036854775808, height=600") == nil)
+    }
+
     @Test func rootStyleReflectsSettings() {
         var settings = ReaderSettings()
         settings.fontScale = 1.25

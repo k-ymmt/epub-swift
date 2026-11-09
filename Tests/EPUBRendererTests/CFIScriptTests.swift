@@ -109,6 +109,47 @@ import EPUBCore
         #expect(try await host.renderer.currentSelection() == nil)
     }
 
+    /// A range boundary on an element container whose child at the offset is a comment still converts (the comment
+    /// is skipped), so selecting `<b>First</b>` before `<!-- c -->` is reported.
+    @Test func rangeBoundaryBeforeACommentConverts() async throws {
+        let host = try await SessionHost(url: ReaderSessionTests.fixtures.appendingPathComponent("cfi-sample.epub"))
+        await host.session.loadIfNeeded()
+        let result = try await host.js("""
+            const p = document.createElementNS("http://www.w3.org/1999/xhtml", "p");
+            p.id = "cmt";
+            const b = document.createElementNS("http://www.w3.org/1999/xhtml", "b");
+            b.textContent = "First";
+            p.appendChild(b);
+            p.appendChild(document.createComment(" c "));
+            p.appendChild(document.createTextNode("Second"));
+            document.body.appendChild(p);
+            const r = document.createRange();
+            r.selectNode(b);
+            const cfi = window.__epubReader.cfi.fromRange(r);
+            const back = cfi ? window.__epubReader.cfi.toRange(cfi) : null;
+            const tail = document.createRange();
+            tail.setStart(p, 1); tail.setEnd(p, 2);
+            const tailCFI = window.__epubReader.cfi.fromRange(tail);
+            return { cfi: cfi, text: back ? back.toString() : null, tail: tailCFI };
+            """) as? [String: Any]
+        let dict = try #require(result)
+        #expect(dict["cfi"] is String)
+        #expect(dict["text"] as? String == "First")
+        #expect(dict["tail"] is String)
+    }
+
+    /// The temporary highlight refuses a range whose spine steps name another document.
+    @Test func transientHighlightChecksTheSpineSteps() async throws {
+        let host = try await SessionHost(url: ReaderSessionTests.fixtures.appendingPathComponent("cfi-sample.epub"))
+        await host.session.loadIfNeeded()
+        let own = "epubcfi(/6/2[c1]!/4[body]/4[p1],/1:0,/1:4)"
+        let other = "epubcfi(/6/4[c2]!/4[body]/4[p1],/1:0,/1:4)"
+        let result = try await host.js("""
+            return [window.__epubReader.setTransientHighlight(\(Self.quoted(other))), window.__epubReader.setTransientHighlight(\(Self.quoted(own)))];
+            """) as? [Bool]
+        #expect(result == [false, true])
+    }
+
     /// `cfiForPage` / `pageFor` on a paginated chapter: every page's first text maps back to that page.
     @Test func pagePositionsRoundTrip() async throws {
         let host = try await SessionHost(url: ReaderSessionTests.mobyDick)

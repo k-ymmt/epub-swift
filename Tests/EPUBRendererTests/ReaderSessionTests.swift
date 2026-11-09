@@ -368,4 +368,63 @@ extension TOCEntry {
         // Narrower pages: the same text is further into the chapter.
         #expect(host.session.currentPageIndex >= pageBefore)
     }
+
+    @Test func schemePathsAreDecodedOnce() {
+        let id = PublicationID()
+        let url = EPUBSchemeHandler.url(publicationID: id, path: "OPS/a%20b c.xhtml")
+        #expect(url.absoluteString.hasSuffix("/OPS/a%2520b%20c.xhtml"))
+        #expect(EPUBSchemeHandler.containerPath(of: url) == "OPS/a%20b c.xhtml")
+    }
+
+    /// Two sessions on one container: closing one keeps the container served for the other.
+    @Test func registryKeepsSharedContainersUntilTheLastSessionCloses() async throws {
+        let container = try await EPUBContainer(url: ReaderSessionTests.mobyDick)
+        var first: ReaderSession? = ReaderSession(container: container)
+        let second = ReaderSession(container: container)
+        #expect(PublicationRegistry.shared.registrationCount(for: container.id) == 2)
+        _ = first
+        first = nil
+        try await waitForRegistrations(1, of: container.id)
+        #expect(PublicationRegistry.shared.container(for: container.id) != nil)
+        _ = second
+    }
+
+    private func waitForRegistrations(_ count: Int, of id: PublicationID) async throws {
+        for _ in 0..<100 where PublicationRegistry.shared.registrationCount(for: id) != count {
+            try await Task.sleep(for: .milliseconds(20))
+        }
+        #expect(PublicationRegistry.shared.registrationCount(for: id) == count)
+    }
+
+    /// A theme change keeps the layout key, so pre-pagination is not reconfigured; its neighbour snapshots (drawn in
+    /// the old colours) are dropped and taken again.
+    @Test func themeChangeRetakesNeighbourSnapshots() async throws {
+        let host = try await SessionHost(url: ReaderSessionTests.mobyDick)
+        await host.session.loadIfNeeded()
+        await host.session.go(toSpineIndex: 6)
+        let service = host.session.paginationService
+        try await host.waitUntil(timeout: .seconds(30)) { service.snapshot(firstPageOf: 7) != nil }
+        let before = try #require(service.snapshot(firstPageOf: 7))
+        let generation = host.session.paginationCache.generation
+        host.session.settings.theme = .dark
+        #expect(service.snapshot(firstPageOf: 7) == nil)
+        try await host.waitUntil(timeout: .seconds(30)) { service.snapshot(firstPageOf: 7) != nil }
+        #expect(host.session.paginationCache.generation == generation, "same layout")
+        let after = try #require(service.snapshot(firstPageOf: 7))
+        #expect(after.image !== before.image)
+    }
+
+    @Test func twoFrameWrapperIsReloadedForTheOtherVerticalDirection() throws {
+        let publication = Publication(id: PublicationID(), metadata: Metadata(title: "t"), manifest: [], readingOrder: [SpineItem(id: "a", index: 0, path: "a.xhtml", mediaType: "application/xhtml+xml", isLinear: true, layout: .reflowable, spreadPosition: nil)], toc: [], pageList: [], landmarks: [], layout: .reflowable, spread: .auto, pageProgression: .default, coverImagePath: nil, packageDocumentPath: "p.opf", navigationDocumentPath: nil, warnings: [])
+        let unit = SpreadPlan.Unit.reflowable(spineIndex: 0, twoPages: true)
+        let rl = ReaderSession.realization(of: unit, publicationID: publication.id, publication: publication, writingModeHint: .verticalRL)
+        #expect(rl.isWrapper)
+        #expect(!ReaderSession.realizationMismatches(rl, writingMode: .verticalRL, publication: publication))
+        #expect(ReaderSession.realizationMismatches(rl, writingMode: .verticalLR, publication: publication))
+        #expect(ReaderSession.realizationMismatches(rl, writingMode: .horizontalTB, publication: publication))
+        let columns = ReaderSession.realization(of: unit, publicationID: publication.id, publication: publication, writingModeHint: .horizontalTB)
+        #expect(!columns.isWrapper)
+        #expect(ReaderSession.realizationMismatches(columns, writingMode: .verticalLR, publication: publication))
+        #expect(!ReaderSession.realizationMismatches(columns, writingMode: .horizontalTB, publication: publication))
+    }
 }

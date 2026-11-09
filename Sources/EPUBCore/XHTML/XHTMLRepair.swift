@@ -44,6 +44,11 @@ public enum XHTMLRepair {
     /// callers who need the DOM (character counts, search) do not parse twice.
     public static func prepareAndParse(_ data: Data, path: String) -> (document: ContentDocument, tree: XMLDocument?) {
         if let tree = try? XMLDocument(data: data) {
+            // Served bytes are always UTF-8 (the injector and the scheme handler work on UTF-8 text); a well-formed
+            // UTF-16 document is transcoded, which leaves its DOM unchanged.
+            if let utf8 = transcodedToUTF8(data), let utf8Tree = try? XMLDocument(data: utf8) {
+                return (ContentDocument(path: path, data: utf8, mediaType: xhtmlMediaType, state: .wellFormed, warnings: []), utf8Tree)
+            }
             return (ContentDocument(path: path, data: data, mediaType: xhtmlMediaType, state: .wellFormed, warnings: []), tree)
         }
         let warning = PublicationWarning.malformedXHTML(path: path)
@@ -299,13 +304,25 @@ public enum XHTMLRepair {
         }
     }
 
+    /// Whether `data` starts with a UTF-16 byte order mark (EPUB 3 allows only UTF-8 and UTF-16).
+    private static func hasUTF16BOM(_ data: Data) -> Bool {
+        guard data.count >= 2 else { return false }
+        let b0 = data[data.startIndex], b1 = data[data.startIndex + 1]
+        return (b0 == 0xFE && b1 == 0xFF) || (b0 == 0xFF && b1 == 0xFE)
+    }
+
+    /// UTF-8 bytes of a UTF-16 (BOM) document with its XML declaration replaced by a UTF-8 one; nil for any other
+    /// input (already UTF-8).
+    static func transcodedToUTF8(_ data: Data) -> Data? {
+        guard hasUTF16BOM(data), let text = String(data: data, encoding: .utf16) else { return nil }
+        let body = stripXMLDeclaration(text).drop(while: { $0 == "\u{FEFF}" })
+        return Data(("<?xml version=\"1.0\" encoding=\"UTF-8\"?>" + body).utf8)
+    }
+
     /// libxml2's HTML parser is told the input is UTF-8; transcode UTF-16 input (BOM) first.
     private static func decodeToUTF8(_ data: Data) -> String {
         var text: String
-        if data.count >= 2,
-           case let (b0, b1) = (data[data.startIndex], data[data.startIndex + 1]),
-           (b0 == 0xFE && b1 == 0xFF) || (b0 == 0xFF && b1 == 0xFE),
-           let utf16 = String(data: data, encoding: .utf16) {
+        if hasUTF16BOM(data), let utf16 = String(data: data, encoding: .utf16) {
             text = utf16
         } else {
             text = String(data: data, encoding: .utf8) ?? String(decoding: data, as: UTF8.self)
@@ -317,7 +334,9 @@ public enum XHTMLRepair {
     /// Removes a leading XML declaration; the output gets a fresh one from the serializer.
     private static func stripXMLDeclaration(_ s: String) -> String {
         let trimmedStart = s.drop(while: { $0.isWhitespace || $0 == "\u{FEFF}" })
-        guard trimmedStart.hasPrefix("<?xml"), let end = trimmedStart.range(of: "?>") else { return s }
+        // `<?xml` followed by whitespace: `<?xml-stylesheet …?>` is a processing instruction that must stay.
+        guard trimmedStart.hasPrefix("<?xml"), trimmedStart.dropFirst(5).first?.isWhitespace == true,
+              let end = trimmedStart.range(of: "?>") else { return s }
         return String(trimmedStart[end.upperBound...])
     }
 }

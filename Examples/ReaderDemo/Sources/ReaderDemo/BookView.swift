@@ -113,7 +113,9 @@ struct BookView: View {
                 .keyboardType(.numberPad)
                 #endif
             Button("Go") {
-                guard let session, let page = Int(goToPageText.trimmingCharacters(in: .whitespaces)) else { return }
+                // Only 1...totalPages: `Int` accepts "-9223372036854775808", and `page - 1` would overflow.
+                guard let session, let page = Int(goToPageText.trimmingCharacters(in: .whitespaces)),
+                      (1...max(1, session.pagination.totalPages)).contains(page) else { return }
                 Task { await session.go(toPage: page - 1) }
             }
             Button("Cancel", role: .cancel) {}

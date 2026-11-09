@@ -33,6 +33,41 @@ import EPUBCore
         }
     }
 
+    /// A resize while the first face waits for `ready` re-selects the layout for the new size: opening haruko at
+    /// 800×600 and narrowing to 400×600 before it is ready ends on a single page, not the landscape face.
+    @Test func resizeDuringTheFirstLoadReselectsTheLayout() async throws {
+        let host = try await SessionHost(url: Self.haruko, size: CGSize(width: 800, height: 600))
+        let session = host.session
+        let load = Task { await session.loadIfNeeded() }
+        try await host.waitUntil { session.isLoading }
+        #expect(!session.hasLoaded)
+        session.viewportSize = CGSize(width: 400, height: 600)
+        await load.value
+        try await host.waitUntil { session.hasLoaded && !session.isLoading }
+        #expect(!session.isShowingSpread)
+        #expect(session.visibleSpineIndices == [0])
+        #expect(session.paginationCache.selectedKey?.pageWidth == 400)
+        let frames = try await Self.frames(host)
+        #expect(frames.count == 1)
+        #expect(frames.first?.placement != "l")
+    }
+
+    /// The face before [3, 4] is [1, 2]: its snapshot is stored and looked up under the leading index 1.
+    @Test func previousSpreadSnapshotIsFoundByItsLeadingIndex() async throws {
+        let host = try await SessionHost(url: Self.haruko, size: CGSize(width: 800, height: 600))
+        let session = host.session
+        await session.loadIfNeeded()
+        await session.go(toSpineIndex: 3)
+        #expect(session.visibleSpineIndices == [3, 4])
+        let service = session.paginationService
+        #expect(service.neighbours(of: 3).contains(1))
+        #expect(!service.neighbours(of: 3).contains(2))
+        try await host.waitUntil(timeout: .seconds(30)) { service.snapshot(lastPageOf: 1) != nil }
+        let previous = await session.pageSnapshot(.previous)
+        #expect(previous != nil)
+        #expect(previous?.spineIndex == 1)
+    }
+
     @Test func harukoShowsSpreadsInLandscapeAndSinglePagesInPortrait() async throws {
         let host = try await SessionHost(url: Self.haruko, size: CGSize(width: 800, height: 600))
         await host.session.loadIfNeeded()

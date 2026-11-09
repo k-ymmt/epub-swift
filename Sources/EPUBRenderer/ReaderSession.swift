@@ -93,8 +93,9 @@ public final class ReaderSession {
     public private(set) var currentSelection: SelectedText?
 
     /// Entries the platform selection menu offers in addition to the system ones (03-api §4.4). EPUBUI's
-    /// `.selectionActions(_:)` modifier sets this; apps hosting the session without SwiftUI set it directly.
-    public var selectionActions: [SelectionAction] = []
+    /// `.selectionActions(_:)` modifier sets this; apps hosting the session without SwiftUI set it directly. Read when
+    /// the menu opens; not observed (EPUBUI assigns it on every view update, since handlers cannot be compared).
+    @ObservationIgnored public var selectionActions: [SelectionAction] = []
 
     /// Highlights to draw (03-api §2.5). The app owns and persists them; the session draws the ones in the current
     /// chapter whenever the set changes and after every chapter load. Ranges that no longer resolve are skipped.
@@ -273,7 +274,7 @@ public final class ReaderSession {
         guard publication.readingOrder.indices.contains(index) else { return }
         await run { [self] in
             // The other page of the visible fixed-layout spread is already on screen.
-            if isShowing(spineIndex: index), isShowingWrapper, currentUnit?.isFixedLayout == true { return }
+            if hasLoaded, isShowing(spineIndex: index), isShowingWrapper, currentUnit?.isFixedLayout == true { return }
             await loadChapter(index, target: .first)
         }
     }
@@ -281,13 +282,15 @@ public final class ReaderSession {
     /// Jumps to a table-of-contents entry (spine item plus optional fragment).
     public func go(to entry: TOCEntry) async {
         guard let spineIndex = entry.spineIndex ?? entry.href.flatMap({ publication.spineIndex(ofPath: $0) }) else { return }
+        // The nav keeps the href's fragment as written; the document is asked for the decoded id.
+        let fragment = entry.fragment.flatMap { $0.isEmpty ? nil : ($0.removingPercentEncoding ?? $0) }
         await run { [self] in
-            if isShowing(spineIndex: spineIndex), hasLoaded, let fragment = entry.fragment {
+            if isShowing(spineIndex: spineIndex), hasLoaded, let fragment {
                 if let page = try? await renderer.pageForFragment(fragment) { await goToPageInChapter(page) }
                 return
             }
-            if isShowing(spineIndex: spineIndex), isShowingWrapper, currentUnit?.isFixedLayout == true { return }
-            await loadChapter(spineIndex, target: entry.fragment.map { .fragment($0) } ?? .first)
+            if hasLoaded, isShowing(spineIndex: spineIndex), isShowingWrapper, currentUnit?.isFixedLayout == true { return }
+            await loadChapter(spineIndex, target: fragment.map { .fragment($0) } ?? .first)
         }
     }
 
@@ -313,13 +316,16 @@ public final class ReaderSession {
     /// chapter lands on the chapter's first page.
     public func go(to cfi: CFI) async {
         guard let spineIndex = publication.spineIndex(of: cfi) else { return }
-        await run { [self] in
-            if isShowing(spineIndex: spineIndex), hasLoaded {
-                let page = (try? await renderer.pageFor(cfi)) ?? nil
-                await goToPageInChapter(page ?? currentPageIndex)
-            } else {
-                await loadChapter(spineIndex, target: .cfi(cfi))
-            }
+        await run { [self] in await goToCFI(cfi, spineIndex: spineIndex) }
+    }
+
+    /// The body of `go(to:)`, for use inside an operation.
+    private func goToCFI(_ cfi: CFI, spineIndex: Int) async {
+        if isShowing(spineIndex: spineIndex), hasLoaded {
+            let page = (try? await renderer.pageFor(cfi)) ?? nil
+            await goToPageInChapter(page ?? currentPageIndex)
+        } else {
+            await loadChapter(spineIndex, target: .cfi(cfi))
         }
     }
 
@@ -351,7 +357,7 @@ public final class ReaderSession {
         case .next:
             if currentPageIndex + 1 >= chapterPageCount {
                 guard let next = nextLinearSpineIndex(after: currentSpineIndex) else { return nil }
-                return paginationService.snapshot(firstPageOf: next)
+                return paginationService.snapshot(firstPageOf: leadingSpineIndex(ofFaceContaining: next))
             }
             // A spread wrapper draws the whole face in slot 0 and has no neighbour slots (M4): the UI turns without
             // a destination picture and shows the arrived page instead.
@@ -361,7 +367,8 @@ public final class ReaderSession {
         case .previous:
             if currentPageIndex == 0 {
                 guard let previous = previousLinearSpineIndex(before: currentSpineIndex) else { return nil }
-                return paginationService.snapshot(lastPageOf: previous)
+                // Snapshots are stored under a face's leading index; the item before a spread is its last page (M4).
+                return paginationService.snapshot(lastPageOf: leadingSpineIndex(ofFaceContaining: previous))
             }
             guard !isShowingWrapper, visibleSlot - 1 >= 0 else { return nil }
             pageIndex = currentPageIndex - 1
@@ -418,6 +425,9 @@ public final class ReaderSession {
         applyPageSize()
         schemeHandler.rootStyle = ContentInjector.rootStyle(settings: settings, pageSize: viewportSize, publicationID: container.id)
         selectLayout()
+        // The size the layout key and the spread plan were chosen for. Before the first load completes a resize only
+        // updates the page size (`viewportSizeDidChange`), so a mismatch at the end re-selects the layout.
+        let layoutSize = viewportSize
         // The face that holds the item: a fixed-layout page loads through the spread wrapper, with its partner (M4).
         let unit = spreadPlan.unit(containing: spineIndex) ?? .reflowable(spineIndex: spineIndex, twoPages: false)
         let leading = unit.leadingSpineIndex
@@ -429,7 +439,7 @@ public final class ReaderSession {
             var realization = Self.realization(of: unit, publicationID: container.id, publication: publication, writingModeHint: writingMode)
             var layout = try await load(realization, generation: generation, spineSteps: publication.cfiSpineSteps(forSpineIndex: leading))
             guard generation == loadGeneration else { return }
-            if case .reflowable(let index, true) = unit, realization.isWrapper != Self.spreadNeedsWrapper(writingMode: layout.writingMode, publication: publication) {
+            if case .reflowable(let index, true) = unit, Self.realizationMismatches(realization, writingMode: layout.writingMode, publication: publication) {
                 realization = Self.realization(of: .reflowable(spineIndex: index, twoPages: true), publicationID: container.id, publication: publication, writingModeHint: layout.writingMode)
                 layout = try await load(realization, generation: generation, spineSteps: publication.cfiSpineSteps(forSpineIndex: leading))
                 guard generation == loadGeneration else { return }
@@ -457,13 +467,19 @@ public final class ReaderSession {
             currentSpineIndex = leading
             chapterPageCount = result.pageCount
             currentPageIndex = result.pageIndex
-            // A resize waiting for its debounce re-lays out right after this load: stay "loading" until then.
-            isLoading = pendingResize != nil
+            // A resize waiting for its debounce re-lays out right after this load: stay "loading" until then. So does a
+            // resize that arrived during the first load, before there was anything to re-lay out.
+            let sizeChangedDuringLoad = viewportSize != layoutSize && pendingResize == nil
+            isLoading = pendingResize != nil || sizeChangedDuringLoad
             hasLoaded = true
             renderer.setContentHidden(false)
-            recordChapterMeasurement(unit: unit, pageCount: result.pageCount)
+            if !sizeChangedDuringLoad { recordChapterMeasurement(unit: unit, pageCount: result.pageCount) }
             paginationService.setCurrentSpineIndex(leading)
             await refreshPosition()
+            if sizeChangedDuringLoad {
+                // Re-selects the layout key and the spread plan for the new size; a face that changes is reloaded.
+                enqueue { [weak self] in await self?.relayoutPreservingPosition() }
+            }
         } catch {
             guard generation == loadGeneration else { return }
             isLoading = false
@@ -483,6 +499,17 @@ public final class ReaderSession {
         var url: URL
         var columnsPerPage: Int
         var isWrapper: Bool
+        /// The writing mode a reflowable two-frame wrapper was built for (which frame holds the first page).
+        var wrapperWritingMode: WritingMode? = nil
+    }
+
+    /// Whether a two-page reflowable face was realized for the wrong writing mode and must be loaded again: columns
+    /// where the wrapper is needed (or the reverse), or a wrapper whose first page is on the wrong side
+    /// (`vertical-rl` hint, `vertical-lr` document).
+    static func realizationMismatches(_ realization: Realization, writingMode: WritingMode, publication: Publication) -> Bool {
+        if realization.isWrapper != spreadNeedsWrapper(writingMode: writingMode, publication: publication) { return true }
+        guard realization.isWrapper, let built = realization.wrapperWritingMode else { return false }
+        return (built == .verticalLR) != (writingMode == .verticalLR)
     }
 
     static func realization(of unit: SpreadPlan.Unit, publicationID: PublicationID, publication: Publication, writingModeHint: WritingMode) -> Realization {
@@ -491,7 +518,7 @@ public final class ReaderSession {
             return Realization(url: SpreadDocument.url(publicationID: publicationID, unit: unit)!, columnsPerPage: 1, isWrapper: true)
         case .reflowable(let index, let twoPages):
             if twoPages, spreadNeedsWrapper(writingMode: writingModeHint, publication: publication) {
-                return Realization(url: SpreadDocument.verticalURL(publicationID: publicationID, spineIndex: index, writingMode: writingModeHint), columnsPerPage: 1, isWrapper: true)
+                return Realization(url: SpreadDocument.verticalURL(publicationID: publicationID, spineIndex: index, writingMode: writingModeHint), columnsPerPage: 1, isWrapper: true, wrapperWritingMode: writingModeHint)
             }
             let url = EPUBSchemeHandler.url(publicationID: publicationID, path: publication.readingOrder[index].path)
             return Realization(url: url, columnsPerPage: twoPages ? 2 : 1, isWrapper: false)
@@ -572,6 +599,17 @@ public final class ReaderSession {
         failPendingLoad(.webContentTerminated)
         guard recentTerminations.count <= Self.maximumAutomaticReloads else {
             logger.error("WebContent keeps terminating; not reloading again")
+            // The web view is blank: the next navigation must load its chapter instead of scripting the dead page.
+            // Reloads queued by the earlier crashes are dropped too (they check the generation). A load that was
+            // waiting for `ready` now returns early on the generation check, so its state is reset here.
+            loadGeneration += 1
+            loadInProgress = nil
+            isLoading = false
+            if hasLoaded {
+                hasLoaded = false
+                loadedAsWrapper = false
+                renderer.setContentHidden(true)
+            }
             return
         }
         let spineIndex: Int
@@ -585,7 +623,13 @@ public final class ReaderSession {
             return
         }
         isZoomed = false
-        enqueue { [weak self] in await self?.loadChapter(spineIndex, target: target) }
+        // A navigation that starts a load before this reload runs (one queued behind the crashed load) replaces the
+        // dead page anyway; reloading the old target afterwards would undo it.
+        let generation = loadGeneration
+        enqueue { [weak self] in
+            guard let self, self.loadGeneration == generation else { return }
+            await self.loadChapter(spineIndex, target: target)
+        }
     }
 
     /// Automatic reloads allowed within 30 seconds after WebContent crashes.
@@ -599,6 +643,11 @@ public final class ReaderSession {
         }
         renderer.setBackgroundColor(settings.theme.background)
         schemeHandler.rootStyle = ContentInjector.rootStyle(settings: settings, pageSize: viewportSize, publicationID: container.id)
+        // The theme is not part of the layout key, so `selectLayout` does not reconfigure pre-pagination for it: its
+        // background and the neighbour snapshots (drawn in the old colours) are refreshed here.
+        if settings.theme != oldValue.theme, settings.layoutKey == oldValue.layoutKey {
+            paginationService.updateTheme(settings: settings)
+        }
         guard hasLoaded else { return }
         isLoading = true
         enqueue { [weak self] in await self?.relayoutPreservingPosition() }
@@ -763,12 +812,16 @@ public final class ReaderSession {
 
     /// Moves to the page that holds `result` and marks the match with a temporary highlight that the next page
     /// move or chapter load removes.
+    ///
+    /// The move and the highlight are one operation, so no other navigation can replace the document in between
+    /// (the range would then be resolved against another chapter).
     public func show(_ result: SearchResult) async {
-        keepTransientHighlight = true
-        await go(to: result.range.start)
-        keepTransientHighlight = false
-        guard hasLoaded, let spineIndex = publication.spineIndex(of: result.range.start), isShowing(spineIndex: spineIndex) else { return }
+        guard let spineIndex = publication.spineIndex(of: result.range.start) else { return }
         await run { [self] in
+            keepTransientHighlight = true
+            await goToCFI(result.range.start, spineIndex: spineIndex)
+            keepTransientHighlight = false
+            guard hasLoaded, isShowing(spineIndex: spineIndex) else { return }
             do {
                 try await renderer.setTransientHighlight(result.range)
                 transientHighlight = result.range
@@ -945,7 +998,7 @@ public final class ReaderSession {
             emit(.externalLink(url))
         case .spineItem(let index, let path, let fragment):
             enqueue { [weak self] in await self?.followInternalLink(spineIndex: index, path: path, fragment: fragment) }
-        case .resource(let path):
+        case .resource(let path, _):
             logger.debug("link to a non-spine resource ignored: \(path)")
         case .missing(let path):
             emit(.warning(.missingResource(path: path, referencedFrom: publication.readingOrder[currentSpineIndex].path)))
@@ -957,16 +1010,19 @@ public final class ReaderSession {
     /// Moves to a spine item (and the element its fragment names), then emits `internalLink`.
     private func followInternalLink(spineIndex: Int, path: String, fragment: String?) async {
         if isShowing(spineIndex: spineIndex), hasLoaded {
-            // The same document (or the other page of the visible fixed-layout spread): only the page may change.
-            if let fragment, let page = try? await renderer.pageForFragment(fragment) {
-                await goToPageInChapter(page)
+            // The same document (or the other page of the visible fixed-layout spread): only the page may change. A link
+            // without a fragment goes to the document's start, like a link into another document.
+            if let fragment {
+                if let page = try? await renderer.pageForFragment(fragment) { await goToPageInChapter(page) }
+            } else {
+                await goToPageInChapter(0)
             }
         } else {
             await loadChapter(spineIndex, target: fragment.map { .fragment($0) } ?? .first)
         }
         guard hasLoaded, isShowing(spineIndex: spineIndex) else { return }
         let cfi = await FragmentLookup.cfi(path: path, fragment: fragment, spineIndex: spineIndex, in: container)
-            ?? position.flatMap { publication.spineIndex(of: $0.cfi) == spineIndex ? $0.cfi : nil }
+            ?? (fragment == nil ? nil : position.flatMap { publication.spineIndex(of: $0.cfi) == spineIndex ? $0.cfi : nil })
             ?? CFI(spineSteps: publication.cfiSpineSteps(forSpineIndex: spineIndex), steps: [CFI.Step(index: 4)])
         emit(.internalLink(cfi))
     }
@@ -980,8 +1036,8 @@ public final class ReaderSession {
         switch destination {
         case .spineItem(let index, let p, let f):
             path = p; fragment = f; spineIndex = index
-        case .resource(let p):
-            path = p; fragment = URL(string: note.href)?.fragment; spineIndex = nil
+        case .resource(let p, let f):
+            path = p; fragment = f; spineIndex = nil
         case .external, .missing, .ignored:
             // A noteref that leaves the publication is an ordinary link.
             handleLink(href: note.href)
@@ -1002,7 +1058,7 @@ public final class ReaderSession {
         guard let url = URL(string: src) else { return }
         let path: String?
         switch LinkDestination.resolve(src, publicationID: container.id, publication: publication, contains: container.contains(path:)) {
-        case .resource(let p), .missing(let p): path = p
+        case .resource(let p, _), .missing(let p): path = p
         case .spineItem(_, let p, _): path = p
         case .external, .ignored: path = nil
         }
@@ -1024,6 +1080,11 @@ public final class ReaderSession {
     }
 
     // MARK: - Helpers
+
+    /// The first spine index of the face that holds `index` in the current plan.
+    private func leadingSpineIndex(ofFaceContaining index: Int) -> Int {
+        spreadPlan.unit(containing: index)?.leadingSpineIndex ?? index
+    }
 
     /// Whether `spineIndex` is one of the documents on the visible face.
     private func isShowing(spineIndex: Int) -> Bool {

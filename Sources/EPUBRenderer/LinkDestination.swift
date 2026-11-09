@@ -8,8 +8,9 @@ enum LinkDestination: Equatable, Sendable {
     case external(URL)
     /// A spine item of this publication, with the fragment if any.
     case spineItem(index: Int, path: String, fragment: String?)
-    /// A publication resource that is not in the spine (an image, a stylesheet). Not navigable.
-    case resource(path: String)
+    /// A publication resource that is not in the spine (an image, a stylesheet, a notes document outside the
+    /// reading order), with the decoded fragment if any. Not navigable.
+    case resource(path: String, fragment: String?)
     /// A path of this publication that the container does not have.
     case missing(path: String)
     /// Something that is neither (another publication's `epub://` URL, the library's own `_reader/` documents).
@@ -31,18 +32,26 @@ enum LinkDestination: Equatable, Sendable {
         if let index = publication.spineIndex(ofPath: path) {
             return .spineItem(index: index, path: path, fragment: fragment)
         }
-        return contains(path) ? .resource(path: path) : .missing(path: path)
+        return contains(path) ? .resource(path: path, fragment: fragment) : .missing(path: path)
     }
 }
 
 /// Reads documents through EPUBCore to resolve link fragments into CFIs and notes into text, for targets in
 /// documents other than the one on screen (M5).
 enum FragmentLookup {
-    /// The CFI of the element `fragment` names in the document at `path`; the document's body when `fragment` is nil.
+    /// The CFI of the element `fragment` names in the document at `path`; the document's body when `fragment` is nil
+    /// (`/4` when the document cannot be parsed). nil when the fragment names no element.
     static func cfi(path: String, fragment: String?, spineIndex: Int, in container: EPUBContainer) async -> CFI? {
         let steps = container.publication.cfiSpineSteps(forSpineIndex: spineIndex)
-        guard let fragment else { return nil }
-        guard let tree = await tree(path: path, in: container) else { return nil }
+        let tree = await tree(path: path, in: container)
+        guard let fragment else {
+            if let tree, let body = tree.root.children.firstIndex(where: { $0.element?.name == "body" }),
+               let cfi = CFIGenerator.cfi(for: DocumentLocation(path: [body]), in: tree, spineSteps: steps) {
+                return cfi
+            }
+            return CFI(spineSteps: steps, steps: [CFI.Step(index: 4)])
+        }
+        guard let tree else { return nil }
         return CFIGenerator.cfi(forElementWithID: fragment, in: tree, spineSteps: steps)
     }
 

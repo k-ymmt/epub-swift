@@ -3,24 +3,38 @@ import WebKit
 import EPUBCore
 
 /// Maps `PublicationID` → `EPUBContainer` for the scheme handler (docs/design/02-rendering.md §2.1).
+///
+/// Several sessions may show the same container, so registrations are counted: the container stays served until
+/// every session that registered it has unregistered.
 @MainActor
 final class PublicationRegistry {
     static let shared = PublicationRegistry()
 
-    private var containers: [PublicationID: EPUBContainer] = [:]
+    private var containers: [PublicationID: (container: EPUBContainer, count: Int)] = [:]
     private var fonts: [PublicationID: [String: URL]] = [:]
 
     func register(_ container: EPUBContainer) {
-        containers[container.id] = container
+        let count = containers[container.id]?.count ?? 0
+        containers[container.id] = (container, count + 1)
     }
 
     func unregister(_ id: PublicationID) {
-        containers[id] = nil
-        fonts[id] = nil
+        guard let entry = containers[id] else { return }
+        if entry.count > 1 {
+            containers[id] = (entry.container, entry.count - 1)
+        } else {
+            containers[id] = nil
+            fonts[id] = nil
+        }
+    }
+
+    /// Number of live registrations (tests).
+    func registrationCount(for id: PublicationID) -> Int {
+        containers[id]?.count ?? 0
     }
 
     func container(for id: PublicationID) -> EPUBContainer? {
-        containers[id]
+        containers[id]?.container
     }
 
     func registerFont(_ resource: FontResource, for id: PublicationID) {
@@ -59,6 +73,12 @@ final class EPUBSchemeHandler: NSObject, WKURLSchemeHandler {
         URL(string: "\(scheme)://\(publicationID)/\(ContainerPath.percentEncoded(ContainerPath.normalize(path)))")!
     }
 
+    /// The container path a request addresses. `URL.path` is already percent-decoded; decoding again would turn a
+    /// literal `%20` in a file name into a space.
+    static func containerPath(of url: URL) -> String {
+        ContainerPath.normalize(url.path)
+    }
+
     static func readerResourceURL(publicationID: PublicationID, name: String) -> String {
         "\(scheme)://\(publicationID)/_reader/css/\(name)"
     }
@@ -74,7 +94,7 @@ final class EPUBSchemeHandler: NSObject, WKURLSchemeHandler {
             finish(urlSchemeTask, taskID: taskID, response: Self.errorResponse(url: url, status: 404), data: nil)
             return
         }
-        let path = ContainerPath.normalize(url.path.removingPercentEncoding ?? url.path)
+        let path = Self.containerPath(of: url)
 
         if path == SpreadDocument.path {
             serveSpreadDocument(url: url, container: container, task: urlSchemeTask, taskID: taskID)

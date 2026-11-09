@@ -14,6 +14,33 @@ import Testing
         #expect(doc.warnings.isEmpty)
     }
 
+    @Test func wellFormedUTF16IsTranscodedToUTF8() throws {
+        let source = MiniEPUB.xhtml.replacingOccurrences(of: "encoding=\"UTF-8\"", with: "encoding=\"UTF-16\"")
+            .replacingOccurrences(of: "Hello", with: "こんにちは")
+        for encoding in [String.Encoding.utf16BigEndian, .utf16LittleEndian] {
+            let bom: [UInt8] = encoding == .utf16BigEndian ? [0xFE, 0xFF] : [0xFF, 0xFE]
+            let encoded = try #require(source.data(using: encoding))
+            let data = Data(bom) + encoded
+            let doc = XHTMLRepair.prepare(data, path: "u16.xhtml")
+            #expect(doc.state == .wellFormed)
+            let text = try #require(String(data: doc.data, encoding: .utf8))
+            #expect(text.hasPrefix("<?xml version=\"1.0\" encoding=\"UTF-8\"?>"))
+            #expect(!text.contains("UTF-16"))
+            let tree = try XMLDocument(data: doc.data)
+            #expect(tree.root.textContent.contains("こんにちは"))
+        }
+    }
+
+    @Test func utf16TranscodingKeepsAStylesheetInstruction() throws {
+        let source = #"<?xml-stylesheet type="text/css" href="book.css"?><html xmlns="http://www.w3.org/1999/xhtml"><head><title>t</title></head><body><p>x</p></body></html>"#
+        let encoded = try #require(source.data(using: .utf16BigEndian))
+        let doc = XHTMLRepair.prepare(Data([0xFE, 0xFF]) + encoded, path: "s.xhtml")
+        #expect(doc.state == .wellFormed)
+        let text = try #require(String(data: doc.data, encoding: .utf8))
+        #expect(text.contains("<?xml-stylesheet type=\"text/css\" href=\"book.css\"?>"))
+        #expect(text.hasPrefix("<?xml version=\"1.0\" encoding=\"UTF-8\"?>"))
+    }
+
     @Test(arguments: malformedNames)
     func repairedDocumentsAreWellFormedXML(name: String) throws {
         let data = try Fixtures.malformed(name)

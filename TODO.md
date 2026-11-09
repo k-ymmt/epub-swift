@@ -1,12 +1,5 @@
 # TODO
 
-## M1 の積み残し（2026-11-08 の Codex 敵対的レビューで確認した不具合）
-
-- [ ] `Sources/EPUBCore/XHTML/XHTMLRepair.swift` + `ContentInjector.inject`: UTF-16（BOM 付き）で整形式な XHTML は `prepare` がバイト列をそのまま返し、`inject` が UTF-8 デコードに失敗して CSS/viewport 注入なしで配信される（段組みされず 1 ページ扱い）。整形式でも UTF-8 以外なら UTF-8 に変換して返す。
-- [ ] `Sources/EPUBRenderer/ContentInjector.swift` `range(ofTag:)`: `<x:html>` / `<x:head>` のように接頭辞付きの要素名を認識できず、フォールバックで文書の前に `<head>` を付けてルート要素が 2 つになり WebKit が XML エラーにする。接頭辞付きタグ名にも一致させる。
-- [ ] `Sources/EPUBRenderer/EPUBSchemeHandler.swift`: `url.path` は Foundation が既にパーセントデコード済みなのに再度 `removingPercentEncoding` しており、ファイル名に `%` を含む資源（`a%20b.xhtml`）が 404 になる。二重デコードをやめる（`ReaderSession.handleLink` 側は M5 の `LinkDestination` で解消済み）。
-- [ ] `Sources/EPUBRenderer/EPUBSchemeHandler.swift` `PublicationRegistry`: 同じ `EPUBContainer` を使う `ReaderSession` が複数あると、1 つの deinit で `unregister` され残りのセッションの資源要求が 404 になる。登録数を数えるか、セッションごとのハンドラにコンテナを直接持たせる。
-
 ## M1 の積み残し（その他）
 
 - [ ] iOS の狭い列幅で letter-spacing の大きな見出し（moby-dick の "TRANSCRIBER'S" など）が列からはみ出す。コンテンツ側のスタイルなので reader-after.css で `overflow-wrap` / `word-break` を当てるかどうか方針を決める。
@@ -21,14 +14,6 @@
 - [ ] 04-roadmap §3.3 の計測（最初のページまでの時間、事前ページ化の完了時間、メモリ）を Instruments で記録していない。草枕の事前ページ化は macOS のテストで約 0.7 秒、iOS Simulator で約 1 秒（目視）。
 - [ ] `EPUBReaderView` の周囲の UI の高さが変わると `viewportSize` が変わり全章の再計測になる（デモではステータスバーの高さを固定して回避）。数 pt の変化を無視する、または高さ変化を遅延して適用するなどライブラリ側で吸収するか検討する。
 
-## M2 の積み残し（2026-11-08 の Codex 敵対的レビューで確認した不具合。いずれも未修正）
-
-- [ ] `Sources/EPUBCore/Container/EPUBContainer.swift` Loader: `characterCount` を数えるために全 spine 文書を読んで `XHTMLRepair.prepareAndParse` した結果（`ContentDocument`）を `contentDocuments` に種として保持しているので、開いた時点で全章の展開済みバイト列をメモリに持ち続ける（上限なし。M1 では章の配信時に都度 prepare していた）。文字数だけ数えて `ContentDocument` は保持しない（配信時に再度 prepare する）か、合計サイズに上限を付ける。
-- [ ] 同じ箇所: 種として入れた `contentDocuments` は `encryption.xml` の解析より前に作られ、`contentDocument(at:)` はキャッシュを優先するため、未対応アルゴリズムで暗号化された spine 文書が `EPUBError.encryptedResource` を投げずに（暗号文のまま）配信される。`data(at:)` だけが拒否する。種を入れるのをやめるか、`unsupportedEncryptedPaths` を除外し、`contentDocument(at:)` にも拒否のテスト（`FontObfuscationTests.unsupportedAlgorithmsWarnAndRefuseToServe` の `contentDocument` 版）を足す。
-- [ ] `Sources/EPUBRenderer/ReaderSession.swift` `loadChapter` / `viewportSizeDidChange`: 初回読み込みの `ready` 待ちの間に `viewportSize` が変わると、`hasLoaded == false` のためページサイズだけ適用されて `selectLayout()` が呼ばれず、新しいサイズで計測した章ページ数が古い `LayoutKey` に記録される。`ready` 後に `selectLayout()` を呼び直すか、未読み込み時のサイズ変更でもキーを選び直す。
-- [ ] `Sources/EPUBRenderer/ReaderSession.swift` `settingsDidChange`: テーマだけの変更は `LayoutKey` を変えないので `PaginationService.configure` が呼ばれず、隣接章のスナップショットが旧テーマの色のまま残り、非表示 WebView の背景色も更新されない。章またぎのめくりで旧テーマの画像が一瞬見える。テーマ変更時にサービスの背景色を更新してスナップショットだけ撮り直す。
-- [ ] `Examples/ReaderDemo/Sources/ReaderDemo/BookView.swift` Go to page: `Int(text)` が `Int.min` を受け付け、`page - 1` でオーバーフローして落ちる。1 以上 `totalPages` 以下に制限する。
-
 ## M3 の積み残し（2026-11-09）
 
 - [ ] `ReaderSession` に読み込み前の初期位置を渡す手段がない（`go(to:)` は `viewportSize` が決まり章が読み込まれてから有効）。アプリは最初の `positionChanged` を待って `go(to:)` を呼ぶ必要があり、最初の章が一瞬見える。`ReaderSession(container:settings:initialPosition:)` か `loadIfNeeded(at:)` を検討する。
@@ -38,16 +23,6 @@
 - [ ] `SelectedText.rects` / `highlightTapped` の矩形は `selectionChanged` 受信時点の可視ページ座標で、その後ページ移動や再レイアウトがあると古くなる。アプリがメニューを出すときは `rects(for:)` で取り直す運用にしているが、ライブラリ側で位置変更時に `currentSelection` を更新するか検討する。
 - [ ] `SearchService` の抽出結果（`TextMap`）は spine item ごとに actor 内へ無期限にキャッシュする。大きな本では本文全体をメモリに持つことになるので、上限を検討する（M2 の `contentDocuments` の積み残しと同じ話。メモリ警告での破棄は M5 で入れた: `ReaderSession` がサービスごと捨てる）。
 - [ ] 検索は線形 spine item のみ。非線形（`linear="no"`）の文書は対象外にしている。必要なら `SearchOptions` にフラグを足す。
-
-## M3 の積み残し（2026-11-09 の Codex 敵対的レビューで確認した不具合。いずれも未修正）
-
-- [ ] `Sources/EPUBRenderer/Reader/reader.js` `boundaryToPoint`: 選択範囲の境界が要素コンテナで、その子オフセットの位置がコメントノード（`<b>First</b><!-- c -->Second` で `selectNode(b)` の終点）だと null を返し、`fromRange` 全体が null になって選択が「なし」と報告される（ハイライトできない）。コメントや空白テキストを読み飛ばして次の要素 / テキストに寄せる。
-- [ ] `Sources/EPUBRenderer/ReaderSession.swift` `show(_:)`: `go(to:)` の後の章の一致確認を操作キューの外で行い、一時ハイライトの適用を別の操作として積むので、その間に別の章への移動が割り込むと、検索結果の CFI 範囲が別の文書に対して解決され無関係な文字がハイライトされうる（`reader.js` の `resolveSteps` は spine ステップを見ない）。移動と一時ハイライトを 1 つの操作にまとめるか、適用直前に `currentSpineIndex` を再確認する。`reader.js` 側でも `spineSteps` の一致を確認すると二重に防げる。
-- [ ] `Sources/EPUBCore/Model/Publication.swift` `spineIndex(of:)`: ID でもステップ index でも一致しないときに `index / 2 - 1` を reading order の添字として使うため、manifest にない itemref を読み飛ばした OPF では、存在しない章を指す CFI が別の章に解決される。最後のフォールバックをやめて nil を返す（`cfiStepIndex` の一致だけを認める）。
-- [ ] `Sources/EPUBCore/CFI/CFIGenerator.swift` `textAssertion(in:offset:)`: 前後 10 ユニットしか使わないのにテキストノード全体を `Array(text.utf16)` に展開する。`SearchService.results(for:)` は一致ごとに 2 回呼ぶので、長いテキストノードに大量の一致がある章では二次関数的に遅くなり、その章が終わるまで結果が流れず、ループ内でキャンセルも見ない。`String.UTF16View` の index 演算で必要範囲だけ切り出し、`results(for:)` のループで `Task.checkCancellation()` を見る。
-- [ ] `Sources/EPUBUI/EPUBReaderView.swift`: `.selectionActions` の転送が `onChange(of: ids)` なので、id が同じまま title / systemImage / handler だけ変わった配列はセッションに反映されない（古いハンドラが呼ばれ続ける）。`SelectionAction` を `Equatable` にする（handler を除く比較 + 変更世代）か、毎回代入する。
-- [ ] `Examples/ReaderDemo/Sources/ReaderDemo/Annotations.swift` `BookStore.init`: 英数字以外をすべて `_` に置き換えてファイル名にするので、`A-B.epub` と `A_B.epub` のように異なる本が同じ JSON を共有し、ハイライトと位置を上書きし合う。ハッシュ（SHA-256）をファイル名にする。
-
 
 ## M4 の積み残し（2026-11-09）
 
@@ -62,13 +37,9 @@
 - [ ] `Examples/ReaderDemo/Sources/ReaderDemo/Books/` の fixture の重複（M1 の積み残し）が FXL の 3 冊分（約 5 MB）増えた。
 - [ ] macOS のトラックパッドのピンチ（FXL のズーム）は実機で未確認。見開き表示とウィンドウリサイズでの単ページ ⇄ 見開きは 2026-11-09 に macOS 27 の ReaderDemo で確認した。
 
-## M4 の積み残し（2026-11-09 の Codex 敵対的レビューで確認した不具合。いずれも未修正）
+## M4 の積み残し（2026-11-09 の Codex 敵対的レビューで確認した不具合。未修正のもの）
 
-- [ ] `Sources/EPUBRenderer/ContentInjector.swift` `cssLength`: 整数値の `Double` を `Int(value)` で変換するので、FXL 文書の viewport meta に `width=9223372036854775808` のような `Int` の範囲外の値があると `SpreadDocument.html` の `data-width` 生成でトラップしてアプリが落ちる（`FixedLayoutViewport` は正の有限値なら何でも受ける）。`FixedLayoutViewport` で上限（たとえば 100000）を超える値を捨てるか、`cssLength` で `Int(exactly:)` / `%.0f` を使う。
-- [ ] `Sources/EPUBRenderer/ReaderSession.swift` `loadChapter` / `viewportSizeDidChange`: 初回読み込みの `ready` 待ちの間に `viewportSize` が変わると、`hasLoaded == false` の分岐でページサイズだけ適用され、読み込み前に `selectLayout()` で作った `SpreadPlan`（古いサイズでの見開き判定）の面がそのまま確定する。はるこを 800×600 で開き始めて `ready` 前に 400×600 にすると、縦向きなのに p01 が左半分の配置で表示され、再レイアウトも予約されない。M2 の積み残し（同じ箇所の `LayoutKey` の件）と合わせて、`ready` 後に `selectLayout()` を呼び直して面が変わっていれば読み直す。
-- [ ] `Sources/EPUBRenderer/ReaderSession.swift` `loadChapter`（`PaginationService.layOut` も同じ）: 縦書きラッパーの読み直し判定が `realization.isWrapper != layout.writingMode.isVertical` だけなので、`vertical-rl` の章から `vertical-lr` の章へ移ると、ヒント（rl）で作ったラッパー（最初のページが右）がそのまま使われ、左右が逆になる。`SpreadDocument.verticalURL` に渡した `writingMode` と `layout.writingMode` の不一致でも読み直す。
 - [ ] `Sources/EPUBRenderer/ReaderSession.swift` `go(toSpineIndex:)` / `go(to cfi:)` / `refreshPosition`: 表示中の FXL 見開きの 2 ページ目へ移動しても `position` は面の先頭フレームの CFI のまま（`reader.js` の `cfiForPage` は FXL では最初の iframe の CFI を返す）。はるこの [1,2] 表示中に `go(toSpineIndex: 2)` してから Spread を Never にすると spine 1 が開く。FXL の面では「最後に要求されたページ」を覚えて `position` に反映するか、`cfiForPage` にページ（iframe）を指定できるようにする。上の「白紙の先頭ページ」の項目と同じ箇所。
-- [ ] `Sources/EPUBRenderer/PaginationService.swift` `neighbours(of:)` / `snapshot(lastPageOf:)`: 前の面は「現在の面の直前の線形 item」（面の末尾 spine index）で指すのに、スナップショットは面の先頭 index（`leading`）で保存するので、FXL のペア [1,2] の次の面 [3,4] を表示中に `pageSnapshot(.previous)` が `snapshots[2]` を引いて nil になり、`setCurrentSpineIndex` の保持フィルタでも捨てられる（戻りのめくりが常に背景色の代用になる）。`neighbours` が返す前の面の index を面の `leadingSpineIndex` に正規化し、`ReaderSession.pageSnapshot(.previous)` も面の先頭で引く。
 
 ## M5 の積み残し（2026-11-09）
 
@@ -83,11 +54,12 @@
 - [ ] 横書き多段組のスクロール範囲を `html::after` で広げる対策（02-rendering §3.4）は WebKit の挙動に依存している。WebKit が末尾 padding を含めるように変わっても箱がページ数ちょうどなので害はないが、`PageAlignmentTests` が落ちたら最初に疑う。
 - [ ] iOS 27 Simulator の通し確認（iPhone 17 Pro / iPad Pro 11-inch）は、この M5 では links-sample・アラビア語・The Waste Land（難読化フォント、検索）を中心に行い、Moby-Dick・草枕・はるこ・Page blanche・Voyage of Life は M4 までの確認に頼った。
 
-## M5 の積み残し（2026-11-09 の Codex 敵対的レビューで確認した不具合。いずれも未修正）
+## M5 の積み残し（2026-11-09 の Codex 敵対的レビューで確認した不具合。未修正のもの）
 
-- [ ] `Sources/EPUBRenderer/ReaderSession.swift` `followInternalLink`: 表示中の文書を指すフラグメントなしのリンク（4 ページ目にいるときの `href="c1.xhtml"`）でページが動かない。同じ文書の分岐は `fragment` があるときだけ `goToPageInChapter` を呼ぶので、そのまま 4 ページ目に留まり、`internalLink` も現在の `position` の CFI で出る。別文書の分岐と同じく `fragment == nil` なら 0 ページ目へ移動し、CFI は本文の先頭にする。
-- [ ] `Sources/EPUBRenderer/LinkDestination.swift` `resolve` と `reader.js` `pageForFragment`: フラグメントを Swift 側で `removingPercentEncoding` したあと、`reader.js` が `decodeURIComponent` でもう一度戻すので、`id="foo%20bar"` を指す `href="#foo%2520bar"` が `foo bar` を探して見つからない（同じ文書では動かず、別文書では先頭ページに落ちる）。`pageForFragment` には復号済みの id を渡す取り決めにして JS 側の復号をやめる（`reader.js` 内で生の href から呼んでいる箇所があれば、そこで 1 回だけ復号する）。
-- [ ] `Sources/EPUBRenderer/ReaderSession.swift` `handleNoteref`: spine 外の文書（`.resource`）を指す noteref は `URL(string:)?.fragment` を復号せずに `FragmentLookup.note` に渡すので、`notes.xhtml#%E6%B3%A8` のような非 ASCII の id の注が見つからず、`NoteContent.text` が nil になる。`LinkDestination.resolve` と同じ復号を通す（`.resource` にもフラグメントを持たせるのが素直）。
 - [ ] `reader.js` `hideReferencedNotes` と `SearchService`: noteref から参照される aside は `display: none` で隠すが、検索の索引（EPUBCore の `TextMap`）には aside の本文が入るので、links-sample で「first footnote」を検索して `show(_:)` しても注は表示されず、ページも動かず、一時ハイライトも見えない。検索で隠れた注に当たったら noteref と同じ `NoteContent` を出すか、索引から隠れる注を除くか、`show` の間だけ注を表示するかを決める。
-- [ ] `Sources/EPUBRenderer/ReaderSession.swift` `webContentProcessDidTerminate`: 章 8 の `ready` 待ちの間に `go(toSpineIndex: 9)` がキューに入った状態で WebContent が落ちると、章 8 の読み直しがキューの末尾に追加されるので、章 9 を開いたあとに章 8 へ戻ってしまう。読み直しの操作に `loadGeneration` を持たせ、その後に新しいナビゲーションが始まっていたら捨てる（またはキューの先頭に入れる）。
-- [ ] `Sources/EPUBRenderer/ReaderSession.swift` `webContentProcessDidTerminate`: 30 秒以内の自動読み直しが上限（3 回）に達して読み直しをやめたあとも `hasLoaded` / 表示中の unit が残るので、`go(to: position)` などが「表示中の章」の分岐でスクリプトを呼ぶだけになり、白いままの web view が読み直されない（制御フローから推定。4 回落とす実機確認はしていない）。上限で止めるときは `hasLoaded = false` にして、次のナビゲーションが `loadChapter` を通るようにする。
+
+## 判断不要の不具合の修正（2026-11-09）の積み残し
+
+- [ ] `Tests/EPUBRendererTests/RecoveryTests.swift` `crashWhileAChapterLoadsRetriesThatLoad` が不安定（修正前の main でも 5 回中 4 回失敗した）。WebContent を SIGKILL した後の読み直しで `ready` は届くが、続く `window.__epubReader.layout(params)` が「JavaScript execution returned a result of an unsupported type」で失敗し `loadFailed` が出る。新しいプロセスの起動直後に古い文書へスクリプトが届いている可能性がある。原因を調べ、読み直し直後のスクリプト失敗を 1 回だけ再試行するなどで直す。
+- [ ] `Examples/ReaderDemo/Sources/ReaderDemo/Annotations.swift` `BookStore`: 保存ファイル名を book ID の SHA-256 に変えたので、以前の名前（英数字以外を `_` にしたもの、例 `moby_dick.json`）に保存したハイライトと位置が読まれなくなった（Codex レビューで確認）。旧ファイルがあれば読み込んで新しい名前に移すかを決める。旧名は別の本と衝突していた可能性があるので、移すなら同じ旧名に対応する本が 1 冊だけのときに限るなど。
+- [ ] `Sources/EPUBUI/EPUBReaderView.swift`: `selectionActions` を body の評価ごとに `ReaderSession.selectionActions`（`@ObservationIgnored` にした）へ代入するようにしたが、自動テストはない（EPUBUITests に SwiftUI をホストする仕組みがない）。id が同じでハンドラだけ変わった配列で新しいハンドラが呼ばれることを、デモか UI テストで確認する。

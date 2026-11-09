@@ -108,6 +108,33 @@ struct CFIVectors: Decodable {
         #expect(moby.publication.spineIndex(of: CFI("epubcfi(/6/14!/4/2/1:0)")!) == 6)
     }
 
+    /// An itemref without a manifest item is skipped, so the step index of the following items is not
+    /// `2 × (index + 1)`. A CFI into the skipped itemref must not be guessed onto another chapter.
+    @Test func skippedItemrefDoesNotResolveToAnotherChapter() async throws {
+        let data = MiniEPUB.build(
+            withNav: true,
+            extraManifest: #"<item id="c3" href="text/c3.xhtml" media-type="application/xhtml+xml"/>"#,
+            extraSpine: #"<itemref idref="missing"/><itemref idref="c3"/>"#,
+            extraFiles: [("OEBPS/text/c3.xhtml", Data(MiniEPUB.xhtml.utf8))]
+        )
+        let publication = try await EPUBContainer(data: data).publication
+        #expect(publication.readingOrder.map(\.id) == ["c1", "c2", "c3"])
+        #expect(publication.readingOrder[2].cfiStepIndex == 8)
+        #expect(publication.spineIndex(of: try #require(CFI("epubcfi(/6/8!/4)"))) == 2)
+        #expect(publication.spineIndex(of: try #require(CFI("epubcfi(/6/6!/4)"))) == nil)
+        #expect(publication.spineIndex(of: try #require(CFI("epubcfi(/6/98!/4)"))) == nil)
+    }
+
+    @Test func textAssertionTakesTenUnitsOnEachSide() {
+        let text = String(repeating: "a", count: 30) + "😀" + String(repeating: "b", count: 30)
+        let assertion = CFIGenerator.textAssertion(in: text, offset: 30)
+        #expect(assertion?.before == String(repeating: "a", count: 10))
+        #expect(assertion?.after == "😀" + String(repeating: "b", count: 8))
+        #expect(CFIGenerator.textAssertion(in: "abc", offset: 99)?.before == "abc")
+        #expect(CFIGenerator.textAssertion(in: "abc", offset: -5)?.after == "abc")
+        #expect(CFIGenerator.textAssertion(in: "", offset: 0) == nil)
+    }
+
     @Test func resolvesAndGeneratesVectors() async throws {
         let vectors = try CFIVectors.load()
         let container = try await EPUBContainer(url: Fixtures.url(vectors.epub))

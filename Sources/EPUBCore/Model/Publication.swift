@@ -111,13 +111,12 @@ public struct Publication: Sendable {
     }
 
     /// The spine index a CFI addresses: by the itemref ID assertion when present, else by the itemref step index.
-    /// nil when neither matches a spine item.
+    /// nil when neither matches a spine item (no guess from the step index: with skipped itemrefs it would name
+    /// another chapter).
     public func spineIndex(of cfi: CFI) -> Int? {
         guard let step = cfi.spineSteps.last else { return nil }
         if let id = step.id, let item = readingOrder.first(where: { $0.id == id }) { return item.index }
-        if let item = readingOrder.first(where: { $0.cfiStepIndex == step.index }) { return item.index }
-        let derived = step.index / 2 - 1
-        return readingOrder.indices.contains(derived) ? derived : nil
+        return readingOrder.first(where: { $0.cfiStepIndex == step.index })?.index
     }
 }
 

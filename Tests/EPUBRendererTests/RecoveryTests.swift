@@ -61,8 +61,78 @@ import EPUBCore
         await navigation.value
         try await host.waitUntil(timeout: .seconds(15)) { host.session.currentSpineIndex == 8 && !host.session.isLoading }
         #expect(recorder.events.contains { if case .error(.webContentTerminated) = $0 { true } else { false } })
-        #expect(!recorder.events.contains { if case .error(.loadFailed) = $0 { true } else { false } })
+        #expect(!recorder.events.contains { if case .error(.loadFailed) = $0 { true } else { false } }, "\(recorder.events.compactMap { if case .error(let e) = $0 { "\(e)" } else { nil } })")
         #expect(!recorder.events.contains { if case .error(.loadTimeout) = $0 { true } else { false } })
+    }
+
+    /// A navigation queued behind the crashed load wins: the retry of the crashed load is dropped once a newer load
+    /// has started, so the reader does not jump back.
+    @Test func crashRetryDoesNotUndoAQueuedNavigation() async throws {
+        let host = try await SessionHost(url: ReaderSessionTests.mobyDick)
+        await host.session.loadIfNeeded()
+        let first = Task { await host.session.go(toSpineIndex: 8) }
+        try await host.waitUntil { host.session.isLoading }
+        let second = Task { await host.session.go(toSpineIndex: 9) }
+        for _ in 0..<5 { await Task.yield() }
+        Self.crashWebContent(of: host.renderer)
+        await first.value
+        await second.value
+        try await host.waitUntil(timeout: .seconds(15)) { !host.session.isLoading && host.session.hasLoaded }
+        try await Task.sleep(for: .milliseconds(500))
+        #expect(host.session.currentSpineIndex == 9)
+        #expect(!host.session.isLoading)
+    }
+
+    /// After the automatic reloads run out the session no longer counts as loaded, so the next navigation loads its
+    /// chapter instead of scripting the blank web view.
+    @Test func navigationAfterTheReloadLimitLoadsAgain() async throws {
+        let host = try await SessionHost(url: ReaderSessionTests.mobyDick)
+        let recorder = EventRecorder(host.session)
+        await host.session.loadIfNeeded()
+        await host.session.go(toSpineIndex: 6)
+        await host.session.go(toPageInChapter: 2)
+        let position = try #require(host.session.position)
+        for crash in 1...ReaderSession.maximumAutomaticReloads {
+            host.session.webContentProcessDidTerminate()
+            try await host.waitUntil(timeout: .seconds(15)) {
+                recorder.events.filter { if case .error(.webContentTerminated) = $0 { true } else { false } }.count == crash
+                    && host.session.hasLoaded && !host.session.isLoading
+            }
+        }
+        host.session.webContentProcessDidTerminate()
+        #expect(!host.session.hasLoaded)
+        try await Task.sleep(for: .milliseconds(300))
+        #expect(!host.session.hasLoaded, "no reload after the limit")
+        #expect(host.renderer.isContentHidden)
+
+        await host.session.go(to: position)
+        #expect(host.session.hasLoaded)
+        #expect(host.session.currentSpineIndex == 6)
+        #expect(host.session.currentPageIndex == 2)
+        #expect(!host.renderer.isContentHidden)
+    }
+
+    /// The limit can be reached by a crash during a load: that load must not stay "loading".
+    @Test func reachingTheReloadLimitDuringALoadEndsTheLoad() async throws {
+        let host = try await SessionHost(url: ReaderSessionTests.mobyDick)
+        await host.session.loadIfNeeded()
+        for _ in 1...ReaderSession.maximumAutomaticReloads {
+            host.session.webContentProcessDidTerminate()
+        }
+        // Let the reload queued above finish (the others are dropped by the generation check), then start a load and
+        // crash during it, past the limit.
+        try await host.waitUntil(timeout: .seconds(15)) { host.session.hasLoaded && !host.session.isLoading }
+        try await Task.sleep(for: .milliseconds(300))
+        try await host.waitUntil(timeout: .seconds(15)) { host.session.hasLoaded && !host.session.isLoading }
+        let navigation = Task { await host.session.go(toSpineIndex: 8) }
+        try await host.waitUntil { host.session.isLoading }
+        host.session.webContentProcessDidTerminate()
+        await navigation.value
+        try await host.waitUntil { !host.session.isLoading }
+        #expect(!host.session.hasLoaded)
+        await host.session.go(toSpineIndex: 8)
+        #expect(host.session.hasLoaded)
+        #expect(host.session.currentSpineIndex == 8)
     }
 
     @Test func prePaginationSurvivesACrashOfItsHiddenWebView() async throws {

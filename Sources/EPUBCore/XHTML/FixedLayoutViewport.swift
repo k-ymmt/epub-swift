@@ -12,9 +12,12 @@ public struct FixedLayoutViewport: Sendable, Hashable {
         self.height = height
     }
 
+    /// Largest accepted width or height. Larger values are not page sizes (and would overflow integer conversions).
+    public static let maximumLength: Double = 100_000
+
     /// Parses the `content` attribute of a viewport meta. Pairs are separated by `,` or `;`, values may carry a `px`
-    /// suffix. Returns nil unless both `width` and `height` are positive numbers (`width=device-width`, the reflowable
-    /// form, is not a fixed-layout viewport).
+    /// suffix. Returns nil unless both `width` and `height` are positive numbers up to `maximumLength`
+    /// (`width=device-width`, the reflowable form, is not a fixed-layout viewport).
     public init?(metaContent: String) {
         var width: Double?
         var height: Double?
@@ -23,7 +26,7 @@ public struct FixedLayoutViewport: Sendable, Hashable {
             guard parts.count == 2 else { continue }
             var value = parts[1].lowercased()
             if value.hasSuffix("px") { value = String(value.dropLast(2)).trimmingCharacters(in: .whitespaces) }
-            guard let number = Double(value), number > 0, number.isFinite else { continue }
+            guard let number = Double(value), number > 0, number <= Self.maximumLength else { continue }
             switch parts[0].lowercased() {
             case "width": width = number
             case "height": height = number

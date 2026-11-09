@@ -25,7 +25,14 @@ public struct EPUBReaderView: View {
         self.session = session
     }
 
+    private func forwardSelectionActions() {
+        session.selectionActions = selectionActions
+    }
+
     public var body: some View {
+        // Forwarded on every update: an array with the same ids can carry new titles, images or handlers, and closures
+        // cannot be compared. The session does not observe the property, so this does not invalidate anything.
+        let _ = forwardSelectionActions()
         ZStack(alignment: .topLeading) {
             platformView
             if let snapshot = session.relayoutSnapshot {
@@ -57,12 +64,8 @@ public struct EPUBReaderView: View {
             session.viewportSize = size
             Task { await session.loadIfNeeded() }
         }
-        .onChange(of: selectionActions.map(\.id), initial: true) { _, _ in
-            session.selectionActions = selectionActions
-        }
         .task(id: ObjectIdentifier(session)) {
             turn.configure(session: session, transition: transition)
-            session.selectionActions = selectionActions
             for await event in session.events {
                 handle(event)
             }

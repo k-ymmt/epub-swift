@@ -84,6 +84,57 @@ final class EventRecorder {
         #expect(try await host.renderer.pageFor(cfi) == host.session.currentPageIndex)
     }
 
+    /// Adds `<a id=… href=…>` at the start of the visible document's body (and optionally a target element at its end).
+    private func addLink(_ id: String, href: String, targetID: String? = nil, in host: SessionHost) async throws {
+        _ = try await host.js("""
+            const ns = "http://www.w3.org/1999/xhtml";
+            const a = document.createElementNS(ns, "a");
+            a.id = \(CFIScriptTests.quoted(id)); a.setAttribute("href", \(CFIScriptTests.quoted(href))); a.textContent = "link";
+            document.body.insertBefore(a, document.body.firstChild);
+            const target = \(targetID.map(CFIScriptTests.quoted) ?? "null");
+            if (target) { const p = document.createElementNS(ns, "p"); p.id = target; p.textContent = "target"; document.body.appendChild(p); }
+            return true;
+            """)
+    }
+
+    /// A link to the document on screen without a fragment goes to its first page and reports the body's start.
+    @Test func linkToTheSameDocumentWithoutFragmentGoesToItsStart() async throws {
+        let host = try await SessionHost(url: Self.sample)
+        let recorder = EventRecorder(host.session)
+        await host.session.loadIfNeeded()
+        try await addLink("self", href: "c1.xhtml", in: host)
+        await host.session.go(toPageInChapter: 2)
+        #expect(host.session.currentPageIndex == 2)
+        try await click("self", in: host)
+        try await host.waitUntil { !recorder.internalLinks.isEmpty }
+        #expect(host.session.currentSpineIndex == 0)
+        #expect(host.session.currentPageIndex == 0)
+        let cfi = try #require(recorder.internalLinks.first)
+        #expect(cfi.description == "epubcfi(/6/2[c1]!/4)")
+        #expect(cfi.characterOffset == nil)
+    }
+
+    /// The fragment is decoded once (in Swift): `#foo%2520bar` names the id `foo%20bar`.
+    @Test func fragmentIsDecodedOnce() async throws {
+        let host = try await SessionHost(url: Self.sample)
+        let recorder = EventRecorder(host.session)
+        await host.session.loadIfNeeded()
+        try await addLink("encoded", href: "#foo%2520bar", targetID: "foo%20bar", in: host)
+        let page = try #require(try await host.renderer.pageForFragment("foo%20bar"))
+        #expect(page > 0)
+        #expect(try await host.renderer.pageForFragment("foo bar") == nil)
+        try await click("encoded", in: host)
+        try await host.waitUntil { !recorder.internalLinks.isEmpty }
+        #expect(host.session.currentPageIndex == page)
+    }
+
+    @Test func resourceLinksKeepTheirDecodedFragment() {
+        let publication = Publication(id: PublicationID(), metadata: Metadata(title: "t"), manifest: [], readingOrder: [], toc: [], pageList: [], landmarks: [], layout: .reflowable, spread: .auto, pageProgression: .default, coverImagePath: nil, packageDocumentPath: "p.opf", navigationDocumentPath: nil, warnings: [])
+        let id = PublicationID()
+        let destination = LinkDestination.resolve("epub://\(id)/OPS/notes%20file.xhtml#%E6%B3%A8", publicationID: id, publication: publication, contains: { _ in true })
+        #expect(destination == .resource(path: "OPS/notes file.xhtml", fragment: "注"))
+    }
+
     @Test func externalLinkIsReportedWithoutNavigating() async throws {
         let host = try await SessionHost(url: Self.sample)
         let recorder = EventRecorder(host.session)

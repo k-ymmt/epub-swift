@@ -3,7 +3,7 @@ import Foundation
 /// An opened EPUB: the ZIP plus its parsed `Publication` (docs/design/01-core.md §1.2, 03-api §2.1).
 ///
 /// Opening parses `container.xml` → OPF → nav. Resources are decompressed on demand; small text resources are
-/// cached. Spine documents go through `XHTMLRepair` once and the result is cached per path.
+/// cached. Spine documents go through `XHTMLRepair` when served and the result is cached (bounded).
 public actor EPUBContainer {
     public nonisolated let id: PublicationID
     public nonisolated let publication: Publication
@@ -20,8 +20,17 @@ public actor EPUBContainer {
         c.totalCostLimit = 16 * 1024 * 1024
         return c
     }()
-    /// Prepared spine documents; seeded at open (the character counts need the parse anyway).
-    private var contentDocuments: [String: ContentDocument]
+    /// Prepared spine documents, bounded like `cache` (documents are prepared again after eviction).
+    private let contentDocuments: NSCache<NSString, PreparedBox> = {
+        let c = NSCache<NSString, PreparedBox>()
+        c.totalCostLimit = 32 * 1024 * 1024
+        return c
+    }()
+
+    private final class PreparedBox {
+        let document: ContentDocument
+        init(_ document: ContentDocument) { self.document = document }
+    }
 
     public init(url: URL) async throws {
         let loaded = try await Task.detached(priority: .userInitiated) {
@@ -33,7 +42,6 @@ public actor EPUBContainer {
         self.archive = loaded.archive
         self.obfuscations = loaded.obfuscations
         self.unsupportedEncryptedPaths = loaded.unsupportedEncryptedPaths
-        self.contentDocuments = loaded.contentDocuments
     }
 
     /// Opens an EPUB held in memory (tests, documents received as data).
@@ -47,7 +55,6 @@ public actor EPUBContainer {
         self.archive = loaded.archive
         self.obfuscations = loaded.obfuscations
         self.unsupportedEncryptedPaths = loaded.unsupportedEncryptedPaths
-        self.contentDocuments = loaded.contentDocuments
     }
 
     /// Container paths of every file in the ZIP.
@@ -85,13 +92,14 @@ public actor EPUBContainer {
     }
 
     /// A spine document prepared for serving: original bytes when well-formed, otherwise the repaired XML or the
-    /// `text/html` fallback (docs/design/01-core.md §4.1). The result is cached.
+    /// `text/html` fallback (docs/design/01-core.md §4.1). The result is cached (bounded). Throws
+    /// `EPUBError.encryptedResource` like `data(at:)`.
     public func contentDocument(at path: String) throws -> ContentDocument {
         let normalized = ContainerPath.normalize(path)
-        if let cached = contentDocuments[normalized] { return cached }
+        if let cached = contentDocuments.object(forKey: normalized as NSString) { return cached.document }
         let data = try data(at: normalized)
         let document = XHTMLRepair.prepare(data, path: normalized)
-        contentDocuments[normalized] = document
+        contentDocuments.setObject(PreparedBox(document), forKey: normalized as NSString, cost: document.data.count)
         return document
     }
 
@@ -114,7 +122,6 @@ public actor EPUBContainer {
         var publication: Publication
         var obfuscations: [String: FontObfuscation] = [:]
         var unsupportedEncryptedPaths: Set<String> = []
-        var contentDocuments: [String: ContentDocument] = [:]
     }
 
     enum Loader {
@@ -175,18 +182,27 @@ public actor EPUBContainer {
                 toc = NavigationParser.fallbackTOC(readingOrder: parsed.readingOrder)
             }
 
-            // Spine documents: prepare them once (repair if needed) and count their text for the page-count estimate
-            // (02-rendering §5.2). The prepared documents seed the container's cache so serving does not repeat the work.
-            var contentDocuments: [String: ContentDocument] = [:]
+            // META-INF/encryption.xml: font obfuscation is undone transparently by `data(at:)`; other
+            // algorithms (DRM) are recorded as warnings and their resources cannot be read.
+            var encryption = EncryptionParser.Result()
+            if archive.contains("META-INF/encryption.xml"), let encryptionData = try? archive.data(at: "META-INF/encryption.xml") {
+                encryption = EncryptionParser.parse(encryptionData, uniqueIdentifier: parsed.metadata.identifier)
+                warnings.append(contentsOf: encryption.warnings)
+            }
+
+            // Spine documents: parse them (repairing if needed) and count their text for the page-count estimate
+            // (02-rendering §5.2). The prepared bytes are not kept: holding every chapter would keep the whole book in
+            // memory, so `contentDocument(at:)` prepares again when a document is served. Documents encrypted with an
+            // unsupported algorithm are not read.
             var readingOrder: [SpineItem] = []
             readingOrder.reserveCapacity(parsed.readingOrder.count)
             for item in parsed.readingOrder {
                 var characterCount: Int?
                 var viewport: FixedLayoutViewport?
                 if item.mediaType == XHTMLRepair.xhtmlMediaType || item.path.hasSuffix(".xhtml") || item.path.hasSuffix(".html"),
+                   !encryption.unsupported.contains(item.path),
                    archive.contains(item.path), let data = try? archive.data(at: item.path) {
                     let prepared = XHTMLRepair.prepareAndParse(data, path: item.path)
-                    contentDocuments[item.path] = prepared.document
                     if let tree = prepared.tree {
                         characterCount = TextLength.characterCount(of: tree)
                         // The fixed-layout page size (02-rendering §6.1). Read for every document; only used for
@@ -202,14 +218,6 @@ public actor EPUBContainer {
                     layout: item.layout, spreadPosition: item.spreadPosition, spread: item.spread, orientation: item.orientation,
                     viewport: viewport, characterCount: characterCount, cfiStepIndex: item.cfiStepIndex
                 ))
-            }
-
-            // META-INF/encryption.xml: font obfuscation is undone transparently by `data(at:)`; other
-            // algorithms (DRM) are recorded as warnings and their resources cannot be read.
-            var encryption = EncryptionParser.Result()
-            if archive.contains("META-INF/encryption.xml"), let encryptionData = try? archive.data(at: "META-INF/encryption.xml") {
-                encryption = EncryptionParser.parse(encryptionData, uniqueIdentifier: parsed.metadata.identifier)
-                warnings.append(contentsOf: encryption.warnings)
             }
 
             let publication = Publication(
@@ -234,8 +242,7 @@ public actor EPUBContainer {
                 archive: archive,
                 publication: publication,
                 obfuscations: encryption.obfuscations,
-                unsupportedEncryptedPaths: encryption.unsupported,
-                contentDocuments: contentDocuments
+                unsupportedEncryptedPaths: encryption.unsupported
             )
         }
     }

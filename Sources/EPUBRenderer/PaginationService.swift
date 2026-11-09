@@ -108,6 +108,16 @@ final class PaginationService {
         restart()
     }
 
+    /// A theme change that keeps the layout (02-rendering §8.3): page counts stay valid, but the neighbour snapshots
+    /// were drawn in the old colours. The hidden web view takes the new background and the snapshots are taken again.
+    func updateTheme(settings: ReaderSettings) {
+        self.settings = settings
+        renderer.setBackgroundColor(settings.theme.background)
+        clearSnapshots()
+        guard generation >= 0 else { return }
+        restart()
+    }
+
     /// Reorders the queue around the chapter now on screen and makes sure its neighbours get snapshots. The chapter
     /// being laid out right now is left to finish: cancelling it and reloading the same chapter would let the first
     /// document's `ready` answer the second load.
@@ -163,13 +173,18 @@ final class PaginationService {
         plan.unit(containing: index) ?? .reflowable(spineIndex: index, twoPages: false)
     }
 
-    /// Leading spine indices of the faces after and before the face that holds `index`.
-    private func neighbours(of index: Int) -> [Int] {
+    /// Leading spine indices of the faces after and before the face that holds `index`. The linear item just before
+    /// a face may be the second page of a spread; the face is named by its leading index, like the snapshots.
+    func neighbours(of index: Int) -> [Int] {
         let order = publication.readingOrder
         let unit = unit(containing: index)
         var out: [Int] = []
-        if let last = unit.spineIndices.max(), let next = order.dropFirst(last + 1).first(where: \.isLinear)?.index { out.append(next) }
-        if let first = unit.spineIndices.min(), let previous = order.prefix(first).last(where: \.isLinear)?.index { out.append(previous) }
+        if let last = unit.spineIndices.max(), let next = order.dropFirst(last + 1).first(where: \.isLinear)?.index {
+            out.append(self.unit(containing: next).leadingSpineIndex)
+        }
+        if let first = unit.spineIndices.min(), let previous = order.prefix(first).last(where: \.isLinear)?.index {
+            out.append(self.unit(containing: previous).leadingSpineIndex)
+        }
         return out
     }
 
@@ -260,7 +275,7 @@ final class PaginationService {
         var realization = ReaderSession.realization(of: unit, publicationID: container.id, publication: publication, writingModeHint: lastWritingMode)
         var layout = try await load(realization, spineSteps: steps)
         guard stillCurrent() else { throw CancellationError() }
-        if case .reflowable(let index, true) = unit, realization.isWrapper != ReaderSession.spreadNeedsWrapper(writingMode: layout.writingMode, publication: publication) {
+        if case .reflowable(let index, true) = unit, ReaderSession.realizationMismatches(realization, writingMode: layout.writingMode, publication: publication) {
             realization = ReaderSession.realization(of: .reflowable(spineIndex: index, twoPages: true), publicationID: container.id, publication: publication, writingModeHint: layout.writingMode)
             layout = try await load(realization, spineSteps: steps)
             guard stillCurrent() else { throw CancellationError() }

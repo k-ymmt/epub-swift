@@ -1,4 +1,5 @@
 import SwiftUI
+import CryptoKit
 import EPUB
 
 /// What the demo keeps per book between launches: the highlights and the last reading position, as a JSON file in
@@ -23,7 +24,8 @@ final class BookStore {
         let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first ?? FileManager.default.temporaryDirectory
         let directory = base.appendingPathComponent("ReaderDemo", isDirectory: true)
         try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-        let name = bookID.unicodeScalars.map { CharacterSet.alphanumerics.contains($0) ? String($0) : "_" }.joined()
+        // A hash of the id, so that ids differing only in punctuation (`A-B.epub`, `A_B.epub`) get separate files.
+        let name = SHA256.hash(data: Data(bookID.utf8)).map { String(format: "%02x", $0) }.joined()
         url = directory.appendingPathComponent("\(name).json")
         let contents = (try? Data(contentsOf: url)).flatMap { try? JSONDecoder().decode(Contents.self, from: $0) } ?? Contents()
         highlights = contents.highlights

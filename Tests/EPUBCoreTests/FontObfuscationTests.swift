@@ -94,8 +94,12 @@ import Testing
         let container = try await EPUBContainer(data: MiniEPUB.build(withNav: true, encryptionXML: encryption))
         #expect(container.publication.warnings.contains(.unsupportedEncryption(path: "OEBPS/text/c1.xhtml", algorithm: "http://www.w3.org/2001/04/xmlenc#aes128-cbc")))
         await #expect(throws: EPUBError.self) { try await container.data(at: "OEBPS/text/c1.xhtml") }
+        // The prepared-document path refuses too (the cipher text is never served as a spine document).
+        await #expect(throws: EPUBError.self) { try await container.contentDocument(at: "OEBPS/text/c1.xhtml") }
+        #expect(container.publication.readingOrder.first { $0.path == "OEBPS/text/c1.xhtml" }?.characterCount == nil)
         // Other resources still work.
         _ = try await container.data(at: "OEBPS/text/c2.xhtml")
+        _ = try await container.contentDocument(at: "OEBPS/text/c2.xhtml")
     }
 
     @Test func malformedEncryptionXMLIsAWarningOnly() async throws {
