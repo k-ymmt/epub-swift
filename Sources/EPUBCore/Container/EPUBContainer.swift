@@ -190,7 +190,7 @@ public actor EPUBContainer {
                 }
                 readingOrder.append(SpineItem(
                     id: item.id, index: item.index, path: item.path, mediaType: item.mediaType, isLinear: item.isLinear,
-                    layout: item.layout, spreadPosition: item.spreadPosition, characterCount: characterCount
+                    layout: item.layout, spreadPosition: item.spreadPosition, characterCount: characterCount, cfiStepIndex: item.cfiStepIndex
                 ))
             }
 
@@ -216,6 +216,7 @@ public actor EPUBContainer {
                 coverImagePath: parsed.coverImagePath,
                 packageDocumentPath: opfPath,
                 navigationDocumentPath: parsed.navigationDocumentPath,
+                spineElementIndex: parsed.spineElementIndex,
                 warnings: warnings
             )
             return Loaded(

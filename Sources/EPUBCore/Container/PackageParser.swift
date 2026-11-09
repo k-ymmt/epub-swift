@@ -27,6 +27,8 @@ enum PackageParser {
         var pageProgression: PageProgression
         var coverImagePath: String?
         var navigationDocumentPath: String?
+        /// CFI step of the `spine` element among `package`'s element children.
+        var spineElementIndex: Int
         var warnings: [PublicationWarning]
     }
 
@@ -142,7 +144,10 @@ enum PackageParser {
         if let ppd = spineElement.attribute("page-progression-direction"), let value = PageProgression(rawValue: ppd) {
             pageProgression = value
         }
-        for itemref in spineElement.childElements(named: "itemref") {
+        let spineElementIndex = 2 * ((package.childElements.firstIndex { $0.name == "spine" } ?? 2) + 1)
+        for (childPosition, itemref) in spineElement.childElements.enumerated() {
+            // Every element child counts for the CFI step, even one that is not an itemref.
+            guard itemref.name == "itemref" else { continue }
             guard let idref = itemref.attribute("idref") else { continue }
             guard let item = manifestByID[idref] else {
                 warnings.append(.missingResource(path: idref, referencedFrom: opfPath))
@@ -163,7 +168,8 @@ enum PackageParser {
                 mediaType: item.mediaType,
                 isLinear: itemref.attribute("linear")?.lowercased() != "no",
                 layout: itemLayout,
-                spreadPosition: spreadPosition
+                spreadPosition: spreadPosition,
+                cfiStepIndex: 2 * (childPosition + 1)
             ))
         }
         if readingOrder.isEmpty {
@@ -179,6 +185,7 @@ enum PackageParser {
             pageProgression: pageProgression,
             coverImagePath: coverImagePath,
             navigationDocumentPath: navigationDocumentPath,
+            spineElementIndex: spineElementIndex,
             warnings: warnings
         )
     }

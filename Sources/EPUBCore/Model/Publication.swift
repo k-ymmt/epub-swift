@@ -21,6 +21,9 @@ public struct Publication: Sendable {
     public let packageDocumentPath: String
     /// Container path of the nav document, if one was declared.
     public let navigationDocumentPath: String?
+    /// CFI step index of the `spine` element among the `package` element's children (`/6` when it is the third
+    /// element child, docs/design/01-core.md §5.3).
+    public let spineElementIndex: Int
     public let warnings: [PublicationWarning]
 
     private let manifestByID: [String: Int]
@@ -41,6 +44,7 @@ public struct Publication: Sendable {
         coverImagePath: String?,
         packageDocumentPath: String,
         navigationDocumentPath: String?,
+        spineElementIndex: Int = 6,
         warnings: [PublicationWarning]
     ) {
         self.id = id
@@ -56,6 +60,7 @@ public struct Publication: Sendable {
         self.coverImagePath = coverImagePath
         self.packageDocumentPath = packageDocumentPath
         self.navigationDocumentPath = navigationDocumentPath
+        self.spineElementIndex = spineElementIndex
         self.warnings = warnings
         var byID: [String: Int] = [:]
         var byPath: [String: Int] = [:]
@@ -88,6 +93,25 @@ public struct Publication: Sendable {
     /// Spine items that take part in the reading order (`linear != "no"`).
     public var linearReadingOrder: [SpineItem] {
         readingOrder.filter(\.isLinear)
+    }
+
+    // MARK: - CFI
+
+    /// The spine steps of a CFI into spine item `index`: `/<spineElementIndex>/<itemref step>[idref]`.
+    public func cfiSpineSteps(forSpineIndex index: Int) -> [CFI.Step] {
+        guard readingOrder.indices.contains(index) else { return [] }
+        let item = readingOrder[index]
+        return [CFI.Step(index: spineElementIndex), CFI.Step(index: item.cfiStepIndex, id: item.id.isEmpty ? nil : item.id)]
+    }
+
+    /// The spine index a CFI addresses: by the itemref ID assertion when present, else by the itemref step index.
+    /// nil when neither matches a spine item.
+    public func spineIndex(of cfi: CFI) -> Int? {
+        guard let step = cfi.spineSteps.last else { return nil }
+        if let id = step.id, let item = readingOrder.first(where: { $0.id == id }) { return item.index }
+        if let item = readingOrder.first(where: { $0.cfiStepIndex == step.index }) { return item.index }
+        let derived = step.index / 2 - 1
+        return readingOrder.indices.contains(derived) ? derived : nil
     }
 }
 
@@ -165,10 +189,13 @@ public struct SpineItem: Sendable, Hashable, Identifiable {
     /// Book-level layout, overridden by `rendition:layout-*` on the itemref.
     public let layout: RenditionLayout
     public let spreadPosition: SpreadPosition?
-    /// Filled when the text is extracted (search index). Used to estimate page counts; nil before that.
+    /// Filled when the container is opened (Core DOM text count). Used to estimate page counts.
     public let characterCount: Int?
+    /// CFI step index of this itemref among the `spine` element's children (`2 × (1-based position)`). Differs
+    /// from `2 × (index + 1)` only when the spine has non-itemref children or unresolvable itemrefs.
+    public let cfiStepIndex: Int
 
-    public init(id: String, index: Int, path: String, mediaType: String, isLinear: Bool, layout: RenditionLayout, spreadPosition: SpreadPosition?, characterCount: Int? = nil) {
+    public init(id: String, index: Int, path: String, mediaType: String, isLinear: Bool, layout: RenditionLayout, spreadPosition: SpreadPosition?, characterCount: Int? = nil, cfiStepIndex: Int? = nil) {
         self.id = id
         self.index = index
         self.path = path
@@ -177,6 +204,7 @@ public struct SpineItem: Sendable, Hashable, Identifiable {
         self.layout = layout
         self.spreadPosition = spreadPosition
         self.characterCount = characterCount
+        self.cfiStepIndex = cfiStepIndex ?? 2 * (index + 1)
     }
 }
 
