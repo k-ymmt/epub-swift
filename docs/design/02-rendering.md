@@ -193,6 +193,18 @@ html[data-reader-writing-mode="vertical"] {
 Swift 側は `WritingMode` 列挙型で受ける）。出版社 CSS が `body` にだけ `writing-mode` を付けている場合は `html` に昇格させる。
 Swift は縦書きの通知を受けるとフレームを 3 ページ分の高さに組み替える（§1.2）。
 
+M5 で変更（スクロール範囲）: WebKit は横書き多段組のスクロール可能領域を最後の段の終わりで切り、`html` の末尾 padding を
+含めない。そのため文書の幅が `pageCount` ページより余白 1 つ分短く、最後の数ページで `scrollLeft` が手前で止まってページが
+余白分ずれて見えた。`reader-before.css` の `html::after`（`position: absolute`、`visibility: hidden`、DOM 外なので CFI・検索・
+選択に影響しない）を `reader.js` の `applyExtent()` がページ数の確定ごとに `pageCount × ページ幅` の大きさにし、スクロール範囲を
+ちょうどページ数分に広げる。縦書きでは同じ箱を `pageCount × ページ高さ` にする（縦書きでは症状は出ていないが対称にした）。
+FXL では使わない。回帰テストは `PageAlignmentTests`（全ページの `scrollLeft` / `scrollTop` がページサイズの倍数か）。
+
+M5 で変更（右から左の言語）: `<html dir="rtl">`（アラビア語など）では段が最初の段の左へ流れ、章全体が 1 ページと計測された。
+`reader.js` は横書きで `direction: rtl` のルートに `data-reader-direction="rtl"` を付け、`reader-before.css` はルートを `ltr` で
+組んで `body` に `rtl` を移す。文字の向きは変わらず、ページ i の `scrollLeft = i * pageWidth` がそのまま成り立つ。
+ページを進める向き（左タップで次へ）は従来どおり `page-progression-direction` で決まる。
+
 縦書きの見開きは多段組では表現できない（段が縦に積まれるため 2 面を横に並べられない）。
 縦書き + 見開きは §6 のラッパー文書で 2 つの iframe を並べて実現する。横書きの見開きは
 `--reader-page-width` を 2 ページ分にして段を 2 本見せるだけでよい。
@@ -262,14 +274,31 @@ iframe 内の文書（`window.top !== window`）は Swift にメッセージを�
 | `ready` | `{writingMode, readyState, href}` | 文書の読み込み完了（`layout` は Swift が続けて呼ぶ）。`href` は文書の `location.href`。Swift は `load` ごとに URL へ一意なクエリ `__reader_load=<n>` を付けるので、同じ章を続けて読み込んだときも、置き換えられた古い文書の `ready` を取り違えずに捨てられる（M2 で変更。フラグメントでは同一文書ナビゲーションになり `reader.js` が再実行されないのでクエリを使う。スキームハンドラは `url.path` で解決するためクエリは無視される）。`.atDocumentEnd` の `WKUserScript` は `DOMContentLoaded` 相当（`readyState = "interactive"`）で動き、画像とフォントはまだ読み込まれていない。`reader.js` は `document.fonts.ready` と `load` を待ってから初回 `layout` を確定し `ready` を送る。それ以降の増減は `pageCountChanged` で補正する |
 | `pageCountChanged` | `{pageCount}` | 画像読み込みやフォント読み込みで高さが変わったとき |
 | `link` | `{href, isExternal}` | `a` のクリック（`preventDefault` 済み） |
-| `noteref` | `{href, html, text}` | `a[epub\:type~="noteref"]` のクリック。同一文書内なら参照先要素の `innerHTML` と `textContent` を同梱する |
-| `imageTap` | `{src, alt, rect}` | `img` または `svg image` のタップ |
+| `noteref` | `{href, rect, sameDocument, html?, text?, cfi?}` | `a[epub\:type~="noteref"]` のクリック。同一文書内なら参照先要素の `innerHTML`・テキスト・CFI を同梱する（M5 で変更） |
+| `imageTap` | `{src, alt, rect, x, y}` | `img` または `svg image` のタップ（リンク内と FXL のページを除く。M5 で変更） |
 | `selectionChanged` | `{selection: {cfiRange, text, rects} \| null}` | `selectionchange`（120 ms デバウンス）。空白だけの選択は null |
 | `highlightTap` | `{id, rects}` | `setHighlights` で描いた範囲へのクリック。リンク → ハイライト → `tap` の順で判定する（M3） |
 | `tap` | `{x, y}` | リンクでもハイライトでもない場所のタップ。タップゾーン判定に使う |
 
 `a` のクリックは常に `preventDefault` し、ナビゲーションは Swift が決める。
 `WKNavigationDelegate.decidePolicyFor` でも初回読み込み以外は `.cancel` にして二重に防ぐ。
+
+M5 で変更（`link` / `noteref` / `imageTap` の実際の形）:
+
+- `link` は `{href, isExternal}`。Swift の `LinkDestination.resolve` が外部 URL・spine item（+ フラグメント）・spine 外の資源・
+  欠落・無視（他の出版物の `epub://`）に分ける。spine item へのリンクは移動して `ReaderEvent.internalLink(CFI)` を出し、
+  CFI はフラグメントの要素（EPUBCore の `CFIGenerator.cfi(forElementWithID:)`）か、なければ文書先頭。外部 URL は
+  `externalLink` を出すだけで移動しない。spine 外の資源（画像への直接リンクなど）は無視し、欠落は `missingResource` 警告。M1 の `handleLink` にあった二重のパーセントデコードはやめた。
+- `noteref` は `epub:type~="noteref"` のリンクだけ（`role="doc-noteref"` だけのリンクや脚注番号風の普通のリンクは `link` 扱い）。
+  payload は `{href, rect, sameDocument, html?, text?, cfi?}`。同じ文書の脚注は参照先要素（`aside` / `li` などを
+  `noteElement` で上にたどった要素）の `innerHTML`、空白を詰めた `textContent`、要素の CFI を同梱する。別文書の脚注は Swift が
+  EPUBCore で文書を読み、`XMLDocument.notePath(forElementWithID:)` で要素を見つけてテキストと CFI を作る（`html` は nil）。
+- `imageTap` は `{src, alt, rect, x, y}`。`img` と SVG の `image`（`alt` は `aria-label` / `<title>`）。リンク内の画像はリンク扱い。
+  FXL のページでは送らない（絵がページそのものなので、タップはめくりに使う）。
+- 同じ文書内の noteref が指す `aside[epub:type~="footnote" | "endnote" | "rearnote"]` は本文の流れから外す
+  （`data-reader-note="hidden"`、`reader-before.css` で `display: none`）。何からも参照されない脚注は表示したまま。
+  `hidden` 属性は出版社 CSS より優先させる。
+- ラッパー文書（§6.1）は iframe から受けた `rect` と `x` / `y` を面の座標に直して送る。
 
 M4 で変更: iframe 内の文書はこれらのメッセージを Swift に送らない（ホストに渡し、ラッパーが座標を直して送る。
 ホストがない iframe、つまり本文中の iframe はどこにも送らない）。ラッパーの `ready` は全 iframe の準備が終わってから、
@@ -397,6 +426,11 @@ M4 で変更・確定した点（`SpreadBuilder.plan(for:policy:viewportSize:)` 
 - 面をまたぐ判定（`unit(containing:)`、`isShowing(spineIndex:)`）で、見開きの右ページへの `go(toSpineIndex:)` / CFI 移動は
   読み込み直しをしない。リサイズで単ページ ⇄ 見開きが変わるときは現在の CFI（`position`）の spine item を含む面を読み直す。
 
+M5 で変更: 右綴じ（`page-progression-direction="rtl"`）の本の横書きリフローの見開きも、縦書きと同じ 2 フレームのラッパー
+（最初のページが右）で表示する。多段組 2 本では段が左から埋まり、右綴じの読み順と逆になるため。判定は
+`ReaderSession.spreadNeedsWrapper(writingMode:publication:)`（縦書き、または `pageProgression == .rtl`）で、
+`PaginationService` の読み直し判定も同じ関数を使う。
+
 ### 6.3 ズーム
 
 FXL のときだけ iOS の `scrollView.pinchGestureRecognizer` と macOS の `allowsMagnification` を有効にする。
@@ -446,6 +480,11 @@ iOS の `takeSnapshot` は画面に合成された見た目を撮る（macOS は
 演出中の画像は `accessibilityElementsHidden = true` にし、読み上げ対象は常に WebView だけにする。
 演出が終わって画像を外すまで VoiceOver のフォーカスを動かさない。
 
+M5 で変更: 章の読み込み中に WebView を `isHidden` にするとアクセシビリティツリーから外れ、VoiceOver のフォーカスが飛んでいた。
+代わりに背景色の「幕」（`curtain`。アクセシビリティ要素ではない）を WebView の上に被せ、WebView は常にツリーに残す。
+iOS ではホストビューが `accessibilityScroll`（VoiceOver の 3 本指スワイプ）にページ送りで応え、ページの進む向きに従い、
+「Page n of m」を `.pageScrolled` で読み上げる。実機・シミュレータでの VoiceOver の通し確認は未実施（`TODO.md`）。
+
 ## 8. 事前ページ化
 
 ### 8.1 `PaginationService`（`@MainActor`）
@@ -480,7 +519,10 @@ iOS の `takeSnapshot` は画面に合成された見た目を撮る（macOS は
 
 事前ページ化用 WebView は常時 1 つ。`UIApplication.didReceiveMemoryWarningNotification`（iOS）を受けたら
 `pause()` で一時停止してスナップショットを捨て、`PaginationCache.dropOtherLayouts()` で他 `layoutKey` の項目を落とす。
-次の章移動（`setCurrentSpineIndex`）か `resume()` で再開する（M2 実装済み。設定変更の `configure` では再開しない点は `TODO.md` 参照）。
+次の章移動（`setCurrentSpineIndex`）か `resume()` で再開する（M2 実装済み）。
+
+M5 で変更: 設定変更やリサイズによる `configure`（新しいレイアウトでの計測）でも一時停止を解く（M2 の Codex レビューの指摘）。
+メモリ警告では `ReaderSession` が持つ検索インデックス（`SearchService` の抽出結果）も捨て、次の検索で作り直す。
 
 ## 9. 復旧
 
@@ -488,6 +530,18 @@ iOS の `takeSnapshot` は画面に合成された見た目を撮る（macOS は
   `ReaderEvent.error(.webContentTerminated)` を出す。
 - リソース欠落: 404 を返して描画は続ける。警告イベントを出す。
 - 読み込みタイムアウト（10 秒）: `ReaderEvent.error(.loadTimeout)` を出し、再試行はアプリに任せる。
+
+M5 で変更・確定した点:
+
+- `webContentProcessDidTerminate` は `error(.webContentTerminated)` を 1 回だけ出し、`ready` を待っている読み込みがあれば
+  （失敗として二重に報告せずに）待ちを解いて、その読み込み、なければ表示中の面を `position` の CFI で読み直す。
+  終了したプロセスは次の読み込みで立ち上がるので、読み直しの前にスクリプトは呼ばない。
+- 自動の読み直しは 30 秒以内に 3 回まで（同じ章で落ち続ける場合の無限ループ防止）。それを超えた終了ではイベントだけ出し、
+  読み直しはアプリの `go(to:)` などに任せる。
+- `PaginationService` の非表示 WebView が終了した章は、失敗にせず 2 回まで計測し直す。
+- 検証は `RecoveryTests` で、`_webProcessIdentifier` のプロセスに SIGKILL を送る（本物のクラッシュ）。
+  `_killWebContentProcess` はクライアント要求の終了扱いでデリゲートが呼ばれず、次の読み込みが止まるので使わない。
+- 読み込みタイムアウトは従来どおりで、専用のテストはない。
 
 ## 10. 選択と編集メニュー
 

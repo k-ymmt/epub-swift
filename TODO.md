@@ -4,7 +4,7 @@
 
 - [ ] `Sources/EPUBCore/XHTML/XHTMLRepair.swift` + `ContentInjector.inject`: UTF-16（BOM 付き）で整形式な XHTML は `prepare` がバイト列をそのまま返し、`inject` が UTF-8 デコードに失敗して CSS/viewport 注入なしで配信される（段組みされず 1 ページ扱い）。整形式でも UTF-8 以外なら UTF-8 に変換して返す。
 - [ ] `Sources/EPUBRenderer/ContentInjector.swift` `range(ofTag:)`: `<x:html>` / `<x:head>` のように接頭辞付きの要素名を認識できず、フォールバックで文書の前に `<head>` を付けてルート要素が 2 つになり WebKit が XML エラーにする。接頭辞付きタグ名にも一致させる。
-- [ ] `Sources/EPUBRenderer/EPUBSchemeHandler.swift` と `ReaderSession.handleLink`: `url.path` は Foundation が既にパーセントデコード済みなのに再度 `removingPercentEncoding` しており、ファイル名に `%` を含む資源（`a%20b.xhtml`）が 404 になる。二重デコードをやめる。
+- [ ] `Sources/EPUBRenderer/EPUBSchemeHandler.swift`: `url.path` は Foundation が既にパーセントデコード済みなのに再度 `removingPercentEncoding` しており、ファイル名に `%` を含む資源（`a%20b.xhtml`）が 404 になる。二重デコードをやめる（`ReaderSession.handleLink` 側は M5 の `LinkDestination` で解消済み）。
 - [ ] `Sources/EPUBRenderer/EPUBSchemeHandler.swift` `PublicationRegistry`: 同じ `EPUBContainer` を使う `ReaderSession` が複数あると、1 つの deinit で `unregister` され残りのセッションの資源要求が 404 になる。登録数を数えるか、セッションごとのハンドラにコンテナを直接持たせる。
 
 ## M1 の積み残し（その他）
@@ -37,7 +37,7 @@
 - [ ] iOS の `buildMenu(with:)` による編集メニュー追加はシミュレータの手動確認のみ（Renderer の自動テストは macOS の `willOpenMenu` 経路だけ）。iOS で動く回帰テストの置き場（M1 の積み残し）と合わせて決める。
 - [ ] `ReaderSession.highlights` の変更は毎回現在章の全ハイライトを `setHighlights` で描き直す（差分適用なし）。数百件規模で設定変更やタップのたびに全件を解決するコストを測り、必要なら id ごとの追加・削除に分ける。
 - [ ] `SelectedText.rects` / `highlightTapped` の矩形は `selectionChanged` 受信時点の可視ページ座標で、その後ページ移動や再レイアウトがあると古くなる。アプリがメニューを出すときは `rects(for:)` で取り直す運用にしているが、ライブラリ側で位置変更時に `currentSelection` を更新するか検討する。
-- [ ] `SearchService` の抽出結果（`TextMap`）は spine item ごとに actor 内へ無期限にキャッシュする。大きな本では本文全体をメモリに持つことになるので、上限や `didReceiveMemoryWarning` での破棄を検討する（M2 の `contentDocuments` の積み残しと同じ話）。
+- [ ] `SearchService` の抽出結果（`TextMap`）は spine item ごとに actor 内へ無期限にキャッシュする。大きな本では本文全体をメモリに持つことになるので、上限を検討する（M2 の `contentDocuments` の積み残しと同じ話。メモリ警告での破棄は M5 で入れた: `ReaderSession` がサービスごと捨てる）。
 - [ ] 検索は線形 spine item のみ。非線形（`linear="no"`）の文書は対象外にしている。必要なら `SearchOptions` にフラグを足す。
 - [ ] `Examples/ReaderDemo` の macOS 版は M3 でもビルドと `swift test` のみで、画面操作（右クリックメニューの Highlight、検索シート）は未確認。
 
@@ -71,3 +71,15 @@
 - [ ] `Sources/EPUBRenderer/ReaderSession.swift` `loadChapter`（`PaginationService.layOut` も同じ）: 縦書きラッパーの読み直し判定が `realization.isWrapper != layout.writingMode.isVertical` だけなので、`vertical-rl` の章から `vertical-lr` の章へ移ると、ヒント（rl）で作ったラッパー（最初のページが右）がそのまま使われ、左右が逆になる。`SpreadDocument.verticalURL` に渡した `writingMode` と `layout.writingMode` の不一致でも読み直す。
 - [ ] `Sources/EPUBRenderer/ReaderSession.swift` `go(toSpineIndex:)` / `go(to cfi:)` / `refreshPosition`: 表示中の FXL 見開きの 2 ページ目へ移動しても `position` は面の先頭フレームの CFI のまま（`reader.js` の `cfiForPage` は FXL では最初の iframe の CFI を返す）。はるこの [1,2] 表示中に `go(toSpineIndex: 2)` してから Spread を Never にすると spine 1 が開く。FXL の面では「最後に要求されたページ」を覚えて `position` に反映するか、`cfiForPage` にページ（iframe）を指定できるようにする。上の「白紙の先頭ページ」の項目と同じ箇所。
 - [ ] `Sources/EPUBRenderer/PaginationService.swift` `neighbours(of:)` / `snapshot(lastPageOf:)`: 前の面は「現在の面の直前の線形 item」（面の末尾 spine index）で指すのに、スナップショットは面の先頭 index（`leading`）で保存するので、FXL のペア [1,2] の次の面 [3,4] を表示中に `pageSnapshot(.previous)` が `snapshots[2]` を引いて nil になり、`setCurrentSpineIndex` の保持フィルタでも捨てられる（戻りのめくりが常に背景色の代用になる）。`neighbours` が返す前の面の index を面の `leadingSpineIndex` に正規化し、`ReaderSession.pageSnapshot(.previous)` も面の先頭で引く。
+
+## M5 の積み残し（2026-11-09）
+
+- [ ] `Examples/ReaderDemo` の macOS 版は M5 でもビルドと `swift test` のみ。画面操作の許可がセッションで拒否されたため、キーボード（← → ↑ ↓ space PageUp/PageDown Home/End、右綴じでの ← の向き）、トラックパッドの 1 スワイプ 1 ページ、脚注ポップオーバー、画像ビューア、外部リンクのダイアログを実機の macOS で確認していない（キー対応表とスワイプの判定は `KeyboardAndTrackpadTests` の単体テストのみ）。
+- [ ] VoiceOver を実際に有効にした確認（読み込み中にフォーカスが飛ばないこと、3 本指スワイプでのページ送りと「Page n of m」の読み上げ）は未実施。iOS 27 Simulator には VoiceOver がないので、実機か Accessibility Inspector で確かめる。
+- [ ] デモアプリでの WebContent プロセス終了からの復旧は未確認（`RecoveryTests` が macOS の実 WKWebView で SIGKILL を送って検証しているだけ）。iOS の実際のメモリ圧迫による終了と、メモリ警告からの再開も手動では見ていない。
+- [ ] 読み込みタイムアウト（`ReaderError.loadTimeout`）には専用のテストがない。`ready` を返さない文書を作るのは難しいので、`SpineRenderer` のテスト用実装で `ready` を止めて確かめるか検討する。
+- [ ] noteref は `epub:type="noteref"` のリンクだけを脚注として扱う。`role="doc-noteref"` だけのリンクや、`<sup><a href="#fn1">1</a></sup>` のような普通のリンクは `internalLink` として脚注の位置へ移動する。DPUB-ARIA の `role` も見るか、`aside` を指す短いリンクを脚注とみなすかを決める。
+- [ ] 別文書の脚注（rearnote など）は `NoteContent.html` が nil で、テキストだけになる（EPUBCore の解析結果から作るため）。書式付きで見せたいなら Core 側で要素を XHTML 断片として直列化する。
+- [ ] 横書き多段組のスクロール範囲を `html::after` で広げる対策（02-rendering §3.4）は WebKit の挙動に依存している。WebKit が末尾 padding を含めるように変わっても箱がページ数ちょうどなので害はないが、`PageAlignmentTests` が落ちたら最初に疑う。
+- [ ] iOS 27 Simulator の通し確認（iPhone 17 Pro / iPad Pro 11-inch）は、この M5 では links-sample・アラビア語・The Waste Land（難読化フォント、検索）を中心に行い、Moby-Dick・草枕・はるこ・Page blanche・Voyage of Life は M4 までの確認に頼った。
+

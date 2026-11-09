@@ -261,6 +261,11 @@ spine item を探す（id が合わなければ index で引く。どちらも�
   spineIndex。Core は `CFITests`、JS は実 WKWebView 上の `CFIScriptTests`）。ベクタの対象文書は
   `Tests/Fixtures/cfi-sample.epub`（コメント分断テキスト、CDATA、ruby、サロゲートペア、全角・ダイアクリティクスを含む）。
 
+M5 で追加: 要素の id から CFI を作る `CFIGenerator.cfi(forElementWithID:in:spineSteps:)` と、脚注として見せる要素（id の要素。それが
+`<p><a id="fn1"/>1. …</p>` のような行内の目印なら囲むブロック。`reader.js` の `noteElement` と同じ規則）の経路を返す
+`XMLDocument.notePath(forElementWithID:)`。Renderer が別文書を指すリンクのフラグメント（`internalLink` の CFI）と、
+別文書の脚注（`noteref` の `NoteContent.cfi` / `text`）を、その文書を WebView に読まずに解決するのに使う（02-rendering §4.2）。
+
 spine ステップの生成には OPF の `package` 要素の子要素順が必要なので、`Publication` は
 `spineElementIndex`（`package` 直下での `spine` の位置から計算した偶数 index）と、各 itemref の
 偶数 index と id を保持する。

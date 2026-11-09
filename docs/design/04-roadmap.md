@@ -109,6 +109,30 @@ FXL 文書には `reader-fixed.css` だけを注入し出版社のデザイン�
 
 完了条件: 自分のアプリに組み込み、日常の読書に使える。
 
+**完了（2026-11-09、コミット aba827e〜bd2393d と、その後の文書・仕上げコミット）。** 組み込み先として `Examples/ReaderDemo` に
+脚注ポップオーバー（「Go to note」付き）、内部リンクの戻るスタック、外部リンクの確認ダイアログ、ピンチ・ダブルタップで拡大できる
+画像ビューア、macOS のキー・トラックパッドを入れ、iOS 27 Simulator で通し確認した。iPhone 17 Pro では links-sample の章内・章間・
+外部リンクと戻る、同一文書 / 別文書の脚注・後注のポップオーバーと「Go to note」、FXL ページ内のリンク、中央タップでの画像ビューア
+（左右のタップゾーンではめくり）、アラビア語（`regime-anticancer-arabic`）の右綴じのタップ方向・段の位置・章内の脚注リンクと戻る・
+横向きでの右綴じ見開き・回転での位置保持、The Waste Land の難読化フォントの表示と検索（結果から該当ページへ移動して一時
+ハイライト）を確認した。iPad Pro 11-inch (M4) の横向きでは links-sample が 2 段の見開きになり、脚注ポップオーバーと最後の見開きの
+位置を確認した。通し確認で見つけた不具合（横書きの章の最後の数ページが余白 1 つ分ずれる。WebKit の多段組のスクロール範囲が
+末尾 padding を含まないため）は 02-rendering §3.4 のとおり直し、`PageAlignmentTests` を足した。
+macOS 27 は `swift test`（実 WKWebView。4 つのテストターゲットで計 142 件）で、リンク・脚注・画像タップ（`LinksNotesImagesTests`）、
+キー対応表とスワイプ判定（`KeyboardAndTrackpadTests`）、WebContent の実クラッシュからの復旧とメモリ警告（`RecoveryTests`）、
+右から左の言語（`RightToLeftTests`）、ページ位置（`PageAlignmentTests`）を検証した。デモアプリの macOS での画面操作による確認は
+画面操作の許可が得られず未実施で、ビルドと起動までにとどめた。VoiceOver は実装（02-rendering §7.3）までで、
+VoiceOver を有効にした通し確認はしていない。
+実装中に設計を変えた点は各文書に「M5 で変更」「M5 で追加」として反映済み（01-core §5.3、02-rendering §3.4 / §4.2 / §6.2 / §7.3 /
+§8.4 / §9、03-api §3.4 / §4.3 / §5）。主な変更: noteref は `epub:type="noteref"` だけを対象にし、同じ文書の脚注は本文から隠して
+ポップアップで読む、別文書の脚注は EPUBCore で解決する（`NoteContent.html` は nil）、`TappedImage` はバイト列を非同期クロージャで
+渡す、左右のタップゾーンでは画像のタップよりめくりを優先する、右綴じの横書きリフローの見開きは 2 フレームのラッパーで表示する、
+`dir="rtl"` のルートは `ltr` で組んで `body` に `rtl` を移す、WebContent の終了では 30 秒以内に 3 回まで自動で読み直す、
+メモリ警告からの再開を設定変更でも行い検索インデックスも捨てる、読み込み中は WebView を隠さず幕を被せる（VoiceOver のため）、
+M4 で `public` になっていた `SpreadBuilder` / `SpreadPlan` を `internal` に戻した。
+積み残しは `TODO.md` に置く（macOS の画面操作による確認、VoiceOver の実機確認、`loadTimeout` のテスト、
+`role="doc-noteref"` の扱い、別文書の脚注の書式など）。
+
 ## 2. 先に検証する項目（検証済み）
 
 実装前に `Spikes/` の小さなコードで確かめた。詳細と根拠は `05-spike-results.md`。設計文書には反映済み。

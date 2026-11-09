@@ -322,10 +322,10 @@ public enum ReaderEvent: Sendable {
     case selectionChanged(SelectedText?)    // nil は解除。ReaderSession.currentSelection と同じ値
     // M4 実装済み
     case zoomChanged(Bool)                  // FXL の面のピンチズーム。true の間 EPUBUI はめくりジェスチャを止める。ReaderSession.isZoomed と同じ値
-    // M5 以降で追加
-    case internalLink(CFI)                  // 移動はライブラリが行う。通知のみ
-    case noteref(NoteContent)               // html / text / 参照先 CFI（M5）
-    case imageTapped(TappedImage)           // src / alt / 画像データ取得クロージャ / 矩形（M5）
+    // M5 実装済み
+    case internalLink(CFI)                  // 移動はライブラリが行う。通知のみ。CFI はフラグメントの要素か文書先頭
+    case noteref(NoteContent)               // epub:type="noteref" のタップ。セッションは移動しない
+    case imageTapped(TappedImage)           // リフローのページ上の img / SVG image（リンク内を除く）のタップ
 }
 
 public enum ReaderError: Error, Sendable {
@@ -341,6 +341,41 @@ public struct SelectedText: Sendable, Hashable {
     public let rects: [CGRect]              // 可視ページ座標
 }
 ```
+
+M5 で追加（実装済み）:
+
+```swift
+public struct NoteContent: Sendable, Hashable {
+    public let path: String                 // 脚注のある文書のコンテナパス
+    public let fragment: String?            // リンクのフラグメント（脚注要素の id）
+    public let spineIndex: Int?             // 脚注の文書が spine にないと nil
+    public let cfi: CFI?                    // 脚注要素。解決できなければ nil。go(to:) で脚注へ移動できる
+    public let html: String?                // 同じ文書の脚注だけ: 要素の innerHTML
+    public let text: String?                // 空白を詰めたテキスト。別文書の脚注は EPUBCore の解析から
+    public let isInSameDocument: Bool
+    public let sourceRect: CGRect           // noteref の矩形（可視ページ座標）。ポップオーバーの起点
+}
+
+public struct TappedImage: Sendable {
+    public let url: URL                     // 文書が解決した URL（出版物の資源は epub://…）
+    public let path: String?                // コンテナパス。data: URL などでは nil
+    public let alt: String?                 // alt、SVG なら aria-label / <title>
+    public let rect: CGRect                 // 画像の矩形（可視ページ座標。ページからはみ出すことがある）
+    public let point: CGPoint               // タップ位置（可視ページ座標）
+    public let data: @Sendable () async throws -> Data   // 画像のバイト列（コンテナから読む / data: URL を復号）
+}
+```
+
+M5 で変更・確定した点:
+
+- 設計時の「`NoteContent` は html / text / 参照先 CFI」に、パス・フラグメント・spine index・同一文書かどうか・起点の矩形を足した。
+  別文書の脚注（rearnote など）は `html` を持たない（描画済みの DOM がないため）。アプリは `text` を表示するか `cfi` へ移動する。
+- 同じ文書の noteref が指す `aside`（footnote / endnote / rearnote）は本文から隠す。ポップアップで読む前提のため
+  （02-rendering §4.2）。`epub:type="noteref"` のないリンクは脚注番号の形でも `internalLink` として移動する。
+- `TappedImage` は Hashable にしない（データ取得クロージャを持つため）。FXL のページでは送らない。
+- `externalLink` の扱いは変わらない（移動せず通知のみ）。`internalLink` は移動の後に出る。
+- `ReaderError.loadTimeout` は従来どおり再試行をアプリに任せる。`webContentTerminated` ではセッションが表示中の面を
+  `position` の CFI で読み直す（30 秒以内に 3 回まで。02-rendering §9）。
 
 ## 4. EPUBUI
 
@@ -399,13 +434,22 @@ M1 実装済み。
 ### 4.3 `ReaderGestures`
 
 ```swift
-public struct ReaderGestures: Sendable {
+public struct ReaderGestures: Sendable, Hashable {
     public var tapZones: TapZones            // 左 / 右 / 中央の幅比率。既定 0.25 / 0.5 / 0.25
     public var swipeEnabled: Bool            // 横スワイプでめくる
     public var tapToTurnEnabled: Bool        // 端のタップでめくる
-    public var keyboardEnabled: Bool         // macOS: ←→ space PageUp/PageDown
+    public var keyboardEnabled: Bool         // macOS: ←→ ↑↓ space PageUp/PageDown Home/End（M5）
+    public init(tapZones: TapZones = .default, swipeEnabled: Bool = true, tapToTurnEnabled: Bool = true, keyboardEnabled: Bool = true)
     public static let `default`: ReaderGestures
     public static let disabled: ReaderGestures      // アプリが自分で go* を呼ぶ
+}
+
+public struct TapZones: Sendable, Hashable {
+    public var leading: Double               // 既定 0.25
+    public var center: Double                // 既定 0.5
+    public var trailing: Double              // 既定 0.25
+    public static let `default`: TapZones
+    public func zone(forX x: Double, width: Double) -> TapZone   // ReaderEvent.tapped の zone と同じ判定
 }
 ```
 
@@ -419,6 +463,19 @@ macOS のトラックパッドの 2 本指スワイプは `NSEvent.scrollWheel` 
 
 M4 で追加: `ReaderSession.isZoomed` が true の間（FXL の面をピンチで拡大中）は、スワイプ・トラックパッドスワイプ・
 タップめくりのすべてを止め、ピンチとパンを WebView に渡す。倍率が 1 に戻ると再開する。
+
+M5 で変更・確定した点（macOS の入力）:
+
+- キー（`keyboardEnabled`）: ← → はページの進む向きに従う（右綴じと縦書き vertical-rl では ← が「次」）。↓ PageDown space は次、
+  ↑ PageUp ⇧space は前、Home / End は章（面）の先頭 / 末尾。修飾キー付きの組み合わせは扱わない。
+  対応表は内部型 `ReaderKey` / `ReaderKeyAction` で、イベントなしでテストする（公開しない）。
+- ホストビューはウィンドウのローカルモニタでキーを受け、扱ったイベントだけを消費する。テキストフィールド・テーブル・
+  他のスクロールビューがファーストレスポンダの間はキーを奪わない。FXL の面の拡大中はキーもスワイプも止める。
+- トラックパッド: 差分を指の動きに正規化し（ナチュラルスクロールの設定によらない）、数点動いたところで軸を固定する。
+  横の動きはめくりのドラッグを駆動し、その後の慣性イベントは捨てるので、1 回のスワイプで最大 1 ページ進む。縦の動きは素通しにする。
+- 画像のタップ（`imageTapped`）は、タップ位置が左右のタップゾーンならめくりを優先し、中央ゾーンのときだけアプリに渡す
+  （表紙や挿絵がページを覆うと、どこをタップしてもめくれなくなるため）。`tapToTurnEnabled` が false か拡大中ならゾーンによらず渡す。
+- VoiceOver（iOS）の 3 本指スワイプはホストビューの `accessibilityScroll` でページ送りにする（02-rendering §7.3）。
 
 ### 4.4 `SelectionAction`
 
@@ -463,3 +520,8 @@ FXL 書籍では `relayoutSnapshot` は面全体の画像になる。
 サブクラスは `internal`。将来のネイティブ描画への差し替え点として `internal protocol SpineRenderer` を置き、
 `ReaderSession` はそれ越しに WebView を操作する（M1 では `WebViewSpineRenderer` が唯一の実装）。
 EPUBUI だけが必要とする WebView のホスト用ビューは `@_spi(EPUBUI)` で渡す（§3.2）。
+
+M5 で確認: 実装の公開宣言とこの文書を突き合わせ、M4 で `public` になっていた `SpreadBuilder` / `SpreadPlan` を
+`internal` に戻した（アプリから使う場面がなく、テストは `@testable import` で読む）。`ReaderKey` / `ReaderKeyAction`（§4.3）、
+`LinkDestination`（リンク先の分類）、`BridgeMessage` も `internal`。`PageSnapshot` / `PageSnapshotTarget` / `PageDirection` /
+`TapZone` は EPUBRenderer の公開型として残す（EPUBUI とアプリの演出が使う）。

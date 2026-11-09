@@ -3,9 +3,9 @@ import EPUBCore
 
 /// How the reading order is cut into "faces" (what the reader shows at one time) for a given viewport and spread
 /// policy (docs/design/02-rendering.md §6.2, M4). Pure Swift, no WebKit.
-public struct SpreadPlan: Sendable, Hashable {
+struct SpreadPlan: Sendable, Hashable {
     /// Where a fixed-layout page sits inside the visible area.
-    public enum Placement: Sendable, Hashable {
+    enum Placement: Sendable, Hashable {
         /// The left half of a two-page face.
         case left
         /// The right half of a two-page face.
@@ -14,17 +14,17 @@ public struct SpreadPlan: Sendable, Hashable {
         case full
     }
 
-    public struct FixedPage: Sendable, Hashable {
-        public var spineIndex: Int
-        public var placement: Placement
+    struct FixedPage: Sendable, Hashable {
+        var spineIndex: Int
+        var placement: Placement
 
-        public init(spineIndex: Int, placement: Placement) {
+        init(spineIndex: Int, placement: Placement) {
             self.spineIndex = spineIndex
             self.placement = placement
         }
     }
 
-    public enum Unit: Sendable, Hashable {
+    enum Unit: Sendable, Hashable {
         /// One reflowable spine item. `twoPages` means its pages are shown as two facing pages (two columns per face in
         /// horizontal writing, two stacked scroll positions in vertical writing).
         case reflowable(spineIndex: Int, twoPages: Bool)
@@ -32,7 +32,7 @@ public struct SpreadPlan: Sendable, Hashable {
         case fixed(pages: [FixedPage])
 
         /// Spine indices in reading order.
-        public var spineIndices: [Int] {
+        var spineIndices: [Int] {
             switch self {
             case .reflowable(let index, _): [index]
             case .fixed(let pages): pages.map(\.spineIndex)
@@ -40,39 +40,39 @@ public struct SpreadPlan: Sendable, Hashable {
         }
 
         /// The spine index the face is identified by (its first page in reading order).
-        public var leadingSpineIndex: Int { spineIndices[0] }
+        var leadingSpineIndex: Int { spineIndices[0] }
 
-        public var isFixedLayout: Bool {
+        var isFixedLayout: Bool {
             if case .fixed = self { return true } else { return false }
         }
 
         /// Whether the face is laid out as two facing pages (even when only one of them is filled).
-        public var isTwoPageLayout: Bool {
+        var isTwoPageLayout: Bool {
             switch self {
             case .reflowable(_, let twoPages): twoPages
             case .fixed(let pages): pages.contains { $0.placement != .full }
             }
         }
 
-        public func contains(spineIndex: Int) -> Bool { spineIndices.contains(spineIndex) }
+        func contains(spineIndex: Int) -> Bool { spineIndices.contains(spineIndex) }
     }
 
-    public var units: [Unit]
+    var units: [Unit]
 
-    public init(units: [Unit]) {
+    init(units: [Unit]) {
         self.units = units
     }
 
-    public func unitIndex(containing spineIndex: Int) -> Int? {
+    func unitIndex(containing spineIndex: Int) -> Int? {
         units.firstIndex { $0.contains(spineIndex: spineIndex) }
     }
 
-    public func unit(containing spineIndex: Int) -> Unit? {
+    func unit(containing spineIndex: Int) -> Unit? {
         unitIndex(containing: spineIndex).map { units[$0] }
     }
 
     /// Whether any reflowable chapter is shown as two facing pages in this plan.
-    public var hasTwoPageReflow: Bool {
+    var hasTwoPageReflow: Bool {
         units.contains { if case .reflowable(_, true) = $0 { return true } else { return false } }
     }
 }
@@ -86,8 +86,8 @@ public struct SpreadPlan: Sendable, Hashable {
 ///   left for rtl). Two consecutive linear fixed-layout pages whose sides complete one spread are paired.
 ///   `page-spread-center` pages stand alone and fill the face.
 /// - Non-linear items and reflowable items are faces of their own.
-public enum SpreadBuilder {
-    public static func plan(for publication: Publication, policy: ReaderSettings.SpreadPolicy, viewportSize: CGSize) -> SpreadPlan {
+enum SpreadBuilder {
+    static func plan(for publication: Publication, policy: ReaderSettings.SpreadPolicy, viewportSize: CGSize) -> SpreadPlan {
         let landscape = viewportSize.width > viewportSize.height
         let isRTL = publication.pageProgression == .rtl
         // The side a lone first page sits on, and the side of the first page of a two-page face in reading order.
