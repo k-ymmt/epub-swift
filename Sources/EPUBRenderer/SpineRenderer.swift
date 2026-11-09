@@ -136,6 +136,8 @@ protocol SpineRenderer: AnyObject {
     var onMessage: (@MainActor (BridgeMessage) -> Void)? { get set }
     var onNavigationFailed: (@MainActor (Error) -> Void)? { get set }
     var onProcessTerminated: (@MainActor () -> Void)? { get set }
+    /// Supplies the app's `SelectionAction`s and the current selection to the platform selection menu.
+    var selectionMenuSource: SelectionMenuSource? { get set }
 
     /// Size of the visible page. Changing it resizes the frame; the document is re-laid out by `layout`.
     func setPageSize(_ size: CGSize)

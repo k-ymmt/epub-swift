@@ -42,6 +42,15 @@ final class SessionHost {
         }
     }
 
+    func waitUntil(timeout: Duration = .seconds(10), _ condition: @MainActor () async throws -> Bool) async throws {
+        let clock = ContinuousClock()
+        let deadline = clock.now + timeout
+        while try await !condition() {
+            if clock.now > deadline { throw SessionHostError.timeout }
+            try await Task.sleep(for: .milliseconds(20))
+        }
+    }
+
     enum SessionHostError: Error { case timeout }
 }
 

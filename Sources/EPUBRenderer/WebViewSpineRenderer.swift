@@ -19,13 +19,17 @@ final class WebViewSpineRenderer: NSObject, SpineRenderer {
     static let slotCount = 3
 
     let clipView: PlatformView
-    let webView: WKWebView
+    let webView: ReaderWebView
     let schemeHandler: EPUBSchemeHandler
     var view: PlatformView { clipView }
 
     var onMessage: (@MainActor (BridgeMessage) -> Void)?
     var onNavigationFailed: (@MainActor (Error) -> Void)?
     var onProcessTerminated: (@MainActor () -> Void)?
+    var selectionMenuSource: SelectionMenuSource? {
+        get { webView.selectionMenuSource }
+        set { webView.selectionMenuSource = newValue }
+    }
 
     private(set) var pageSize: CGSize = .zero
     private(set) var writingMode: WritingMode = .horizontalTB
@@ -48,7 +52,7 @@ final class WebViewSpineRenderer: NSObject, SpineRenderer {
         }
         configuration.userContentController = controller
 
-        webView = WKWebView(frame: CGRect(x: 0, y: 0, width: 300 * 3, height: 400), configuration: configuration)
+        webView = ReaderWebView(frame: CGRect(x: 0, y: 0, width: 300 * 3, height: 400), configuration: configuration)
         #if canImport(AppKit)
         clipView = NSView(frame: CGRect(x: 0, y: 0, width: 300, height: 400))
         clipView.wantsLayer = true

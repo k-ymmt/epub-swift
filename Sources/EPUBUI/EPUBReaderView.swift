@@ -8,6 +8,7 @@ import EPUBRenderer
 /// EPUBReaderView(session: session)
 ///     .pageTransition(.slide)
 ///     .readerGestures(.default)
+///     .selectionActions([SelectionAction(title: "Highlight", systemImage: "highlighter") { selected in ... }])
 ///     .onReaderEvent { event in ... }
 /// ```
 public struct EPUBReaderView: View {
@@ -16,6 +17,7 @@ public struct EPUBReaderView: View {
     @Environment(\.pageTransition) private var transition
     @Environment(\.readerGestures) private var gestures
     @Environment(\.readerEventHandler) private var eventHandler
+    @Environment(\.selectionActions) private var selectionActions
 
     @State private var turn = PageTurnController()
 
@@ -54,8 +56,12 @@ public struct EPUBReaderView: View {
             session.viewportSize = size
             Task { await session.loadIfNeeded() }
         }
+        .onChange(of: selectionActions.map(\.id), initial: true) { _, _ in
+            session.selectionActions = selectionActions
+        }
         .task(id: ObjectIdentifier(session)) {
             turn.configure(session: session, transition: transition)
+            session.selectionActions = selectionActions
             for await event in session.events {
                 handle(event)
             }

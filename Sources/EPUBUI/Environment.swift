@@ -18,6 +18,10 @@ private struct ReaderEventHandlerKey: EnvironmentKey {
     static let defaultValue: ReaderEventHandler? = nil
 }
 
+private struct SelectionActionsKey: EnvironmentKey {
+    static let defaultValue: [SelectionAction] = []
+}
+
 extension EnvironmentValues {
     var pageTransition: AnyPageTransition {
         get { self[PageTransitionKey.self] }
@@ -33,6 +37,11 @@ extension EnvironmentValues {
         get { self[ReaderEventHandlerKey.self] }
         set { self[ReaderEventHandlerKey.self] = newValue }
     }
+
+    var selectionActions: [SelectionAction] {
+        get { self[SelectionActionsKey.self] }
+        set { self[SelectionActionsKey.self] = newValue }
+    }
 }
 
 extension View {
@@ -44,6 +53,12 @@ extension View {
     /// Built-in gestures used by `EPUBReaderView` inside this view. Default: `.default`.
     public func readerGestures(_ gestures: ReaderGestures) -> some View {
         environment(\.readerGestures, gestures)
+    }
+
+    /// Entries added to the text selection menu of the `EPUBReaderView` inside this view (docs/design/03-api.md §4.4).
+    /// Forwarded to `ReaderSession.selectionActions`. Default: none.
+    public func selectionActions(_ actions: [SelectionAction]) -> some View {
+        environment(\.selectionActions, actions)
     }
 
     /// Receives `ReaderEvent`s from the `EPUBReaderView` inside this view.

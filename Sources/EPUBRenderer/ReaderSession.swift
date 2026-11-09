@@ -68,6 +68,23 @@ public final class ReaderSession {
     /// text (an image-only page keeps the previous value). `ReaderEvent.positionChanged` mirrors it.
     public private(set) var position: ReadingPosition?
 
+    /// The text selection as last reported by the document (debounced); nil when there is none. Mirrors
+    /// `ReaderEvent.selectionChanged` (docs/design/03-api.md §3.2).
+    public private(set) var currentSelection: SelectedText?
+
+    /// Entries the platform selection menu offers in addition to the system ones (03-api §4.4). EPUBUI's
+    /// `.selectionActions(_:)` modifier sets this; apps hosting the session without SwiftUI set it directly.
+    public var selectionActions: [SelectionAction] = []
+
+    /// Highlights to draw (03-api §2.5). The app owns and persists them; the session draws the ones in the current
+    /// chapter whenever the set changes and after every chapter load. Ranges that no longer resolve are skipped.
+    public var highlights: [Highlight] = [] {
+        didSet {
+            guard highlights != oldValue else { return }
+            enqueue { [weak self] in await self?.applyHighlights() }
+        }
+    }
+
     /// Size of one visible page. Set by `EPUBReaderView`; changing it re-layouts and restores the position.
     public var viewportSize: CGSize = .zero {
         didSet {
@@ -129,6 +146,10 @@ public final class ReaderSession {
     /// Page size the display web view is laid out for (lags `viewportSize` until the resize relayout runs).
     @ObservationIgnored private var laidOutPageSize: CGSize = .zero
     @ObservationIgnored private var operationQueue: [() async -> Void] = []
+    @ObservationIgnored private var searchService: SearchService?
+    /// The search result highlight currently drawn; removed by the next navigation.
+    @ObservationIgnored private var transientHighlight: CFIRange?
+    @ObservationIgnored private var keepTransientHighlight = false
     @ObservationIgnored private var isRunningOperation = false
     @ObservationIgnored private let logger = Logger(subsystem: "EPUB", category: "ReaderSession")
 
@@ -168,6 +189,10 @@ public final class ReaderSession {
             let target: LoadTarget = self.position.map { .cfi($0.cfi) } ?? .page(self.currentPageIndex)
             self.enqueue { [weak self] in await self?.loadChapter(self?.currentSpineIndex ?? 0, target: target) }
         }
+        renderer.selectionMenuSource = SelectionMenuSource(
+            actions: { [weak self] in self?.selectionActions ?? [] },
+            selection: { [weak self] in self?.currentSelection }
+        )
         renderer.setBackgroundColor(settings.theme.background)
         renderer.setContentHidden(true)
         schemeHandler.rootStyle = ContentInjector.rootStyle(settings: settings, pageSize: .zero, publicationID: container.id)
@@ -339,6 +364,12 @@ public final class ReaderSession {
         let generation = loadGeneration
         isLoading = true
         renderer.setContentHidden(true)
+        // The document is replaced: its selection and temporary highlight go with it.
+        transientHighlight = nil
+        if currentSelection != nil {
+            currentSelection = nil
+            emit(.selectionChanged(nil))
+        }
         applyPageSize()
         schemeHandler.rootStyle = ContentInjector.rootStyle(settings: settings, pageSize: viewportSize, publicationID: container.id)
         selectLayout()
@@ -362,6 +393,8 @@ public final class ReaderSession {
             case .cfi(let cfi): targetPage = ((try? await renderer.pageFor(cfi)) ?? nil) ?? 0
             }
             let result = try await renderer.goToPage(targetPage)
+            guard generation == loadGeneration else { return }
+            await applyHighlights(spineIndex: spineIndex)
             guard generation == loadGeneration else { return }
             currentSpineIndex = spineIndex
             chapterPageCount = result.pageCount
@@ -390,6 +423,7 @@ public final class ReaderSession {
     private func goToPageInChapter(_ index: Int, clampToKnownCount: Bool = true) async -> Bool {
         guard hasLoaded else { return false }
         let clamped = clampToKnownCount ? min(max(0, index), chapterPageCount - 1) : max(0, index)
+        await clearTransientHighlightIfNeeded()
         do {
             let result = try await renderer.goToPage(clamped)
             currentPageIndex = result.pageIndex
@@ -512,6 +546,83 @@ public final class ReaderSession {
         } catch {
             emit(.error(.scriptFailed(error.localizedDescription)))
         }
+    }
+
+    // MARK: - Selection
+
+    /// Clears the document's text selection (`currentSelection` becomes nil at once).
+    public func clearSelection() {
+        if currentSelection != nil {
+            currentSelection = nil
+            emit(.selectionChanged(nil))
+        }
+        Task { @MainActor [weak self] in
+            do { try await self?.renderer.clearSelection() } catch { self?.logger.debug("clearSelection failed: \(error.localizedDescription)") }
+        }
+    }
+
+    /// Rectangles of a CFI range in the visible page's coordinate space: empty when the range is in another
+    /// chapter or does not resolve. Rects on other pages of the chapter are outside the visible page's bounds.
+    public func rects(for range: CFIRange) async -> [CGRect] {
+        guard hasLoaded, publication.spineIndex(of: range.start) == currentSpineIndex else { return [] }
+        do {
+            return pageRects(fromViewport: try await renderer.rects(for: range))
+        } catch {
+            logger.debug("rects failed: \(error.localizedDescription)")
+            return []
+        }
+    }
+
+    // MARK: - Highlights
+
+    /// Draws the highlights of `spineIndex` (default: the current chapter), replacing the previous set.
+    private func applyHighlights(spineIndex: Int? = nil) async {
+        if spineIndex == nil { guard hasLoaded else { return } }
+        let index = spineIndex ?? currentSpineIndex
+        let visible = highlights.filter { publication.spineIndex(of: $0.range.start) == index }
+        do {
+            _ = try await renderer.setHighlights(visible)
+        } catch {
+            logger.debug("setHighlights failed: \(error.localizedDescription)")
+        }
+    }
+
+    // MARK: - Search
+
+    /// Full-text search over the linear reading order (docs/design/01-core.md §6). Results arrive chapter by
+    /// chapter in reading order; the stream ends when every chapter has been searched.
+    public func search(_ query: String, options: SearchOptions = .default) -> AsyncThrowingStream<SearchResult, any Error> {
+        sharedSearchService().search(query, options: options)
+    }
+
+    private func sharedSearchService() -> SearchService {
+        if let searchService { return searchService }
+        let service = SearchService(container: container)
+        searchService = service
+        return service
+    }
+
+    /// Moves to the page that holds `result` and marks the match with a temporary highlight that the next page
+    /// move or chapter load removes.
+    public func show(_ result: SearchResult) async {
+        keepTransientHighlight = true
+        await go(to: result.range.start)
+        keepTransientHighlight = false
+        guard hasLoaded, publication.spineIndex(of: result.range.start) == currentSpineIndex else { return }
+        await run { [self] in
+            do {
+                try await renderer.setTransientHighlight(result.range)
+                transientHighlight = result.range
+            } catch {
+                logger.debug("setTransientHighlight failed: \(error.localizedDescription)")
+            }
+        }
+    }
+
+    private func clearTransientHighlightIfNeeded() async {
+        guard transientHighlight != nil, !keepTransientHighlight else { return }
+        transientHighlight = nil
+        try? await renderer.setTransientHighlight(nil)
     }
 
     // MARK: - Position
@@ -638,6 +749,8 @@ public final class ReaderSession {
             }
         case .selectionChanged(let selection):
             let selected = selection.map { SelectedText(range: $0.range, text: $0.text, rects: pageRects(fromViewport: $0.rects)) }
+            guard selected != currentSelection else { return }
+            currentSelection = selected
             emit(.selectionChanged(selected))
         }
     }
