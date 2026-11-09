@@ -19,7 +19,9 @@ enum ContentInjector {
         var fixedStylesheetURL: String? = nil
     }
 
-    static let viewportMeta = #"<meta name="viewport" content="width=device-width, initial-scale=1"/>"#
+    /// `user-scalable=no` (M4): pinch zoom is for fixed-layout faces only; WebKit honours this at the viewport level,
+    /// which is more reliable than the scroll view's zoom range (WebKit resets that from the viewport on each layout).
+    static let viewportMeta = #"<meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no"/>"#
 
     /// Returns the injected document and whether it already had a viewport meta.
     static func inject(_ data: Data, isXML: Bool, injection: Injection) -> (data: Data, hadViewport: Bool) {

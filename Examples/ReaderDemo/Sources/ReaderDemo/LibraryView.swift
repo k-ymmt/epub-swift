@@ -14,6 +14,9 @@ enum Library {
         ("moby-dick", "Moby-Dick"),
         ("childrens-literature", "Children's Literature"),
         ("kusamakura-japanese-vertical-writing", "草枕 (縦書き・右綴じ)"),
+        ("haruko-html-jpeg", "はるこ (FXL・右綴じ)"),
+        ("page-blanche", "Page blanche (FXL)"),
+        ("cole-voyage-of-life", "Voyage of Life (リフロー + FXL 絵画)"),
     ].compactMap { name, title in
         guard let url = Bundle.module.url(forResource: name, withExtension: "epub", subdirectory: "Books") else { return nil }
         return Book(id: name, title: title, url: url)

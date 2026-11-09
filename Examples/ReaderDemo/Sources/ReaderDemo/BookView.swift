@@ -171,6 +171,8 @@ struct BookView: View {
                     status = selected.map { "Selected: \($0.range.description)" } ?? ""
                 case .paginationUpdated:
                     break
+                case .zoomChanged(let zoomed):
+                    status = zoomed ? "Zoomed in: pinch out (or turn a page) to return" : ""
                 }
             }
             .safeAreaInset(edge: .bottom) {
@@ -222,6 +224,17 @@ struct StatusBar: View {
                     Text("(measured)").foregroundStyle(.secondary)
                 }
                 Spacer()
+                // M4: the face kind (spread of which spine items, fixed layout, zoom).
+                if session.isShowingSpread {
+                    Text("spread \(session.visibleSpineIndices.map(String.init).joined(separator: "+"))")
+                        .foregroundStyle(.secondary)
+                } else {
+                    Text("single").foregroundStyle(.secondary)
+                }
+                if session.publication.readingOrder[session.currentSpineIndex].isFixedLayout {
+                    Text("FXL").foregroundStyle(.secondary)
+                }
+                if session.isZoomed { Text("ZOOM").bold() }
                 Text(session.writingMode.isVertical ? "vertical" : "horizontal")
                     .foregroundStyle(.secondary)
                 if session.isRightToLeft { Text("RTL").foregroundStyle(.secondary) }
@@ -336,6 +349,13 @@ struct SettingsView: View {
                 }
                 Picker("Theme", selection: Binding(get: { ThemeOption.from(settings.theme) }, set: { settings.theme = $0.theme })) {
                     ForEach(ThemeOption.allCases) { Text($0.rawValue).tag($0) }
+                }
+                .pickerStyle(.segmented)
+                // M4: auto = two pages when the viewport is landscape (and the book allows it); never / always force it.
+                Picker("Spread", selection: $settings.spreadPolicy) {
+                    Text("Auto").tag(ReaderSettings.SpreadPolicy.auto)
+                    Text("Never").tag(ReaderSettings.SpreadPolicy.never)
+                    Text("Always").tag(ReaderSettings.SpreadPolicy.always)
                 }
                 .pickerStyle(.segmented)
                 Button("Reset") { settings = ReaderSettings() }

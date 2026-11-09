@@ -99,7 +99,7 @@ enum SpreadDocument {
         <html data-reader-spread="\(kind.rawValue)" data-reader-progression="\(progression)">
         <head>
         <meta charset="utf-8"/>
-        <meta name="viewport" content="width=device-width, initial-scale=1"/>
+        <meta name="viewport" content="width=device-width, initial-scale=1, \(kind == .fixed ? "maximum-scale=4" : "user-scalable=no")"/>
         <style>
         :root { --reader-bg: #ffffff; }
         html, body { margin: 0; padding: 0; overflow: hidden; background-color: var(--reader-bg); }

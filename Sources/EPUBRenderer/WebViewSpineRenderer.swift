@@ -91,6 +91,9 @@ final class WebViewSpineRenderer: NSObject, SpineRenderer {
         webView.scrollView.minimumZoomScale = 1
         webView.scrollView.maximumZoomScale = 1
         webView.scrollView.pinchGestureRecognizer?.isEnabled = false
+        // WKWebView's scroll view does not post KVO for `zoomScale` while pinching (its zoom runs through WebKit's
+        // own viewport code), so the pinch recognizer itself is the signal; the KVO covers programmatic changes.
+        // The recognizer is nil until WebKit makes the view zoomable, so it is picked up in `syncPinchRecognizer`.
         zoomObservation = webView.scrollView.observe(\.zoomScale, options: [.new]) { [weak self] scrollView, _ in
             MainActor.assumeIsolated { self?.zoomScaleDidChange(scrollView.zoomScale) }
         }
@@ -106,12 +109,27 @@ final class WebViewSpineRenderer: NSObject, SpineRenderer {
         isZoomEnabled = enabled
         if !enabled { resetZoom() }
         #if canImport(UIKit)
-        webView.scrollView.maximumZoomScale = enabled ? 4 : 1
-        webView.scrollView.pinchGestureRecognizer?.isEnabled = enabled
+        syncPinchRecognizer()
         #else
         webView.allowsMagnification = enabled
         #endif
     }
+
+    #if canImport(UIKit)
+    private var pinchTargetInstalled = false
+
+    /// WebKit owns the scroll view's zoom range (it resets `minimumZoomScale` / `maximumZoomScale` from the viewport meta
+    /// on every layout) and creates the pinch recognizer lazily, so the recognizer is (re)configured after each
+    /// document load and whenever the zoom permission changes.
+    private func syncPinchRecognizer() {
+        guard let pinch = webView.scrollView.pinchGestureRecognizer else { return }
+        if !pinchTargetInstalled {
+            pinch.addTarget(self, action: #selector(pinchDidChange(_:)))
+            pinchTargetInstalled = true
+        }
+        pinch.isEnabled = isZoomEnabled
+    }
+    #endif
 
     func resetZoom() {
         #if canImport(UIKit)
@@ -123,10 +141,29 @@ final class WebViewSpineRenderer: NSObject, SpineRenderer {
         zoomScaleDidChange(1)
     }
 
+    #if canImport(UIKit)
+    @objc private func pinchDidChange(_ recognizer: UIPinchGestureRecognizer) {
+        switch recognizer.state {
+        case .changed:
+            zoomScaleDidChange(webView.scrollView.zoomScale)
+        case .ended, .cancelled, .failed:
+            // The scroll view may still be bouncing back to a scale within [min, max]; read the settled value too.
+            zoomScaleDidChange(webView.scrollView.zoomScale)
+            let scrollView = webView.scrollView
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { [weak self] in
+                MainActor.assumeIsolated { self?.zoomScaleDidChange(scrollView.zoomScale) }
+            }
+        default:
+            break
+        }
+    }
+    #endif
+
     /// While zoomed in, the page can be panned (iOS: the scroll view scrolls); at scale 1 the view is pinned to the
     /// visible slot again and page turns take over.
     private func zoomScaleDidChange(_ scale: CGFloat) {
-        let zoomed = scale > 1.01
+        // WebKit moves the scale around while it lays a document out; only a user zoom on a zoomable face counts.
+        let zoomed = isZoomEnabled && scale > 1.01
         #if canImport(UIKit)
         if webView.scrollView.isScrollEnabled != zoomed {
             webView.scrollView.isScrollEnabled = zoomed
@@ -345,6 +382,12 @@ extension WebViewSpineRenderer: WKNavigationDelegate {
         } else {
             decisionHandler(.cancel)
         }
+    }
+
+    func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
+        #if canImport(UIKit)
+        syncPinchRecognizer()
+        #endif
     }
 
     func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: any Error) {
