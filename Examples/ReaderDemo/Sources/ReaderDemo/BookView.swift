@@ -1,11 +1,17 @@
 import SwiftUI
 import EPUB
 
-/// One open book: the reader view, a status bar, and sheets for the table of contents and the settings.
+/// One open book: the reader view, a status bar, and sheets for the table of contents, the settings, the saved
+/// highlights and search. Highlights and the last position are saved per book (`BookStore`) and restored on open.
 struct BookView: View {
     let book: Book
 
     @State private var session: ReaderSession?
+    @State private var store: BookStore?
+    @State private var restorePending = false
+    @State private var showHighlights = false
+    @State private var showSearch = false
+    @State private var tappedHighlight: Highlight?
     @State private var loadError: String?
     @State private var showSettings = false
     @State private var showTOC = false
@@ -33,6 +39,10 @@ struct BookView: View {
                 Button("Contents", systemImage: "list.bullet") { showTOC = true }
                     .disabled(session == nil)
                 Button("Settings", systemImage: "textformat.size") { showSettings = true }
+                    .disabled(session == nil)
+                Button("Highlights", systemImage: "highlighter") { showHighlights = true }
+                    .disabled(session == nil)
+                Button("Search", systemImage: "magnifyingglass") { showSearch = true }
                     .disabled(session == nil)
                 Button("Go to page", systemImage: "number") {
                     goToPageText = session.flatMap { $0.currentPage.map { String($0 + 1) } } ?? ""
@@ -62,6 +72,27 @@ struct BookView: View {
                 TOCView(session: session) { showTOC = false }
             }
         }
+        .sheet(isPresented: $showHighlights) {
+            if let session, let store {
+                HighlightsView(session: session, store: store) { showHighlights = false }
+            }
+        }
+        .sheet(isPresented: $showSearch) {
+            if let session {
+                SearchView(session: session) { showSearch = false }
+            }
+        }
+        .alert("Highlight", isPresented: Binding(get: { tappedHighlight != nil }, set: { if !$0 { tappedHighlight = nil } }), presenting: tappedHighlight) { highlight in
+            Button("Delete", role: .destructive) {
+                store?.highlights.removeAll { $0.id == highlight.id }
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: { highlight in
+            Text(highlight.note ?? highlight.range.description)
+        }
+        .onChange(of: store?.highlights) { _, highlights in
+            session?.highlights = highlights ?? []
+        }
         .alert("Go to page", isPresented: $showGoToPage) {
             TextField("Page (1–\(session?.pagination.totalPages ?? 0))", text: $goToPageText)
                 #if os(iOS)
@@ -84,6 +115,12 @@ struct BookView: View {
                 for warning in container.publication.warnings {
                     print("warning: \(warning)")
                 }
+                let store = BookStore(bookID: book.id)
+                session.highlights = store.highlights
+                // The session loads its first chapter once the view has a size; the saved position is applied on
+                // the first `positionChanged` (see `reader(_:)`).
+                restorePending = store.position != nil
+                self.store = store
                 self.session = session
             } catch {
                 loadError = String(describing: error)
@@ -91,10 +128,25 @@ struct BookView: View {
         }
     }
 
+    private func addHighlight(_ selected: SelectedText, style: Highlight.Style) {
+        let highlight = Highlight(range: selected.range, style: style, note: selected.text)
+        store?.highlights.append(highlight)
+        session?.clearSelection()
+        status = "Highlighted \(selected.range.description)"
+    }
+
     @ViewBuilder private func reader(_ session: ReaderSession) -> some View {
         EPUBReaderView(session: session)
             .pageTransition(.slide)
             .readerGestures(.default)
+            .selectionActions([
+                SelectionAction(title: "Highlight", systemImage: "highlighter") { selected in
+                    addHighlight(selected, style: .background(ReaderColor(hex: 0xFFE066, alpha: 0.6)))
+                },
+                SelectionAction(title: "Underline", systemImage: "underline") { selected in
+                    addHighlight(selected, style: .underline(ReaderColor(hex: 0xE0453A)))
+                },
+            ])
             .onReaderEvent { event in
                 switch event {
                 case .externalLink(let url):
@@ -105,7 +157,19 @@ struct BookView: View {
                     status = "Warning: \(warning)"
                 case .tapped(_, let zone):
                     if zone == .center { status = "" }
-                case .positionChanged, .paginationUpdated, .highlightTapped, .selectionChanged:
+                case .positionChanged(let position):
+                    if restorePending, let saved = store?.position {
+                        // First position after the initial load: go back to where the book was closed.
+                        restorePending = false
+                        Task { await session.go(to: saved) }
+                    } else {
+                        store?.position = position
+                    }
+                case .highlightTapped(let id, _):
+                    tappedHighlight = store?.highlights.first { $0.id == id }
+                case .selectionChanged(let selected):
+                    status = selected.map { "Selected: \($0.range.description)" } ?? ""
+                case .paginationUpdated:
                     break
                 }
             }
@@ -170,9 +234,13 @@ struct StatusBar: View {
                     .font(.caption2)
                     .frame(maxWidth: .infinity, alignment: .leading)
             }
-            if !status.isEmpty {
-                Text(status).font(.caption2).lineLimit(1).frame(maxWidth: .infinity, alignment: .leading)
-            }
+            // Always present, so a message appearing (selection, error) does not change the inset height.
+            Text(status.isEmpty ? " " : status)
+                .font(.caption2)
+                .lineLimit(1)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .frame(height: 14)
+                .accessibilityIdentifier("status.message")
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 6)
