@@ -159,6 +159,11 @@ public final class ReaderSession {
     @ObservationIgnored private var memoryWarningObserver: (any NSObjectProtocol)?
     @ObservationIgnored private var readyContinuation: CheckedContinuation<WritingMode, any Error>?
     @ObservationIgnored private var pendingLoadURL: URL?
+    /// The load in progress (spine index and target), so a WebContent crash during it can be retried (§9).
+    @ObservationIgnored private var loadInProgress: (spineIndex: Int, target: LoadTarget)?
+    /// Times of recent WebContent crashes; automatic reloads stop after a few in a short time (a document that
+    /// crashes the process every time would otherwise loop).
+    @ObservationIgnored private var recentTerminations: [ContinuousClock.Instant] = []
     @ObservationIgnored private var loadGeneration = 0
     @ObservationIgnored private var relayoutTask: Task<Void, Never>?
     @ObservationIgnored private var pendingResize: Task<Void, Never>?
@@ -204,12 +209,7 @@ public final class ReaderSession {
             guard let self else { return }
             self.failPendingLoad(ReaderError.loadFailed(spineIndex: self.currentSpineIndex, underlying: error.localizedDescription))
         }
-        renderer.onProcessTerminated = { [weak self] in
-            guard let self else { return }
-            self.emit(.error(.webContentTerminated))
-            let target: LoadTarget = self.position.map { .cfi($0.cfi) } ?? .page(self.currentPageIndex)
-            self.enqueue { [weak self] in await self?.loadChapter(self?.currentSpineIndex ?? 0, target: target) }
-        }
+        renderer.onProcessTerminated = { [weak self] in self?.webContentProcessDidTerminate() }
         renderer.selectionMenuSource = SelectionMenuSource(
             actions: { [weak self] in self?.selectionActions ?? [] },
             selection: { [weak self] in self?.currentSelection }
@@ -406,6 +406,8 @@ public final class ReaderSession {
         loadGeneration += 1
         let generation = loadGeneration
         isLoading = true
+        loadInProgress = (spineIndex, target)
+        defer { if generation == loadGeneration { loadInProgress = nil } }
         renderer.setContentHidden(true)
         // The document is replaced: its selection and temporary highlight go with it.
         transientHighlight = nil
@@ -466,6 +468,8 @@ public final class ReaderSession {
             guard generation == loadGeneration else { return }
             isLoading = false
             if hasLoaded { renderer.setContentHidden(false) }
+            // A crash during the load was reported by `webContentProcessDidTerminate`, which also retries it.
+            if case .webContentTerminated? = error as? ReaderError { return }
             if let readerError = error as? ReaderError {
                 emit(.error(readerError))
             } else {
@@ -545,6 +549,40 @@ public final class ReaderSession {
         readyContinuation?.resume(throwing: error)
         readyContinuation = nil
     }
+
+    // MARK: - Recovery (02-rendering §9)
+
+    /// The display web view's WebContent process died (memory pressure, a WebKit crash). The web view is blank
+    /// until it loads again: report it, then reload the face that was on screen (or the load that was in progress)
+    /// at the position held as a CFI.
+    func webContentProcessDidTerminate() {
+        logger.error("WebContent process terminated (spine \(self.currentSpineIndex))")
+        emit(.error(.webContentTerminated))
+        let now = ContinuousClock.now
+        recentTerminations = recentTerminations.filter { now - $0 < .seconds(30) } + [now]
+        let retry = loadInProgress
+        // Unblock a load that waits for `ready` from the dead document; its error is not reported twice.
+        failPendingLoad(.webContentTerminated)
+        guard recentTerminations.count <= Self.maximumAutomaticReloads else {
+            logger.error("WebContent keeps terminating; not reloading again")
+            return
+        }
+        let spineIndex: Int
+        let target: LoadTarget
+        if let retry {
+            (spineIndex, target) = retry
+        } else if hasLoaded {
+            spineIndex = position.flatMap { isShowing(spineIndex: $0.spineIndex) ? $0.spineIndex : nil } ?? currentSpineIndex
+            target = position.map { .cfi($0.cfi) } ?? .page(currentPageIndex)
+        } else {
+            return
+        }
+        isZoomed = false
+        enqueue { [weak self] in await self?.loadChapter(spineIndex, target: target) }
+    }
+
+    /// Automatic reloads allowed within 30 seconds after WebContent crashes.
+    static let maximumAutomaticReloads = 3
 
     // MARK: - Settings and resize
 
@@ -838,10 +876,13 @@ public final class ReaderSession {
         emit(.paginationUpdated(updated))
     }
 
-    /// iOS memory warning (02-rendering §8.4): stop pre-pagination for now and keep only the current layout's counts.
+    /// iOS memory warning (02-rendering §8.4): stop pre-pagination for now (its neighbour snapshots go too), keep only
+    /// the current layout's counts and drop the search index (rebuilt by the next search). Pre-pagination resumes
+    /// with the next chapter change, settings change or resize.
     func didReceiveMemoryWarning() {
         paginationService.pause()
         paginationCache.dropOtherLayouts()
+        searchService = nil
     }
 
     // MARK: - Bridge messages

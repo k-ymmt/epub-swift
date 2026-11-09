@@ -1,6 +1,7 @@
 import Foundation
 import os
 import EPUBCore
+import WebKit
 
 /// Pre-pagination with a hidden web view (docs/design/02-rendering.md §8).
 ///
@@ -41,6 +42,10 @@ final class PaginationService {
     /// Writing mode of the last chapter measured: the guess for how a two-page reflowable face is realized (M4).
     private var lastWritingMode: WritingMode = .horizontalTB
     private(set) var isPaused = false
+    /// Set when the hidden web view's WebContent process died; the chapter in progress is retried.
+    private var processTerminated = false
+    /// Retries per spine index after WebContent crashes, for the current layout.
+    private var crashRetries: [Int: Int] = [:]
     /// Snapshots per spine index for the current generation; only the neighbours of the current chapter are kept.
     private(set) var snapshots: [Int: ChapterSnapshots] = [:]
 
@@ -73,8 +78,13 @@ final class PaginationService {
             self?.readyContinuation = nil
         }
         renderer.onProcessTerminated = { [weak self] in
-            self?.readyContinuation?.resume(throwing: ReaderError.webContentTerminated)
-            self?.readyContinuation = nil
+            // The hidden web view relaunches its WebContent process with the next load; the chapter being measured
+            // is retried (`measure`) instead of being marked as failed (02-rendering §9).
+            guard let self else { return }
+            self.logger.debug("pre-pagination WebContent process terminated")
+            self.processTerminated = true
+            self.readyContinuation?.resume(throwing: ReaderError.webContentTerminated)
+            self.readyContinuation = nil
         }
     }
 
@@ -91,6 +101,9 @@ final class PaginationService {
         renderer.setPageSize(pageSize)
         renderer.setBackgroundColor(settings.theme.background)
         failed = []
+        crashRetries = [:]
+        // A new layout is new work: a pause from a memory warning ends here too (02-rendering §8.4).
+        isPaused = false
         clearSnapshots()
         restart()
     }
@@ -211,6 +224,7 @@ final class PaginationService {
 
     private func measure(spineIndex: Int, generation: Int, token: Int) async {
         guard publication.readingOrder.indices.contains(spineIndex) else { return }
+        processTerminated = false
         do {
             // The whole chapter (load, layout, snapshots) is bounded: a bridge call on a document that is being
             // replaced must not stall the queue.
@@ -221,6 +235,15 @@ final class PaginationService {
             return
         } catch {
             guard generation == self.generation, token == workerToken else { return }
+            if processTerminated || Self.isProcessTermination(error) {
+                processTerminated = false
+                let retries = crashRetries[spineIndex, default: 0]
+                if retries < 2 {
+                    crashRetries[spineIndex] = retries + 1
+                    queue.insert(spineIndex, at: 0)
+                    return
+                }
+            }
             logger.debug("pre-pagination of spine \(spineIndex) failed: \(error.localizedDescription)")
             failed.insert(spineIndex)
             onChapterFailed?(spineIndex, error)
@@ -264,6 +287,13 @@ final class PaginationService {
             onSnapshotsChanged?()
         }
         onChapterMeasured?(leading, pageCount)
+    }
+
+    /// The error of a load or script call whose WebContent process died.
+    static func isProcessTermination(_ error: any Error) -> Bool {
+        if case .webContentTerminated? = error as? ReaderError { return true }
+        if let error = error as? WKError, error.code == .webContentProcessTerminated { return true }
+        return false
     }
 
     /// Runs `operation` and throws `ReaderError.loadTimeout` if it has not finished after `duration`. The operation
