@@ -197,16 +197,19 @@ struct AnnotationResolverTests {
         #expect(Self.samePosition(resolved.target.position, .range(CFIRange("epubcfi(/6/2[c1]!/4[body]/4[p1],/1:21,/1:28)")!)))
     }
 
-    /// Builds cfi-sample.epub with `c1.xhtml` changed.
-    static func editedSample(_ edit: (String) -> String) throws -> Data {
+    /// Builds cfi-sample.epub with `c1.xhtml` changed and `adding` files added.
+    static func editedSample(_ edit: (String) -> String, adding: [String: Data] = [:]) throws -> Data {
         let archive = try ZIPArchive(url: Fixtures.url("cfi-sample.epub"))
-        var writer = ZIPWriter()
+        var writer = TestZIPWriter()
         for entry in archive.entryOrder where !entry.isDirectory {
             var data = try archive.data(for: entry)
             if entry.path == "OPS/c1.xhtml" {
                 data = Data(edit(String(decoding: data, as: UTF8.self)).utf8)
             }
             writer.add(entry.rawName, data: data)
+        }
+        for (name, data) in adding.sorted(by: { $0.key < $1.key }) {
+            writer.add(name, data: data)
         }
         return writer.build()
     }

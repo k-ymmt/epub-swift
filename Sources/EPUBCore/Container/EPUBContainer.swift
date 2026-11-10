@@ -27,6 +27,10 @@ public actor EPUBContainer {
         return c
     }()
 
+    /// Read on first use (docs/design/06-annotations.md §9.3).
+    private var embeddedAnnotationsTask: Task<AnnotationSet?, any Error>?
+    static let embeddedAnnotationsPath = "META-INF/annotations.json"
+
     private final class PreparedBox {
         let document: ContentDocument
         init(_ document: ContentDocument) { self.document = document }
@@ -101,6 +105,22 @@ public actor EPUBContainer {
         let document = XHTMLRepair.prepare(data, path: normalized)
         contentDocuments.setObject(PreparedBox(document), forKey: normalized as NSString, cost: document.data.count)
         return document
+    }
+
+    /// The annotations shipped in the EPUB (`META-INF/annotations.json`, docs/design/06-annotations.md §9.3), read
+    /// and resolved against this book on the first call and cached. Every item has the origin `.publication`. They are
+    /// read-only and drawn as their own layer. `nil` when the book has none.
+    public func embeddedAnnotations() async throws -> AnnotationSet? {
+        if let embeddedAnnotationsTask { return try await embeddedAnnotationsTask.value }
+        guard publication.hasEmbeddedAnnotations else { return nil }
+        let task = Task<AnnotationSet?, any Error> { [archive] in
+            let data = try archive.data(at: Self.embeddedAnnotationsPath)
+            var (set, _) = try AnnotationCodec.decode(data)
+            for i in set.items.indices { set.items[i].origin = .publication }
+            return await AnnotationResolver(container: self).resolve(set).annotationSet
+        }
+        embeddedAnnotationsTask = task
+        return try await task.value
     }
 
     /// Media type for a container path: the manifest value, else a guess from the extension.
@@ -236,7 +256,8 @@ public actor EPUBContainer {
                 packageDocumentPath: opfPath,
                 navigationDocumentPath: parsed.navigationDocumentPath,
                 spineElementIndex: parsed.spineElementIndex,
-                warnings: warnings
+                warnings: warnings,
+                hasEmbeddedAnnotations: archive.contains(EPUBContainer.embeddedAnnotationsPath)
             )
             return Loaded(
                 archive: archive,

@@ -26,7 +26,7 @@ import Testing
     }
 
     @Test func detectsCorruptEntries() throws {
-        var w = ZIPWriter()
+        var w = TestZIPWriter()
         w.add("a.txt", "hello world", deflate: true)
         var bytes = w.build()
         // Flip a byte inside the deflated payload (after the 30-byte local header + 5-byte name).
@@ -36,7 +36,7 @@ import Testing
     }
 
     @Test func readsZIP64Structures() throws {
-        var w = ZIPWriter()
+        var w = TestZIPWriter()
         w.zip64 = true
         w.add("mimetype", "application/epub+zip")
         w.add("dir/b.txt", "zip64 payload", deflate: true)
@@ -53,7 +53,7 @@ import Testing
     }
 
     @Test func rejectsUnsupportedCompressionMethod() throws {
-        var w = ZIPWriter()
+        var w = TestZIPWriter()
         w.add("a.txt", "hello")
         var bytes = w.build()
         // Method field of the local header (offset 8) and central directory header (offset +10).
@@ -67,7 +67,7 @@ import Testing
     // Archive-controlled 64-bit values must be rejected, not converted with a trapping `Int(...)`.
 
     @Test func rejectsZIP64LocatorOffsetBeyondInt() throws {
-        var w = ZIPWriter()
+        var w = TestZIPWriter()
         w.zip64 = true
         w.add("a.txt", "hello")
         var bytes = w.build()
@@ -78,7 +78,7 @@ import Testing
     }
 
     @Test func rejectsZIP64CentralDirectoryBoundsThatOverflow() throws {
-        var w = ZIPWriter()
+        var w = TestZIPWriter()
         w.zip64 = true
         w.add("a.txt", "hello")
         var bytes = w.build()
@@ -90,12 +90,12 @@ import Testing
     }
 
     @Test func rejectsEntryOffsetsAndSizesBeyondTheArchive() throws {
-        var w = ZIPWriter()
+        var w = TestZIPWriter()
         w.zip64 = true
         w.add("a.txt", "hello", deflate: true)
         let good = w.build()
         // Central directory header for the single entry starts right after the local header + name + extra + payload.
-        let payload = ZIPWriter.deflate(Data("hello".utf8)).count
+        let payload = TestZIPWriter.deflate(Data("hello".utf8)).count
         let cdHeader = 30 + 5 + 32 + payload
         #expect(good[cdHeader] == 0x50 && good[cdHeader + 1] == 0x4B && good[cdHeader + 2] == 0x01)
         // ZIP64 extra field follows the 46-byte header and the 5-byte name: 4-byte header, then
@@ -144,7 +144,7 @@ import Testing
         payload.withUnsafeMutableBytes { buffer in
             for i in buffer.indices { buffer[i] = UInt8((i * 31 + i / 7919) & 0xFF) }
         }
-        let compressed = ZIPWriter.deflate(payload)
+        let compressed = TestZIPWriter.deflate(payload)
         let restored = try Inflate.decode(compressed, expectedSize: payload.count)
         #expect(restored == payload)
     }

@@ -29,6 +29,9 @@ public struct Publication: Sendable {
     /// element child, docs/design/01-core.md §5.3).
     public let spineElementIndex: Int
     public let warnings: [PublicationWarning]
+    /// The ZIP holds `META-INF/annotations.json` (docs/design/06-annotations.md §9.3). Only its presence is checked
+    /// when opening; `EPUBContainer.embeddedAnnotations()` reads it.
+    public let hasEmbeddedAnnotations: Bool
 
     private let manifestByID: [String: Int]
     private let manifestByPath: [String: Int]
@@ -50,7 +53,8 @@ public struct Publication: Sendable {
         packageDocumentPath: String,
         navigationDocumentPath: String?,
         spineElementIndex: Int = 6,
-        warnings: [PublicationWarning]
+        warnings: [PublicationWarning],
+        hasEmbeddedAnnotations: Bool = false
     ) {
         self.id = id
         self.metadata = metadata
@@ -68,6 +72,7 @@ public struct Publication: Sendable {
         self.navigationDocumentPath = navigationDocumentPath
         self.spineElementIndex = spineElementIndex
         self.warnings = warnings
+        self.hasEmbeddedAnnotations = hasEmbeddedAnnotations
         var byID: [String: Int] = [:]
         var byPath: [String: Int] = [:]
         for (i, item) in manifest.enumerated() {

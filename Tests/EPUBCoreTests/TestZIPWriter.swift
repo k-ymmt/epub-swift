@@ -4,7 +4,7 @@ import Foundation
 /// Minimal ZIP writer for tests. Writes Stored entries, optionally with ZIP64 structures
 /// (ZIP64 extra fields on every entry plus the ZIP64 EOCD record and locator), so the reader's ZIP64 path can be
 /// exercised without a 4 GB file.
-struct ZIPWriter {
+struct TestZIPWriter {
     struct Entry {
         var name: String
         var data: Data
@@ -147,7 +147,7 @@ enum MiniEPUB {
         encryptionXML: String? = nil
     ) -> Data {
         let props = spineItemProperties.map { $0.isEmpty ? "" : " properties=\"\($0)\"" }
-        var w = ZIPWriter()
+        var w = TestZIPWriter()
         w.zip64 = zip64
         w.add("mimetype", "application/epub+zip")
         if let encryptionXML { w.add("META-INF/encryption.xml", encryptionXML, deflate: deflate) }

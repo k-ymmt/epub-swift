@@ -107,7 +107,7 @@ import Testing
     }
 
     @Test func throwsWhenContainerXMLIsMissing() async {
-        var w = ZIPWriter()
+        var w = TestZIPWriter()
         w.add("mimetype", "application/epub+zip")
         w.add("a.txt", "x")
         let data = w.build()
