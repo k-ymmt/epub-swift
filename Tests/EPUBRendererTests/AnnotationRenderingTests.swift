@@ -200,4 +200,70 @@ import AppKit
         try await host.waitUntil { (try? await self.keys(host))?.count == 2 }
         collector.cancel()
     }
+
+    /// The M6 completion check, through the calls ReaderDemo makes: highlights and a bookmark exported to a
+    /// `.annotations` file (with and without the CFI selector), deleted, and imported back are drawn at the same
+    /// place, in the same color and style.
+    @Test(arguments: [true, false])
+    func exportDeleteImportRestoresTheDrawing(includesCFI: Bool) async throws {
+        let host = try await SessionHost(url: ReaderSessionTests.mobyDick)
+        await host.session.loadIfNeeded()
+        await host.session.go(toSpineIndex: 6)
+        let session = host.session
+        let publication = session.publication
+        // Ranges found by search, so they are real text in the chapter on screen.
+        var results: [SearchResult] = []
+        for try await result in session.search("the") where result.spineIndex == session.currentSpineIndex {
+            results.append(result)
+            if results.count == 4 { break }
+        }
+        #expect(results.count == 4)
+        let styles: [(HighlightColor, HighlightStyle)] = [(.pink, .solid), (.blue, .underline), (.green, .strikethrough), (.purple, .outline)]
+        var made: [Annotation] = zip(results, styles).map { Annotation.highlight($0.range, in: publication, color: $1.0, style: $1.1) }
+        made.append(Annotation.bookmark(at: results[0].range.start, in: publication))
+        session.annotations = made
+        try await host.waitUntil { (try? await self.keys(host))?.count == 3 }
+        let rules = try await host.js("return document.getElementById('__reader_highlights').textContent;") as? String
+        let boxes = try await overlayBoxes(host)
+
+        // Export (ReaderDemo: generate the selectors, then write the ZIP).
+        var set = AnnotationSet(id: "urn:uuid:5d3c69b0-0000-4000-8000-000000000000", about: AnnotationSet.About(publication: publication), items: session.annotations)
+        set = await AnnotationResolver(container: session.container).generatingSelectors(for: set)
+        let data = try await AnnotationArchive.data(set, options: ExportOptions(includesCFI: includesCFI)) { url in
+            throw AnnotationArchive.Failure.missingResource(url)
+        }
+        let json = String(decoding: try ZIPArchive(data: data).data(at: "annotations.json"), as: UTF8.self)
+        #expect(json.contains("CfiSelector") == includesCFI)
+
+        // Delete everything, then import.
+        session.annotations = []
+        try await host.waitUntil { (try? await self.keys(host)) == [] }
+        let archive = try await AnnotationArchive.read(data: data)
+        let resolution = await session.resolve(archive.annotationSet)
+        #expect(resolution.unresolvedIDs.isEmpty)
+        #expect(resolution.match.identifier == .match)
+        #expect(resolution.match.resolvedPositionRatio == 1)
+        let plan = AnnotationMergePlan(existing: [], incoming: resolution.annotationSet)
+        #expect(plan.added.count == made.count)
+        session.annotations = plan.applying(to: [])
+
+        for (before, after) in zip(made, session.annotations) {
+            #expect(after.id == before.id)
+            #expect(after.motivation == before.motivation)
+            #expect(after.color == before.color)
+            #expect(after.style == before.style)
+            switch (before.target.position, after.target.position) {
+            case (.range(let a), .range(let b)):
+                #expect(a.start.withoutAssertions == b.start.withoutAssertions && a.end.withoutAssertions == b.end.withoutAssertions, "\(a) vs \(b)")
+            case (.point(let a), .point(let b)):
+                #expect(a.withoutAssertions == b.withoutAssertions, "\(a) vs \(b)")
+            default:
+                Issue.record("position \(before.target.position) → \(after.target.position)")
+            }
+        }
+        try await host.waitUntil { (try? await self.keys(host))?.count == 3 }
+        let rulesAfter = try await host.js("return document.getElementById('__reader_highlights').textContent;") as? String
+        #expect(rulesAfter == rules)
+        #expect(try await overlayBoxes(host) == boxes)
+    }
 }

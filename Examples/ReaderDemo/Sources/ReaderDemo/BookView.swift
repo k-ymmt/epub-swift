@@ -1,17 +1,25 @@
 import SwiftUI
+import UniformTypeIdentifiers
 import EPUB
 
 /// One open book: the reader view, a status bar, and sheets for the table of contents, the settings, the saved
-/// highlights and search. Highlights and the last position are saved per book (`BookStore`) and restored on open.
+/// annotations and search. Annotations and the last position are saved per book (`BookStore`) and restored on open.
+/// Annotations can be exported to and imported from `.annotations` files (EPUB Annotations 1.0, M6).
 struct BookView: View {
     let book: Book
 
     @State private var session: ReaderSession?
     @State private var store: BookStore?
     @State private var restorePending = false
-    @State private var showHighlights = false
+    @State private var showAnnotations = false
     @State private var showSearch = false
-    @State private var tappedHighlight: Highlight?
+    @State private var editing: Annotation?
+    /// The label and style the next highlight gets (the last ones picked).
+    @State private var nextColor: HighlightColor = .yellow
+    @State private var exportFile: AnnotationsFile?
+    @State private var showImporter = false
+    @State private var pendingImport: PendingImport?
+    @State private var showDeleteAll = false
     @State private var loadError: String?
     @State private var showSettings = false
     @State private var showTOC = false
@@ -54,8 +62,19 @@ struct BookView: View {
                     .disabled(session == nil)
                 Button("Settings", systemImage: "textformat.size") { showSettings = true }
                     .disabled(session == nil)
-                Button("Highlights", systemImage: "highlighter") { showHighlights = true }
-                    .disabled(session == nil)
+                Button("Bookmark", systemImage: "bookmark") { addBookmark() }
+                    .disabled(session?.position == nil)
+                Menu("Annotations", systemImage: "highlighter") {
+                    Button("Show annotations", systemImage: "list.bullet.rectangle") { showAnnotations = true }
+                    Divider()
+                    Button("Export .annotations…", systemImage: "square.and.arrow.up") { export(includesCFI: true) }
+                    Button("Export without CFI…") { export(includesCFI: false) }
+                    Button("Import .annotations…", systemImage: "square.and.arrow.down") { showImporter = true }
+                    Divider()
+                    Button("Delete all annotations", systemImage: "trash", role: .destructive) { showDeleteAll = true }
+                        .disabled(store?.annotations.isEmpty ?? true)
+                }
+                .disabled(session == nil)
                 Button("Search", systemImage: "magnifyingglass") { showSearch = true }
                     .disabled(session == nil)
                 Button("Go to page", systemImage: "number") {
@@ -86,9 +105,9 @@ struct BookView: View {
                 TOCView(session: session) { showTOC = false }
             }
         }
-        .sheet(isPresented: $showHighlights) {
+        .sheet(isPresented: $showAnnotations) {
             if let session, let store {
-                HighlightsView(session: session, store: store) { showHighlights = false }
+                AnnotationsView(session: session, store: store) { showAnnotations = false }
             }
         }
         .sheet(isPresented: $showSearch) {
@@ -96,16 +115,45 @@ struct BookView: View {
                 SearchView(session: session) { showSearch = false }
             }
         }
-        .alert("Highlight", isPresented: Binding(get: { tappedHighlight != nil }, set: { if !$0 { tappedHighlight = nil } }), presenting: tappedHighlight) { highlight in
-            Button("Delete", role: .destructive) {
-                store?.highlights.removeAll { $0.id == highlight.id }
+        .sheet(item: Binding(get: { editing.map(EditingItem.init) }, set: { editing = $0?.annotation })) { item in
+            if let session {
+                let isMine = store?.annotations.contains { $0.id == item.annotation.id } ?? false
+                AnnotationEditor(annotation: item.annotation, session: session, isEditable: isMine) { changed in
+                    guard let index = store?.annotations.firstIndex(where: { $0.id == changed.id }) else { return }
+                    store?.annotations[index] = changed
+                    editing = changed
+                    nextColor = changed.color
+                } onDelete: {
+                    store?.annotations.removeAll { $0.id == item.annotation.id }
+                }
             }
-            Button("Cancel", role: .cancel) {}
-        } message: { highlight in
-            Text(highlight.note ?? highlight.range.description)
         }
-        .onChange(of: store?.highlights) { _, highlights in
-            session?.highlights = highlights ?? []
+        .onChange(of: store?.annotations) { _, annotations in
+            session?.annotations = annotations ?? []
+        }
+        .fileExporter(isPresented: Binding(get: { exportFile != nil }, set: { if !$0 { exportFile = nil } }), document: exportFile, contentType: .epubAnnotations, defaultFilename: exportFile?.filename) { result in
+            switch result {
+            case .success(let url): status = "Exported \(url.lastPathComponent)"
+            case .failure(let error): status = "Export failed: \(error.localizedDescription)"
+            }
+        }
+        .fileImporter(isPresented: $showImporter, allowedContentTypes: [.epubAnnotations, .zip, .json]) { result in
+            switch result {
+            case .success(let url): Task { await prepareImport(url) }
+            case .failure(let error): status = "Import failed: \(error.localizedDescription)"
+            }
+        }
+        .alert("Import annotations", isPresented: Binding(get: { pendingImport != nil }, set: { if !$0 { pendingImport = nil } }), presenting: pendingImport) { pending in
+            Button("Import") { applyImport(pending) }
+            Button("Cancel", role: .cancel) {}
+        } message: { pending in
+            Text(pending.summary)
+        }
+        .confirmationDialog("Delete all annotations?", isPresented: $showDeleteAll) {
+            Button("Delete \(store?.annotations.count ?? 0) annotations", role: .destructive) { store?.annotations = [] }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("Export them first to bring them back with Import.")
         }
         .alert("Go to page", isPresented: $showGoToPage) {
             TextField("Page (1–\(session?.pagination.totalPages ?? 0))", text: $goToPageText)
@@ -140,8 +188,8 @@ struct BookView: View {
                 for warning in container.publication.warnings {
                     print("warning: \(warning)")
                 }
-                let store = BookStore(bookID: book.id)
-                session.highlights = store.highlights
+                let store = BookStore(bookID: book.id, publication: container.publication)
+                session.annotations = store.annotations
                 // The session loads its first chapter once the view has a size; the saved position is applied on
                 // the first `positionChanged` (see `reader(_:)`).
                 restorePending = store.position != nil
@@ -153,11 +201,69 @@ struct BookView: View {
         }
     }
 
-    private func addHighlight(_ selected: SelectedText, style: Highlight.Style) {
-        let highlight = Highlight(range: selected.range, style: style, note: selected.text)
-        store?.highlights.append(highlight)
-        session?.clearSelection()
+    private func addHighlight(_ selected: SelectedText, style: HighlightStyle) {
+        guard let session else { return }
+        let highlight = Annotation.highlight(selected.range, in: session.publication, color: nextColor, style: style)
+        store?.annotations.append(highlight)
+        session.clearSelection()
         status = "Highlighted \(selected.range.description)"
+    }
+
+    private func addBookmark() {
+        guard let session, let position = session.position else { return }
+        store?.annotations.append(Annotation.bookmark(at: position.cfi, in: session.publication))
+        status = "Bookmarked \(position.cfi.description)"
+    }
+
+    /// Writes the store's annotations, with the standard selectors generated from the CFIs, as a `.annotations` ZIP.
+    /// Without the CFI the file holds only the selectors other Reading Systems read, which is what an import into
+    /// another app would see.
+    private func export(includesCFI: Bool) {
+        guard let session, let store else { return }
+        let set = store.annotationSet(about: session.publication)
+        Task {
+            do {
+                let withSelectors = await AnnotationResolver(container: session.container).generatingSelectors(for: set)
+                let data = try await AnnotationArchive.data(withSelectors, options: ExportOptions(includesCFI: includesCFI)) { url in
+                    throw AnnotationArchive.Failure.missingResource(url)
+                }
+                let title = session.publication.metadata.title.isEmpty ? "Annotations" : session.publication.metadata.title
+                exportFile = AnnotationsFile(data: data, filename: title + (includesCFI ? "" : " (no CFI)"))
+            } catch {
+                status = "Export failed: \(error)"
+            }
+        }
+    }
+
+    /// Reads a `.annotations` ZIP (or a bare `annotations.json`), resolves the positions against this book, checks
+    /// that it is about this book and plans the merge. The reader confirms before anything changes.
+    private func prepareImport(_ url: URL) async {
+        guard let session, let store else { return }
+        let accessing = url.startAccessingSecurityScopedResource()
+        defer { if accessing { url.stopAccessingSecurityScopedResource() } }
+        do {
+            let set: AnnotationSet
+            var warnings: [AnnotationImportWarning]
+            if url.pathExtension.lowercased() == "json" {
+                (set, warnings) = try AnnotationCodec.decode(try Data(contentsOf: url))
+            } else {
+                let archive = try await AnnotationArchive.read(from: url)
+                set = archive.annotationSet
+                warnings = archive.warnings
+            }
+            let resolution = await session.resolve(set)
+            let plan = AnnotationMergePlan(existing: store.annotations, incoming: resolution.annotationSet)
+            pendingImport = PendingImport(plan: plan, match: resolution.match, unresolved: resolution.unresolvedIDs.count, warnings: warnings.count, total: set.items.count)
+        } catch {
+            status = "Import failed: \(error)"
+        }
+    }
+
+    private func applyImport(_ pending: PendingImport) {
+        guard let store else { return }
+        // Unresolved annotations are kept (their selectors stay for a later export) but are not drawn.
+        store.annotations = pending.plan.applying(to: store.annotations)
+        status = "Imported: \(pending.plan.added.count) added, \(pending.plan.updated.count) updated, \(pending.plan.conflicts.count) conflicts kept as they were"
     }
 
     @ViewBuilder private func reader(_ session: ReaderSession) -> some View {
@@ -166,10 +272,16 @@ struct BookView: View {
             .readerGestures(.default)
             .selectionActions([
                 SelectionAction(title: "Highlight", systemImage: "highlighter") { selected in
-                    addHighlight(selected, style: .background(ReaderColor(hex: 0xFFE066, alpha: 0.6)))
+                    addHighlight(selected, style: .solid)
                 },
                 SelectionAction(title: "Underline", systemImage: "underline") { selected in
-                    addHighlight(selected, style: .underline(ReaderColor(hex: 0xE0453A)))
+                    addHighlight(selected, style: .underline)
+                },
+                SelectionAction(title: "Strike through", systemImage: "strikethrough") { selected in
+                    addHighlight(selected, style: .strikethrough)
+                },
+                SelectionAction(title: "Outline", systemImage: "rectangle.dashed") { selected in
+                    addHighlight(selected, style: .outline)
                 },
             ])
             .onReaderEvent { event in
@@ -202,8 +314,8 @@ struct BookView: View {
                     }
                     previousPosition = lastPosition
                     lastPosition = position
-                case .highlightTapped(let id, _):
-                    tappedHighlight = store?.highlights.first { $0.id == id }
+                case .annotationTapped(let id, _):
+                    editing = store?.annotations.first { $0.id == id } ?? session.publicationAnnotations.first { $0.id == id }
                 case .selectionChanged(let selected):
                     status = selected.map { "Selected: \($0.range.description)" } ?? ""
                 case .paginationUpdated:
@@ -552,5 +664,64 @@ struct ImageViewer: View {
                 failure = String(describing: error)
             }
         }
+    }
+}
+
+/// `Annotation` for `.sheet(item:)`.
+struct EditingItem: Identifiable {
+    let annotation: Annotation
+    var id: Annotation.ID { annotation.id }
+}
+
+extension UTType {
+    /// `.annotations` files: a ZIP with the EPUB Annotations profile (the demo has no Info.plist to export a type).
+    static let epubAnnotations = UTType(filenameExtension: "annotations", conformingTo: .zip) ?? .zip
+}
+
+/// The exported archive, for `.fileExporter`.
+struct AnnotationsFile: FileDocument {
+    static let readableContentTypes: [UTType] = [.epubAnnotations]
+    var data: Data
+    var filename: String
+
+    init(data: Data, filename: String) {
+        self.data = data
+        self.filename = filename
+    }
+
+    init(configuration: ReadConfiguration) throws {
+        data = configuration.file.regularFileContents ?? Data()
+        filename = "Annotations"
+    }
+
+    func fileWrapper(configuration: WriteConfiguration) throws -> FileWrapper {
+        FileWrapper(regularFileWithContents: data)
+    }
+}
+
+/// An import waiting for the reader's go-ahead: what the set says about its book and what would change.
+struct PendingImport {
+    var plan: AnnotationMergePlan
+    var match: AnnotationSetMatch
+    var unresolved: Int
+    var warnings: Int
+    var total: Int
+
+    var summary: String {
+        func describe(_ result: AnnotationSetMatch.MatchResult) -> String {
+            switch result {
+            case .match: "matches"
+            case .mismatch: "differs"
+            case .absent: "not given"
+            }
+        }
+        var lines = [
+            "\(total) annotations. Identifier \(describe(match.identifier)), title \(describe(match.title)).",
+            "Found in this book: \(Int((match.resolvedPositionRatio * 100).rounded()))%.",
+            "\(plan.added.count) new, \(plan.updated.count) newer, \(plan.unchanged.count) unchanged, \(plan.outdated.count) older, \(plan.conflicts.count) conflicts (kept as they are).",
+        ]
+        if unresolved > 0 { lines.append("\(unresolved) could not be placed and will not be shown.") }
+        if warnings > 0 { lines.append("\(warnings) entries were skipped.") }
+        return lines.joined(separator: "\n")
     }
 }

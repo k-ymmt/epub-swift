@@ -7,7 +7,8 @@ WKWebView renders the content. The library handles everything else:
 - Container parsing: ZIP, OPF, nav, and font de-obfuscation.
 - Positions as EPUB CFI.
 - Pagination for horizontal and vertical writing, right-to-left books, fixed layout, and two-page spreads.
-- Highlights, full-text search, footnote popups, and image taps.
+- Highlights and bookmarks as EPUB Annotations 1.0 (`.annotations` export and import), full-text search, footnote
+  popups, and image taps.
 - A SwiftUI reader view with page-turn transitions, gestures, keyboard and trackpad input.
 
 It depends on Apple frameworks only (Foundation, Compression, CryptoKit, WebKit, libxml2). EPUB 2 (NCX, OPF 2.0) is not supported.
@@ -93,14 +94,19 @@ Common next steps:
   page numbers come from `session.pagination`.
 - Appearance: change `session.settings` (font scale, line height, margins, theme, spread policy). The current position
   is kept across the relayout.
-- Highlights: set `session.highlights` to `[Highlight]`. Add a text menu with `.selectionActions([SelectionAction(...)])`.
+- Annotations: set `session.annotations` to `[Annotation]` (`Annotation.highlight(range, in:color:style:)`,
+  `Annotation.bookmark(at:in:)`); taps arrive as `.annotationTapped`. Persist them with
+  `AnnotationCodec.encode(set, mode: .storage)`. Exchange them with `AnnotationArchive` (`.annotations` files), then
+  `session.resolve(set)` and `AnnotationMergePlan` on import. Add a text menu with
+  `.selectionActions([SelectionAction(...)])`.
 - Search: iterate `session.search("query")`, then call `session.show(result)`.
 - Images: `.imageTapped(TappedImage)` carries the image bytes through `try await image.data()`.
 - Gestures: `.readerGestures(.disabled)` turns off built-in tap, swipe and keyboard handling, so the app drives the
   session itself.
 
 The complete example is `Examples/ReaderDemo`, a SwiftUI app for iOS and macOS. It shows the table of contents,
-search, highlights, settings, footnote popovers, an image viewer and link handling.
+search, annotations (with `.annotations` export and import), settings, footnote popovers, an image viewer and link
+handling.
 
 ```bash
 cd Examples/ReaderDemo && scripts/run-macos.sh
