@@ -317,7 +317,11 @@ public struct ExportOptions: Sendable {
 4. **TextPositionSelector**: scope 要素の `textContent`（子孫のテキストノードを木の順に連結。`rt`・`script`・`style` も含める。
    検索用の `TextMap` は使わない）上で、始点と終点の位置をコードポイントで数える。CFI の UTF-16 オフセットは、テキストノード
    ごとにコードポイントへ変換する。軽量 DOM は CDATA を文字として含め、コメントを含めないので、DOM の `textContent` と
-   同じ文字列になる（01-core §4.2）。
+   同じ文字列になる（01-core §4.2。§12 で WebKit と一致することを確かめた）。
+   - `script` 要素: 本ライブラリの WebView はコンテンツ JS を止めているため、WebKit は `script` 要素を DOM から取り除く（§12）。
+     セレクタは出版物の DOM（`script` を含む。JS を動かす他の Reading System が見る木）で数える。軽量 DOM は `script` を
+     保持しているので、手順 3 の `nth-child` と手順 4・5 の `textContent` はそのまま `script` を含めて数える。CFI は
+     WebKit と同じく `script` を数えない木で扱う（01-core §5 の修正が前提。TODO.md）。
 5. **TextQuoteSelector**（範囲だけ）: `exact` は範囲の文字列。`prefix` / `suffix` は `body` の `textContent` 上の前後
    32 コードポイント。`prefix + exact + suffix` が `body` 内で一意になるまで 32 ずつ伸ばし、最大 256 で止める（残る重複は
    TextPositionSelector が区別する）。書籍の先頭・末尾で足りなければ短くてよい。
@@ -508,12 +512,60 @@ solid は背景色として半透明で、線のスタイルは不透明で描�
 
 ## 12. 先に検証する項目
 
-| 項目 | 確かめること |
+2026-11-10 に macOS の `swift test`（実 WKWebView）で検証した。テストは `Tests/EPUBRendererTests/AnnotationPrerequisiteTests.swift`
+に残し、M6 の回帰テストとして使う。
+
+| 項目 | 結果 |
 |---|---|
-| `textContent` の一致 | `cfi-sample.epub` と各 fixture で、EPUBCore が出す TextPositionSelector と WebKit の `textContent` 上の位置（コードポイントに変換）が一致する |
-| `line-through` | WebKit の `::highlight()` が `text-decoration: line-through` を描く（05-spike-results §2.2 と同じ色数え） |
-| 重ね描きレイヤー | 横書き・縦書きの多段組、見開きラッパーの iframe、FXL で枠が文字に重なり、再レイアウト後も追従する。`<html>` 直下の要素が段組みとページ数に影響しない |
-| 他実装との往復 | 他の Reading System が出した `.annotations` が手に入れば、読み込んで同じ位置に出る |
+| `textContent` の一致 | **成立（`script` を除いて）**。下記 |
+| `line-through` | **成立**。下記 |
+| 重ね描きレイヤー | **成立**。下記 |
+| 他実装との往復 | 未検証。他の Reading System が出した `.annotations` が手に入ったら、読み込んで同じ位置に出るか確かめる |
+
+### 12.1 `textContent` の一致
+
+**方法**: 各 spine item について、EPUBCore の軽量 DOM（`contentDocument(at:)` の配信用 XHTML を `XMLDocument` で読んだもの）と、
+表示した WebKit の DOM（FXL は見開きラッパーの iframe の文書）で、`body` の `textContent` と、`body` 以下の全要素の
+「要素名・`textContent` のコードポイント数・子要素の数」を文書順に比べた。`reader.js` の番兵（`__reader_end`）は除く。
+
+**対象**: リフローの全 fixture（cfi-sample、links-sample、草枕、childrens-literature、アラビア語、The Waste Land、moby-dick 全 144 文書）、
+FXL の全 fixture（haruko、page-blanche、cole）、修復済み XHTML 3 文書（`Tests/Fixtures/malformed`）。合計 222 文書、約 1.8 万要素。
+
+**結果**: `script` 要素を除けば全文書で一致した。修復済み XHTML も一致した（WebKit は修復後の XHTML を XML として読むため。01-core §4.1）。
+サロゲートペアは cfi-sample にあり、コードポイントでの数えが WebKit（`for…of`）と一致した。
+
+**判明したこと**: WebKit は `allowsContentJavaScript = false` のとき、`<head>` と `<body>` の `script` 要素を DOM から取り除く
+（childrens-literature の `nav.xhtml` と合成文書で確認）。軽量 DOM は `script` を保持するので、`script` のある文書では
+要素の index がずれる。
+
+- 注釈への影響: セレクタは出版物の DOM（`script` を含む）で数える方針にした（§5 手順 4）。JS を動かす他の Reading System の
+  DOM と一致させるため。軽量 DOM は `script` を含むので、生成と解決は EPUBCore だけで閉じる。
+- 既存の CFI への影響: `script` の後ろの要素では、EPUBCore の CFI（検索結果など）と `reader.js` の CFI のステップがずれる。
+  合成文書では `/4/12[c]`（EPUBCore）と `/4/8[c]`（`reader.js`）になった。ID アサーションがあれば解決できるが、`id` の無い
+  要素ではずれる。EPUBCore の CFI で `script` を数えないよう直す必要がある（TODO.md）。
+
+### 12.2 `line-through`
+
+**方法**: `::highlight(probe) { text-decoration: line-through; text-decoration-color: rgb(255, 0, 0); text-decoration-thickness: 3px }`
+を表示中のページの単語に当て、WebView のスナップショットで赤い画素を数えた。
+
+**結果**: 横書き（cfi-sample）では範囲（幅 52pt × 高さ 18pt）の中央に幅 51.5pt × 高さ 3pt の線、縦書き（草枕）では範囲（幅 17pt ×
+高さ 96pt）の中央に幅 3pt × 高さ 96pt の線が描かれた。当てる前は赤い画素は 0。§10.2 の表のとおり `::highlight()` で描ける。
+
+### 12.3 重ね描きレイヤー
+
+**方法**: §10.3 のとおり `<html>` の最後の子に `position: absolute` の要素を置き、`Range.getClientRects()` にスクロール量を
+足した位置に 2px の枠（`box-sizing: border-box`）を描いた。スナップショットの枠の色の外接矩形を範囲の矩形と比べた。
+
+**結果**:
+
+- 枠の位置: 横書き（moby-dick の 3 ページ目）、縦書き（草枕の 3 ページ目）、横書きの 2 段見開き（右の段）、縦書きの見開き
+  ラッパー（2 つの iframe）、FXL（links-sample の 600×800 のページを 0.75 倍に縮めた iframe）のすべてで、範囲の矩形と ±0.5pt で一致した。
+- ページ数への影響: 枠があってもページ数、`scrollWidth` / `scrollHeight`、ページ先頭の CFI（`cfiForPage`）は変わらなかった。
+  最終ページの先頭の単語に枠を描いても同じ。枠は `caretRangeFromPoint` の判定にも入らない（`pointer-events: none`）。
+- 再レイアウト: フォントサイズの変更（1.3 倍）では文書を読み直さないので要素は残るが、枠の位置は古いまま。描き直すと
+  新しい位置に一致し、ページ数も変わらない。§10.3 の「再レイアウトのたびに矩形を取り直す」が必要なことを確認した。
+- 見開きラッパーの中のページ数は、ラッパーの外からは測っていない（枠は iframe の文書に描くので、単ページの結果と同じと見なした）。
 
 ## 13. 既存の設計から変わる点
 

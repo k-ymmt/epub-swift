@@ -67,3 +67,8 @@
 - [ ] macOS 26 の実機・VM での動作確認は未実施。`swift test`（Renderer の実 WKWebView テストを含む）は macOS 27 でしか走らせていない。
 - [ ] iOS 26.5 Simulator（iPhone 17 Pro）では ReaderDemo の Moby-Dick と草枕（縦書き・右綴じ）を開き、表示・ページめくり・事前ページ化の完了までを確認しただけ。FXL、見開き、検索、ハイライト、リンク・脚注、画像ビューアは未確認。
 - [ ] iOS 26.5 Simulator を起動した直後の最初の 1 冊（草枕）で `loadTimeout(spineIndex: 0)` が 1 回出た。開き直しとアプリ再起動後には再現しない。WebContent プロセスのコールドスタートが読み込みのタイムアウトを超えたと見ているが、iOS 27 でも起こるか（Simulator の起動直後に限るか）を確かめ、起こるならタイムアウト時の再試行を検討する。
+
+## M6 の事前検証（2026-11-10）で見つけたこと
+
+- [ ] EPUBCore の CFI と `reader.js` の CFI が `script` 要素の後ろでずれる。WebView はコンテンツ JS を止めているので WebKit は `script` 要素を DOM から取り除くが、EPUBCore の軽量 DOM は保持して要素ステップに数える（`<p id="a"/><script/><noscript/><p id="b"/><script/><p id="c"/>` の `#c` が EPUBCore では `/4/12[c]`、`reader.js` では `/4/8[c]`）。ID アサーションかテキストアサーションで救えない要素では、検索結果（EPUBCore の CFI）が別の位置に解決される。fixture では childrens-literature の `nav.xhtml`（末尾の `script` なので実害なし）だけ。EPUBCore の CFI 生成・解決（`CFIGenerator` / `CFIResolver` / `DocumentLocation` の子の数え方）で `script` 要素を数えないように直し、`cfi-vectors.json` に `script` を含む文書のベクタを足す。06-annotations §5 の注釈セレクタは逆に `script` を含めて数える（§12.1）。
+- [ ] 06-annotations §12 の「他実装との往復」は未検証。他の Reading System が出した `.annotations` を入手したら M6 の実装で読み込みを確かめる。
