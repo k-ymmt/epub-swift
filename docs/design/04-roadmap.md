@@ -133,6 +133,23 @@ M4 で `public` になっていた `SpreadBuilder` / `SpreadPlan` を `internal`
 積み残しは `TODO.md` に置く（macOS の画面操作による確認、VoiceOver の実機確認、`loadTimeout` のテスト、
 `role="doc-noteref"` の扱い、別文書の脚注の書式など）。
 
+### M6. 注釈（EPUB Annotations 1.0）
+
+設計は 06-annotations。基準は W3C Working Draft 2026-10-15。
+
+- 06-annotations §12 の検証（`textContent` の一致、`line-through`、重ね描きレイヤー）
+- `Annotation` / `AnnotationSet` と JSON の符号化・復号（storage / export）。`Highlight` / `Bookmark` を削除する
+- CFI ⇄ CssSelector / TextPositionSelector / TextQuoteSelector の生成と解決（EPUBCore）。`epubswift:CfiSelector` の併記
+- 書籍との照合、取り込みのマージ計画
+- `ZIPWriter` と `.annotations` の読み書き、EPUB 同梱の `META-INF/annotations.json` の遅延読み込み
+- `ReaderSession.annotations` / `publicationAnnotations`、4 つのスタイルの描画、色パレット、`annotationTapped`
+- `Examples/ReaderDemo` の移行（保存ファイル、色ラベルのメニュー、`.annotations` の書き出しと取り込み）
+
+完了条件: ReaderDemo で付けたハイライトとしおりを `.annotations` に書き出し、別の端末（または注釈を消した状態）で取り込むと
+同じ位置・色・スタイルで出る。CFI セレクタを除いて書き出したファイルからも同じ位置に戻る。
+
+EPUB への埋め込み書き出しと、画像の領域（`xywh`）の描画は M6 に含めない（06-annotations §9.4、§6.2）。
+
 ## 2. 先に検証する項目（検証済み）
 
 実装前に `Spikes/` の小さなコードで確かめた。詳細と根拠は `05-spike-results.md`。設計文書には反映済み。

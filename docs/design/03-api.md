@@ -101,6 +101,9 @@ M3 実装済み。位置は CFI だけで決まり、残りは記録時点の表
 
 ### 2.5 `Highlight` / `Bookmark`
 
+M6 で置き換え: EPUB Annotations 1.0 に沿った `Annotation`（ハイライトとしおりを `motivation` で区別）に統合し、
+この節の型は削除する。設計は 06-annotations。下の記述は M3〜M5 の実装状態。
+
 ```swift
 public struct ReaderColor: Codable, Hashable, Sendable {
     public var red, green, blue, alpha: Double

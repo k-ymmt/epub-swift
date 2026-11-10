@@ -14,6 +14,7 @@ Read `docs/design/` before changing architecture. The documents are written in J
 - `03-api.md`: public API
 - `04-roadmap.md`: milestones, spikes, test plan
 - `05-spike-results.md`: results of the pre-M1 spikes (what held, what did not, and the design changes made)
+- `06-annotations.md`: highlights and bookmarks as EPUB Annotations 1.0 (M6)
 
 ## Layout
 
@@ -42,7 +43,9 @@ Run `swift test` before every commit. Renderer tests use a real WKWebView and ru
 - Malformed XHTML is best effort: repair in EPUBCore and serve as `application/xhtml+xml`; never serve `text/html` to align DOMs with libxml2 (see `05-spike-results.md` §2.5).
 - EPUB 3 only. Do not add EPUB 2 (NCX, OPF 2.0) code paths.
 - Content JavaScript stays disabled (`allowsContentJavaScript = false`). Only the bundled `reader.js` runs, in its own `WKContentWorld`.
-- Positions are EPUB CFI strings. Do not introduce a second position format.
+- Positions are EPUB CFI strings. Do not introduce a second position format. The one exception is the EPUB Annotations
+  exchange selectors (CssSelector, TextPositionSelector, TextQuoteSelector, FragmentSelector): they are generated from and
+  resolved to CFIs at import/export, and imported originals are only kept for lossless round trips (`06-annotations.md` §2.1).
 - EPUBCore must not import WebKit, UIKit, AppKit, or SwiftUI. Keep it testable with `swift test` without a WebView.
 - Public API must not expose WebKit types.
 - Documents under `docs/` are written in Japanese. This file is written in English.
