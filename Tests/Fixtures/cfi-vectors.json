@@ -61,7 +61,21 @@
       "generated": "epubcfi(/6/2[c1]!/4[body]/2[title]/1:0[,CFI sample])" },
     { "name": "unknown id falls back to the index", "cfi": "epubcfi(/6/2[c1]!/4/2[nope]/1:0)",
       "text": "CFI sample", "offset": 0,
-      "generated": "epubcfi(/6/2[c1]!/4[body]/2[title]/1:0[,CFI sample])" }
+      "generated": "epubcfi(/6/2[c1]!/4[body]/2[title]/1:0[,CFI sample])" },
+    { "name": "text after a script element in the same paragraph (WebKit removes the script; the text around it is one logical text node)",
+      "cfi": "epubcfi(/6/2[c1]!/4/18[p8]/1:22)",
+      "text": "Before the script and after it.", "offset": 22,
+      "generated": "epubcfi(/6/2[c1]!/4[body]/18[p8]/1:22[cript and ,after it.])" },
+    { "name": "element after a body-level script element, without an id", "cfi": "epubcfi(/6/2[c1]!/4/20/1:0)",
+      "text": "No id after a script element.", "offset": 0,
+      "generated": "epubcfi(/6/2[c1]!/4[body]/20/1:0[,No id afte])" },
+    { "name": "element after an SVG script element", "cfi": "epubcfi(/6/2[c1]!/4/22[svg1]/2[r1])",
+      "elementId": "r1",
+      "generated": "epubcfi(/6/2[c1]!/4[body]/22[svg1]/2[r1])" },
+    { "name": "template content is not in the tree", "cfi": "epubcfi(/6/2[c1]!/4/24[t1]/2[tp])", "generated": null },
+    { "name": "element after a template", "cfi": "epubcfi(/6/2[c1]!/4/26/1:0)",
+      "text": "Paragraph after a template.", "offset": 0,
+      "generated": "epubcfi(/6/2[c1]!/4[body]/26/1:0[,Paragraph ])" }
   ],
   "parse": [
     { "cfi": "epubcfi(/6/2[c1]!/4/4[p1]/1:5[Call ,me Ishmael])", "canonical": "epubcfi(/6/2[c1]!/4/4[p1]/1:5[Call ,me Ishmael])" },

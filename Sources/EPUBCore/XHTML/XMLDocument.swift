@@ -7,15 +7,34 @@ import Foundation
 /// split a text node). Adjacent text is merged and whitespace-only text is preserved, which matches the DOM
 /// WebKit builds from the same bytes with its XML parser.
 public struct XMLDocument: Sendable, Hashable {
+    /// Which tree `init(data:tree:)` builds.
+    public enum Tree: Sendable, Hashable {
+        /// The DOM the reader's WebView builds (the default; CFIs, search and notes use it). With content JavaScript
+        /// disabled WebKit removes XHTML and SVG `script` elements from the tree, and the children of an XHTML
+        /// `template` go into its content fragment, not the tree. Both are left out here; the text around a removed
+        /// `script` merges like text around a comment (`reader.js` treats the two DOM text nodes as one logical
+        /// text node). docs/design/06-annotations.md §12.1.
+        case rendered
+        /// Every element as written (EPUB Annotations selectors count this tree, 06-annotations §5).
+        case source
+    }
+
     public var root: XMLElement
 
     public init(root: XMLElement) {
         self.root = root
     }
 
-    /// Parses `data` as well-formed XML. Throws `XMLParseError` on any well-formedness error.
+    /// Parses `data` as well-formed XML into the `.rendered` tree. Throws `XMLParseError` on any well-formedness error.
+    /// (A separate initializer, not a default argument: `init(data:)` must stay an exact match so that it is not
+    /// ambiguous with Foundation's `XMLDocument(data:options:)`.)
     public init(data: Data) throws {
-        let builder = XMLTreeBuilder()
+        try self.init(data: data, tree: .rendered)
+    }
+
+    /// Parses `data` as well-formed XML into `tree`. Throws `XMLParseError` on any well-formedness error.
+    public init(data: Data, tree: Tree) throws {
+        let builder = XMLTreeBuilder(tree: tree)
         let parser = XMLParser(data: data)
         parser.shouldProcessNamespaces = true
         parser.shouldReportNamespacePrefixes = true
@@ -189,11 +208,16 @@ private final class XMLTreeBuilder: NSObject, XMLParserDelegate {
         }
     }
 
+    private let tree: XMLDocument.Tree
     private var stack: [Frame] = []
     /// prefix → stack of URIs (innermost last)
     private var prefixMappings: [String: [String]] = [:]
     private(set) var root: XMLElement?
     private(set) var failure: Error?
+
+    init(tree: XMLDocument.Tree) {
+        self.tree = tree
+    }
 
     func parser(_ parser: XMLParser, didStartMappingPrefix prefix: String, toURI namespaceURI: String) {
         prefixMappings[prefix, default: []].append(namespaceURI)
@@ -238,6 +262,19 @@ private final class XMLTreeBuilder: NSObject, XMLParserDelegate {
     func parser(_ parser: XMLParser, didEndElement elementName: String, namespaceURI: String?, qualifiedName qName: String?) {
         guard let frame = stack.popLast() else { return }
         frame.flushText()
+        if tree == .rendered, let parent = stack.last {
+            let element = frame.element
+            if element.name == "script", element.namespaceURI == XMLNamespace.xhtml || element.namespaceURI == XMLNamespace.svg {
+                // Not in WebKit's DOM. The parent's text was flushed before the script started, so text after it
+                // merges with the text before it on the next flush.
+                return
+            }
+            if element.name == "template", element.namespaceURI == XMLNamespace.xhtml {
+                frame.element.children = []
+            }
+            parent.element.children.append(.element(frame.element))
+            return
+        }
         if let parent = stack.last {
             parent.element.children.append(.element(frame.element))
         } else {

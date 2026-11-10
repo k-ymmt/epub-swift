@@ -138,7 +138,7 @@ M4 で `public` になっていた `SpreadBuilder` / `SpreadPlan` を `internal`
 設計は 06-annotations。基準は W3C Working Draft 2026-10-15。
 
 - 06-annotations §12 の検証（`textContent` の一致、`line-through`、重ね描きレイヤー）。**2026-11-10 に成立を確認**（`AnnotationPrerequisiteTests`）。
-  WebKit が `script` 要素を DOM から除くことが分かったので、EPUBCore の CFI で `script` を数えない修正を先に行う（TODO.md）
+  WebKit が `script` 要素を DOM から除くことが分かったので、EPUBCore の軽量 DOM からも除いた（2026-11-10。01-core §4.2）
 - `Annotation` / `AnnotationSet` と JSON の符号化・復号（storage / export）。`Highlight` / `Bookmark` を削除する
 - CFI ⇄ CssSelector / TextPositionSelector / TextQuoteSelector の生成と解決（EPUBCore）。`epubswift:CfiSelector` の併記
 - 書籍との照合、取り込みのマージ計画

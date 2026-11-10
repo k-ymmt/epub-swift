@@ -319,9 +319,10 @@ public struct ExportOptions: Sendable {
    ごとにコードポイントへ変換する。軽量 DOM は CDATA を文字として含め、コメントを含めないので、DOM の `textContent` と
    同じ文字列になる（01-core §4.2。§12 で WebKit と一致することを確かめた）。
    - `script` 要素: 本ライブラリの WebView はコンテンツ JS を止めているため、WebKit は `script` 要素を DOM から取り除く（§12）。
-     セレクタは出版物の DOM（`script` を含む。JS を動かす他の Reading System が見る木）で数える。軽量 DOM は `script` を
-     保持しているので、手順 3 の `nth-child` と手順 4・5 の `textContent` はそのまま `script` を含めて数える。CFI は
-     WebKit と同じく `script` を数えない木で扱う（01-core §5 の修正が前提。TODO.md）。
+     セレクタは出版物の DOM（`script` を含む。JS を動かす他の Reading System が見る木）で数える。手順 3 の `nth-child` と
+     手順 4・5 の `textContent` は `XMLDocument(data:tree: .source)` の木で数え、CFI は既定の `.rendered` の木（WebKit と同じく
+     `script` と `template` の子が無い）で扱う（01-core §4.2）。CFI の位置から `.source` の木の位置へは、両方の木を同じ順に
+     たどって対応させる（`.rendered` は `.source` から要素を除き、テキストを結合しただけなので、対応は一意に決まる）。
 5. **TextQuoteSelector**（範囲だけ）: `exact` は範囲の文字列。`prefix` / `suffix` は `body` の `textContent` 上の前後
    32 コードポイント。`prefix + exact + suffix` が `body` 内で一意になるまで 32 ずつ伸ばし、最大 256 で止める（残る重複は
    TextPositionSelector が区別する）。書籍の先頭・末尾で足りなければ短くてよい。
@@ -531,7 +532,7 @@ solid は背景色として半透明で、線のスタイルは不透明で描�
 **対象**: リフローの全 fixture（cfi-sample、links-sample、草枕、childrens-literature、アラビア語、The Waste Land、moby-dick 全 144 文書）、
 FXL の全 fixture（haruko、page-blanche、cole）、修復済み XHTML 3 文書（`Tests/Fixtures/malformed`）。合計 222 文書、約 1.8 万要素。
 
-**結果**: `script` 要素を除けば全文書で一致した。修復済み XHTML も一致した（WebKit は修復後の XHTML を XML として読むため。01-core §4.1）。
+**結果**: `script` 要素を除けば全文書で一致した（修正後は既定の木がそのまま一致する。下記）。修復済み XHTML も一致した（WebKit は修復後の XHTML を XML として読むため。01-core §4.1）。
 サロゲートペアは cfi-sample にあり、コードポイントでの数えが WebKit（`for…of`）と一致した。
 
 **判明したこと**: WebKit は `allowsContentJavaScript = false` のとき、`<head>` と `<body>` の `script` 要素を DOM から取り除く
@@ -540,9 +541,14 @@ FXL の全 fixture（haruko、page-blanche、cole）、修復済み XHTML 3 文�
 
 - 注釈への影響: セレクタは出版物の DOM（`script` を含む）で数える方針にした（§5 手順 4）。JS を動かす他の Reading System の
   DOM と一致させるため。軽量 DOM は `script` を含むので、生成と解決は EPUBCore だけで閉じる。
-- 既存の CFI への影響: `script` の後ろの要素では、EPUBCore の CFI（検索結果など）と `reader.js` の CFI のステップがずれる。
+- 既存の CFI への影響: `script` の後ろの要素では、EPUBCore の CFI（検索結果など）と `reader.js` の CFI のステップがずれていた。
   合成文書では `/4/12[c]`（EPUBCore）と `/4/8[c]`（`reader.js`）になった。ID アサーションがあれば解決できるが、`id` の無い
-  要素ではずれる。EPUBCore の CFI で `script` を数えないよう直す必要がある（TODO.md）。
+  要素ではずれる。同じ調査で、WebKit は XHTML の `template` の子を DOM の木に置かない（content の文書断片に移す）ことと、
+  取り除くのは XHTML と SVG の小文字の `script` だけ（大文字の `SCRIPT` や他の名前空間の `script` は残す）ことも確かめた。
+- 修正（2026-11-10）: 軽量 DOM の既定の木（`XMLDocument.Tree.rendered`）から `script` と `template` の子を除いた（01-core §4.2）。
+  `cfi-sample` の `c1.xhtml` に段落内の `script`、`body` 直下の `script` の後ろの `id` の無い段落、SVG の `script`、`template` を足し、
+  `cfi-vectors.json` のベクタで EPUBCore と `reader.js` の両方を検証した（修正前の木ではこのベクタで 8 件失敗する）。
+  `CFIScriptTests.searchResultAfterAScriptMatchesTheDOM` で、`script` の後ろの検索結果の CFI が `reader.js` の CFI と一致することを確かめた。
 
 ### 12.2 `line-through`
 

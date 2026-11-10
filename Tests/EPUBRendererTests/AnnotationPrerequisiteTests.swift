@@ -28,43 +28,17 @@ import AppKit
         var description: String { "\(name)(\(codePoints) cp, \(childElements) children)" }
     }
 
-    /// With `droppingScripts`, `script` elements are left out as WebKit does with content JavaScript disabled
-    /// (it removes them from the DOM).
-    static func coreSummary(_ body: EPUBCore.XMLElement, droppingScripts: Bool) -> [ElementSummary] {
+    /// The `.rendered` tree (the default) leaves out what WebKit leaves out with content JavaScript disabled: XHTML /
+    /// SVG `script` elements and `template` children.
+    static func coreSummary(_ body: EPUBCore.XMLElement) -> [ElementSummary] {
         var out: [ElementSummary] = []
-        func text(_ element: EPUBCore.XMLElement) -> String {
-            guard droppingScripts else { return element.textContent }
-            var s = ""
-            for child in element.children {
-                switch child {
-                case .text(let t): s += t
-                case .element(let e): if e.name != "script" { s += text(e) }
-                }
-            }
-            return s
-        }
         func walk(_ element: EPUBCore.XMLElement) {
-            let children = element.childElements.filter { !droppingScripts || $0.name != "script" }
-            out.append(ElementSummary(name: element.name, codePoints: text(element).unicodeScalars.count, childElements: children.count))
+            let children = element.childElements
+            out.append(ElementSummary(name: element.name, codePoints: element.textContent.unicodeScalars.count, childElements: children.count))
             for child in children { walk(child) }
         }
         walk(body)
         return out
-    }
-
-    static func coreText(_ body: EPUBCore.XMLElement, droppingScripts: Bool) -> String {
-        guard droppingScripts else { return body.textContent }
-        var s = ""
-        func walk(_ element: EPUBCore.XMLElement) {
-            for child in element.children {
-                switch child {
-                case .text(let t): s += t
-                case .element(let e): if e.name != "script" { walk(e) }
-                }
-            }
-        }
-        walk(body)
-        return s
     }
 
     /// `path` selects the document: the main one, or the spread wrapper's frame that shows `path`.
@@ -106,10 +80,10 @@ import AppKit
             guard prepared.isXML else { result.skipped.append("\(item.path) (served as text/html)"); continue }
             let tree = try EPUBCore.XMLDocument(data: prepared.data)
             let body = try #require(tree.root.firstChild(named: "body"), "no body in \(item.path)")
-            let hasScripts = !body.descendants(where: { $0.name == "script" }).isEmpty
-            let core = Self.coreSummary(body, droppingScripts: true)
-            let coreText = Self.coreText(body, droppingScripts: true)
-            if hasScripts { result.withScripts.append(item.path) }
+            let core = Self.coreSummary(body)
+            let coreText = body.textContent
+            let source = try EPUBCore.XMLDocument(data: prepared.data, tree: .source)
+            if source.root.firstDescendant(where: { $0.name == "script" || $0.name == "template" }) != nil { result.withScripts.append(item.path) }
 
             await host.session.go(toSpineIndex: item.index)
             #expect(host.session.currentSpineIndex == item.index)
@@ -146,7 +120,7 @@ import AppKit
         results.append(try await compareTextContent(Self.fixtures.appendingPathComponent("page-blanche.epub")))
         results.append(try await compareTextContent(Self.fixtures.appendingPathComponent("cole-voyage-of-life.epub")))
         for r in results {
-            print("[annotation-prereq] textContent \(r.book): \(r.documents) documents, \(r.elements) elements, \(r.surrogates) surrogate pairs; script elements in \(r.withScripts); skipped \(r.skipped)")
+            print("[annotation-prereq] textContent \(r.book): \(r.documents) documents, \(r.elements) elements, \(r.surrogates) surrogate pairs; script / template elements in \(r.withScripts); skipped \(r.skipped)")
         }
         #expect(results.allSatisfy { $0.documents > 0 })
     }

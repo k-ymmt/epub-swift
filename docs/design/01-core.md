@@ -191,6 +191,12 @@ system library target（`CLibXML2`）は不要（05-spike-results §2.5）。
 - 隣接するテキストノードは 1 つに結合する。
 - 要素の `id` 属性は CFI の ID アサーションに使うので保持する。
 - 空白だけのテキストノードも保持する。XML パーサはこれを落とさないため、WebKit の XML DOM と一致する。
+- M6 の前に変更: XHTML と SVG の `script` 要素は木に入れず、XHTML の `template` の子も入れない（`XMLDocument.Tree.rendered`。既定）。
+  コンテンツ JS を止めた WebKit は `script` 要素を DOM から取り除き、`template` の子は content の文書断片に移すため
+  （06-annotations §12.1）。取り除いた `script` の前後のテキストは、コメントと同じく 1 つのテキストノードに結合する
+  （WebKit では隣り合う 2 つのテキストノードになり、`reader.js` が 1 つの論理テキストノードとして数える）。大文字の `SCRIPT` や
+  他の名前空間の `script` は WebKit も残すので残す。書かれたとおりの木が要るとき（EPUB Annotations のセレクタ）は
+  `XMLDocument(data:tree: .source)` を使う。
 
 ## 5. CFI
 
@@ -259,7 +265,7 @@ spine item を探す（id が合わなければ index で引く。どちらも�
 - 同じアルゴリズムを `reader.js` に実装し、WebView 内では DOM `Range` と相互変換する（02-rendering §4.3）。
 - 両実装は同じテストベクタで検証する（`Tests/Fixtures/cfi-vectors.json`: resolve / parse / ranges / order /
   spineIndex。Core は `CFITests`、JS は実 WKWebView 上の `CFIScriptTests`）。ベクタの対象文書は
-  `Tests/Fixtures/cfi-sample.epub`（コメント分断テキスト、CDATA、ruby、サロゲートペア、全角・ダイアクリティクスを含む）。
+  `Tests/Fixtures/cfi-sample.epub`（コメント分断テキスト、CDATA、ruby、サロゲートペア、全角・ダイアクリティクス、`script`・SVG の `script`・`template` を含む）。
 
 M5 で追加: 要素の id から CFI を作る `CFIGenerator.cfi(forElementWithID:in:spineSteps:)` と、脚注として見せる要素（id の要素。それが
 `<p><a id="fn1"/>1. …</p>` のような行内の目印なら囲むブロック。`reader.js` の `noteElement` と同じ規則）の経路を返す

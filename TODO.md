@@ -70,5 +70,4 @@
 
 ## M6 の事前検証（2026-11-10）で見つけたこと
 
-- [ ] EPUBCore の CFI と `reader.js` の CFI が `script` 要素の後ろでずれる。WebView はコンテンツ JS を止めているので WebKit は `script` 要素を DOM から取り除くが、EPUBCore の軽量 DOM は保持して要素ステップに数える（`<p id="a"/><script/><noscript/><p id="b"/><script/><p id="c"/>` の `#c` が EPUBCore では `/4/12[c]`、`reader.js` では `/4/8[c]`）。ID アサーションかテキストアサーションで救えない要素では、検索結果（EPUBCore の CFI）が別の位置に解決される。fixture では childrens-literature の `nav.xhtml`（末尾の `script` なので実害なし）だけ。EPUBCore の CFI 生成・解決（`CFIGenerator` / `CFIResolver` / `DocumentLocation` の子の数え方）で `script` 要素を数えないように直し、`cfi-vectors.json` に `script` を含む文書のベクタを足す。06-annotations §5 の注釈セレクタは逆に `script` を含めて数える（§12.1）。
 - [ ] 06-annotations §12 の「他実装との往復」は未検証。他の Reading System が出した `.annotations` を入手したら M6 の実装で読み込みを確かめる。

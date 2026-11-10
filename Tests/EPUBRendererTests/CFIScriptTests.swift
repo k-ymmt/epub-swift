@@ -183,6 +183,28 @@ import EPUBCore
         #expect(try await host.renderer.pageFor(chapterHeading) == 0)
     }
 
+    /// Search results (EPUBCore CFIs) after `script` elements address the same text as `reader.js`. WebKit removes the
+    /// scripts from the DOM, so EPUBCore must not count them either (06-annotations §12.1); the paragraph has no id,
+    /// so an ID assertion could not hide a wrong step.
+    @Test func searchResultAfterAScriptMatchesTheDOM() async throws {
+        let host = try await SessionHost(url: ReaderSessionTests.fixtures.appendingPathComponent("cfi-sample.epub"))
+        await host.session.loadIfNeeded()
+        var results: [SearchResult] = []
+        for try await result in host.session.search("No id after a script") { results.append(result) }
+        let result = try #require(results.first)
+        #expect(results.count == 1)
+        let fromDOM = try await host.js("""
+            const p = Array.from(document.body.children).find(function (e) { return e.textContent === "No id after a script element."; });
+            const r = document.createRange();
+            r.setStart(p.firstChild, 0); r.setEnd(p.firstChild, 20);
+            return window.__epubReader.cfi.fromRange(r);
+            """) as? String
+        #expect(result.range.description == fromDOM)
+        #expect(result.range.description == "epubcfi(/6/2[c1]!/4[body]/20,/1:0[,No id afte],/1:20[r a script, element.])")
+        let text = try await host.js("return window.__epubReader.cfi.toRange(\(Self.quoted(result.range.description))).toString();") as? String
+        #expect(text == "No id after a script")
+    }
+
     static func quoted(_ s: String) -> String {
         let data = try! JSONEncoder().encode([s])
         let json = String(decoding: data, as: UTF8.self)

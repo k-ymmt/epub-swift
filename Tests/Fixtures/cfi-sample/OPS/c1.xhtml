@@ -10,5 +10,11 @@
 <p id="p6">Surrogate 😀 pair offset.</p>
 <img id="img1" src="dot.png" alt="dot"/>
 <p id="p7">Last paragraph with a very long sentence to verify that assertions near the end of the document are found again.</p>
+<p id="p8">Before the script <script type="text/javascript">var hidden = "script text";</script>and after it.</p>
+<script type="text/javascript">var also = 1;</script>
+<p>No id after a script element.</p>
+<svg xmlns="http://www.w3.org/2000/svg" id="svg1" width="4" height="4"><script>var s = 1;</script><rect id="r1" width="2" height="2"/></svg>
+<template id="t1"><p id="tp">Template content.</p></template>
+<p>Paragraph after a template.</p>
 </body>
 </html>
