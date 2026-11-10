@@ -1,0 +1,144 @@
+{
+  "_comment": "Test vectors for EPUB Annotations selector generation and resolution (docs/design/06-annotations.md §5, §6, §14). The book is cfi-sample.epub. `cfi` is the position (UTF-16 offsets, counted on the rendered tree without script elements and template contents). `css` / `start` / `end` are the CssSelector and its TextPositionSelector refinement (Unicode code points into the textContent of the selected element, counted on the source tree, which has the scripts). `exact` / `prefix` / `suffix` are the TextQuoteSelector (code points of the body's textContent; 32 code points of context, grown by 32 until the quote is unique). Bookmarks have no quote.",
+  "epub": "cfi-sample.epub",
+  "vectors": [
+    {
+      "name": "a word inside a paragraph with an id",
+      "motivation": "highlighting",
+      "cfi": "epubcfi(/6/2[c1]!/4[body]/4[p1],/1:8,/1:15)",
+      "source": "OPS/c1.xhtml",
+      "css": "#p1",
+      "start": 8,
+      "end": 15,
+      "exact": "Ishmael",
+      "prefix": "\nCFI sample\nCall me ",
+      "suffix": ". Some years ago—never mind how "
+    },
+    {
+      "name": "ruby: the rt text is part of textContent",
+      "motivation": "highlighting",
+      "cfi": "epubcfi(/6/2[c1]!/4[body]/8[p3],/2/1:0,/3:3)",
+      "source": "OPS/c1.xhtml",
+      "css": "#p3",
+      "start": 0,
+      "end": 9,
+      "exact": "山路やまみちを登り",
+      "prefix": "st emphasised and strong words.\n",
+      "suffix": "ながら、こう考えた。智に働けば角が立つ。\nNested span"
+    },
+    {
+      "name": "surrogate pair: UTF-16 offsets 10..17 are code points 10..16",
+      "motivation": "highlighting",
+      "cfi": "epubcfi(/6/2[c1]!/4[body]/12[p6],/1:10,/1:17)",
+      "source": "OPS/c1.xhtml",
+      "css": "#p6",
+      "start": 10,
+      "end": 16,
+      "exact": "😀 pair",
+      "prefix": "re after the section.\nSurrogate ",
+      "suffix": " offset.\n\nLast paragraph with a "
+    },
+    {
+      "name": "a paragraph without an id after a body-level script: nth-child counts the script (source tree)",
+      "motivation": "highlighting",
+      "cfi": "epubcfi(/6/2[c1]!/4[body]/20,/1:0,/1:2)",
+      "source": "OPS/c1.xhtml",
+      "css": "#body > :nth-child(11)",
+      "start": 0,
+      "end": 2,
+      "exact": "No",
+      "prefix": "xt\";and after it.\nvar also = 1;\n",
+      "suffix": " id after a script element.\nvar "
+    },
+    {
+      "name": "text after a script inside a paragraph: the position counts the script's text (source tree), the CFI does not",
+      "motivation": "highlighting",
+      "cfi": "epubcfi(/6/2[c1]!/4[body]/18[p8],/1:18,/1:21)",
+      "source": "OPS/c1.xhtml",
+      "css": "#p8",
+      "start": 45,
+      "end": 48,
+      "exact": "and",
+      "prefix": "ript var hidden = \"script text\";",
+      "suffix": " after it.\nvar also = 1;\nNo id a"
+    },
+    {
+      "name": "a range ending inside nested inline elements",
+      "motivation": "highlighting",
+      "cfi": "epubcfi(/6/2[c1]!/4[body]/10[d1]/2[p4],/1:0,/2[s1]/2[b1]/1:4)",
+      "source": "OPS/c1.xhtml",
+      "css": "#p4",
+      "start": 0,
+      "end": 16,
+      "exact": "Nested span bold",
+      "prefix": ".\n山路やまみちを登りながら、こう考えた。智に働けば角が立つ。\n",
+      "suffix": " tail end.CDATA <text> here afte"
+    },
+    {
+      "name": "a range across two paragraphs: the scope is the body (which has an id here)",
+      "motivation": "highlighting",
+      "cfi": "epubcfi(/6/2[c1]!/4[body],/4[p1]/1:8,/6[p2]/1:5)",
+      "source": "OPS/c1.xhtml",
+      "css": "#body",
+      "start": 20,
+      "end": 80,
+      "exact": "Ishmael. Some years ago—never mind how long precisely.\nFirst",
+      "prefix": "\nCFI sample\nCall me ",
+      "suffix": " emphasised and strong words.\n山路"
+    },
+    {
+      "name": "a paragraph after a template: template contents are in the source textContent",
+      "motivation": "highlighting",
+      "cfi": "epubcfi(/6/2[c1]!/4[body]/26,/1:0,/1:9)",
+      "source": "OPS/c1.xhtml",
+      "css": "#body > :nth-child(14)",
+      "start": 0,
+      "end": 9,
+      "exact": "Paragraph",
+      "prefix": "t.\nvar s = 1;\nTemplate content.\n",
+      "suffix": " after a template.\n"
+    },
+    {
+      "name": "a document without ids: the selector starts at body",
+      "motivation": "highlighting",
+      "cfi": "epubcfi(/6/4[c2]!/4/2,/1:0,/1:7)",
+      "source": "OPS/c2.xhtml",
+      "css": "body > :nth-child(1)",
+      "start": 0,
+      "end": 7,
+      "exact": "Chapter",
+      "prefix": "\n",
+      "suffix": " two\nSecond chapter. Ｃａｌｌ ｍｅ Ish"
+    },
+    {
+      "name": "a quote that is not unique: the context grows from 32 to 96 code points",
+      "motivation": "highlighting",
+      "cfi": "epubcfi(/6/4[c2]!/4/10[q4],/1:22,/1:26)",
+      "source": "OPS/c2.xhtml",
+      "css": "#q4",
+      "start": 22,
+      "end": 26,
+      "exact": "same",
+      "prefix": "s. CALL ME in capitals.\nEcho, echo, echo: the same words again and again.\nEcho, echo, echo: the ",
+      "suffix": " words again and again.\nEcho, echo, echo: the same words again and again.\nEcho, echo, echo: the "
+    },
+    {
+      "name": "a bookmark at the start of a paragraph: a collapsed TextPositionSelector, no quote",
+      "motivation": "bookmarking",
+      "cfi": "epubcfi(/6/2[c1]!/4[body]/6[p2]/1:0)",
+      "source": "OPS/c1.xhtml",
+      "css": "#p2",
+      "start": 0,
+      "end": 0
+    },
+    {
+      "name": "a bookmark on an image: the element with an empty position",
+      "motivation": "bookmarking",
+      "cfi": "epubcfi(/6/2[c1]!/4[body]/14[img1])",
+      "source": "OPS/c1.xhtml",
+      "css": "#img1",
+      "start": 0,
+      "end": 0
+    }
+  ]
+}

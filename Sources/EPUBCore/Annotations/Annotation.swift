@@ -294,10 +294,10 @@ public struct Target: Hashable, Sendable {
     /// The selectors as read from another Reading System (including any `epubswift:CfiSelector`); nil for
     /// annotations made here, and when only a CFI selector was read. Written back unchanged while the position is
     /// unchanged.
-    public private(set) var originalSelectors: [Selector]?
+    public private(set) var originalSelectors: [AnnotationSelector]?
     /// The exchange selectors `AnnotationResolver.generatingSelectors(for:)` made from the position, for export.
     /// Not stored by the storage encoding.
-    public internal(set) var generatedSelectors: [Selector]?
+    public internal(set) var generatedSelectors: [AnnotationSelector]?
     public var extensions: JSONObject
     /// The selector array exactly as read (so `refinedBy` keeps its single/array form and unknown members of
     /// known selector types survive).
@@ -309,7 +309,7 @@ public struct Target: Hashable, Sendable {
         self.extensions = extensions
     }
 
-    init(source: String, position: Position, originalSelectors: [Selector]?, originalSelectorJSON: [JSONValue]?, extensions: JSONObject) {
+    init(source: String, position: Position, originalSelectors: [AnnotationSelector]?, originalSelectorJSON: [JSONValue]?, extensions: JSONObject) {
         self.source = source
         self.position = position
         self.originalSelectors = originalSelectors
@@ -330,11 +330,11 @@ public struct Target: Hashable, Sendable {
 
 /// A selector of the specification (plus the Web Annotation TextQuoteSelector and this library's CFI selector),
 /// kept so that read selectors are not lost (06-annotations §3.4). Apps do not need to build these.
-public indirect enum Selector: Hashable, Sendable {
-    case fragment(value: String, conformsTo: String?, refinedBy: [Selector])
-    case css(value: String, refinedBy: [Selector])
+public indirect enum AnnotationSelector: Hashable, Sendable {
+    case fragment(value: String, conformsTo: String?, refinedBy: [AnnotationSelector])
+    case css(value: String, refinedBy: [AnnotationSelector])
     /// Unicode code points into the `textContent` of the selected element (or the document's `body`).
-    case textPosition(start: Int, end: Int, refinedBy: [Selector])
+    case textPosition(start: Int, end: Int, refinedBy: [AnnotationSelector])
     case textQuote(exact: String, prefix: String?, suffix: String?)
     /// `epubswift:CfiSelector`.
     case cfi(String)

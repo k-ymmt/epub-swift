@@ -417,7 +417,7 @@ public enum AnnotationCodec {
         case .array(let values)?: rawSelectors = values
         case let single?: rawSelectors = [single]
         }
-        var selectors: [Selector] = []
+        var selectors: [AnnotationSelector] = []
         for raw in rawSelectors {
             selectors.append(try readSelector(raw, depth: 0, limits: limits))
         }
@@ -444,10 +444,10 @@ public enum AnnotationCodec {
         }
     }
 
-    static func readSelector(_ value: JSONValue, depth: Int, limits: AnnotationImportLimits) throws -> Selector {
+    static func readSelector(_ value: JSONValue, depth: Int, limits: AnnotationImportLimits) throws -> AnnotationSelector {
         guard depth <= limits.maxRefinementDepth else { throw AnnotationCodecError.refinementTooDeep(limit: limits.maxRefinementDepth) }
         guard case .object(let object) = value else { throw ItemError("invalid selector") }
-        func refinements() throws -> [Selector] {
+        func refinements() throws -> [AnnotationSelector] {
             switch object["refinedBy"] {
             case nil, .null?: return []
             case .array(let values)?: return try values.map { try readSelector($0, depth: depth + 1, limits: limits) }
@@ -678,9 +678,9 @@ public enum AnnotationCodec {
         return type == cfiSelectorType || type == "CfiSelector" || type == namespace + "CfiSelector"
     }
 
-    static func selectorNode(_ selector: Selector) -> JSONWriter.Node {
+    static func selectorNode(_ selector: AnnotationSelector) -> JSONWriter.Node {
         var members = JSONWriter.Members()
-        func refinements(_ list: [Selector]) {
+        func refinements(_ list: [AnnotationSelector]) {
             guard !list.isEmpty else { return }
             // One refinement as an object, several as an array (the Web Annotation convention, §4.1).
             members.set("refinedBy", list.count == 1 ? selectorNode(list[0]) : .array(list.map(selectorNode)))
