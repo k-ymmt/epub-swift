@@ -16,9 +16,9 @@ final class SessionHost {
     let window: NSWindow
     #endif
 
-    init(url: URL, settings: ReaderSettings = ReaderSettings(), size: CGSize = CGSize(width: 400, height: 600)) async throws {
+    init(url: URL, settings: ReaderSettings = ReaderSettings(), size: CGSize = CGSize(width: 400, height: 600), initialPosition: ReadingPosition? = nil) async throws {
         let container = try await EPUBContainer(url: url)
-        session = ReaderSession(container: container, settings: settings)
+        session = ReaderSession(container: container, settings: settings, initialPosition: initialPosition)
         #if canImport(AppKit)
         window = NSWindow(contentRect: CGRect(origin: CGPoint(x: 50, y: 50), size: size), styleMask: [.titled], backing: .buffered, defer: false)
         window.contentView = session.platformView
@@ -374,6 +374,43 @@ extension TOCEntry {
         let url = EPUBSchemeHandler.url(publicationID: id, path: "OPS/a%20b c.xhtml")
         #expect(url.absoluteString.hasSuffix("/OPS/a%2520b%20c.xhtml"))
         #expect(EPUBSchemeHandler.containerPath(of: url) == "OPS/a%20b c.xhtml")
+    }
+
+    /// A position passed at creation is where the first load opens: the first `positionChanged` is already there, so
+    /// the book's first page is never shown before the restore (TODO M3).
+    @Test func initialPositionOpensThereOnTheFirstLoad() async throws {
+        let first = try await SessionHost(url: ReaderSessionTests.mobyDick)
+        await first.session.loadIfNeeded()
+        await first.session.go(toSpineIndex: 6)
+        await first.session.go(toPageInChapter: 2)
+        let saved = try #require(first.session.position)
+        #expect(saved.spineIndex == 6)
+
+        let host = try await SessionHost(url: ReaderSessionTests.mobyDick, initialPosition: saved)
+        #expect(host.session.currentSpineIndex == 6)
+        #expect(!host.session.hasLoaded)
+        let recorder = EventRecorder(host.session)
+        await host.session.loadIfNeeded()
+        #expect(host.session.currentSpineIndex == 6)
+        #expect(host.session.currentPageIndex == 2)
+        #expect(host.session.position?.cfi == saved.cfi)
+        try await host.waitUntil { !recorder.positions.isEmpty }
+        #expect(recorder.positions.allSatisfy { $0.spineIndex == 6 }, "no position outside the saved chapter")
+
+        // Later loads ignore the initial position.
+        await host.session.go(toSpineIndex: 7)
+        #expect(host.session.currentSpineIndex == 7)
+        #expect(host.session.currentPageIndex == 0)
+    }
+
+    /// A position whose CFI names no spine item opens the first linear item, as without one.
+    @Test func unresolvableInitialPositionOpensTheFirstLinearItem() async throws {
+        let cfi = try #require(CFI("epubcfi(/6/998!/4/2)"))
+        let host = try await SessionHost(url: ReaderSessionTests.mobyDick, initialPosition: ReadingPosition(cfi: cfi, spineIndex: 498))
+        await host.session.loadIfNeeded()
+        #expect(host.session.hasLoaded)
+        #expect(host.session.currentSpineIndex == 1)
+        #expect(host.session.currentPageIndex == 0)
     }
 
     /// Two sessions on one container: closing one keeps the container served for the other.

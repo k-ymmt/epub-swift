@@ -200,6 +200,8 @@ public final class ReaderSession {
     @ObservationIgnored private var transientHighlight: CFIRange?
     @ObservationIgnored private var keepTransientHighlight = false
     @ObservationIgnored private var isRunningOperation = false
+    /// Where the first load opens (`init(container:settings:initialPosition:)`); cleared once a chapter has loaded.
+    @ObservationIgnored private var initialCFI: CFI?
     @ObservationIgnored private let logger = Logger(subsystem: "EPUB", category: "ReaderSession")
 
     static let loadTimeout: Duration = .seconds(10)
@@ -213,7 +215,11 @@ public final class ReaderSession {
         #endif
     }()
 
-    public init(container: EPUBContainer, settings: ReaderSettings = ReaderSettings()) {
+    /// - Parameter initialPosition: where the first load opens, for example the position saved at the last launch.
+    ///   The first chapter shown is the one that holds it, so the book's first page never flashes before the restore.
+    ///   A position whose CFI does not resolve to a spine item opens the first linear item; one that does not resolve
+    ///   within its item opens that item's first page (as `go(to:)` does).
+    public init(container: EPUBContainer, settings: ReaderSettings = ReaderSettings(), initialPosition: ReadingPosition? = nil) {
         self.container = container
         self.publication = container.publication
         self.settings = settings
@@ -247,6 +253,10 @@ public final class ReaderSession {
         renderer.setContentHidden(true)
         schemeHandler.rootStyle = ContentInjector.rootStyle(settings: settings, pageSize: .zero, publicationID: container.id)
         currentSpineIndex = publication.linearReadingOrder.first?.index ?? 0
+        if let initialPosition, let spineIndex = publication.spineIndex(of: initialPosition.cfi) {
+            currentSpineIndex = spineIndex
+            initialCFI = initialPosition.cfi
+        }
         if publication.hasEmbeddedAnnotations {
             Task { [weak self, container] in
                 do {
@@ -421,13 +431,14 @@ public final class ReaderSession {
         renderer.resetZoom()
     }
 
-    /// Opens the first linear spine item if nothing has been loaded yet. `EPUBReaderView` calls this once it
-    /// knows its size; apps that drive the session themselves can call it after setting `viewportSize`.
+    /// Opens the initial position (`init(container:settings:initialPosition:)`), or the first linear spine item,
+    /// if nothing has been loaded yet. `EPUBReaderView` calls this once it knows its size; apps that drive the
+    /// session themselves can call it after setting `viewportSize`.
     public func loadIfNeeded() async {
         guard !hasLoaded, !isLoading, viewportSize.width > 0 else { return }
         await run { [self] in
             guard !hasLoaded else { return }
-            await loadChapter(currentSpineIndex, target: .first)
+            await loadChapter(currentSpineIndex, target: initialCFI.map { .cfi($0) } ?? .first)
         }
     }
 
@@ -505,6 +516,7 @@ public final class ReaderSession {
             let sizeChangedDuringLoad = viewportSize != layoutSize && pendingResize == nil
             isLoading = pendingResize != nil || sizeChangedDuringLoad
             hasLoaded = true
+            initialCFI = nil
             renderer.setContentHidden(false)
             if !sizeChangedDuringLoad { recordChapterMeasurement(unit: unit, pageCount: result.pageCount) }
             paginationService.setCurrentSpineIndex(leading)

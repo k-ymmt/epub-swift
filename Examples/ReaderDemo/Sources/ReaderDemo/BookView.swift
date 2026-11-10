@@ -10,7 +10,6 @@ struct BookView: View {
 
     @State private var session: ReaderSession?
     @State private var store: BookStore?
-    @State private var restorePending = false
     @State private var showAnnotations = false
     @State private var showSearch = false
     @State private var editing: Annotation?
@@ -184,15 +183,13 @@ struct BookView: View {
         .task(id: book.id) {
             do {
                 let container = try await EPUBContainer(url: book.url)
-                let session = ReaderSession(container: container)
                 for warning in container.publication.warnings {
                     print("warning: \(warning)")
                 }
                 let store = BookStore(bookID: book.id, publication: container.publication)
+                // The session opens at the saved position once the view has a size.
+                let session = ReaderSession(container: container, initialPosition: store.position)
                 session.annotations = store.annotations
-                // The session loads its first chapter once the view has a size; the saved position is applied on
-                // the first `positionChanged` (see `reader(_:)`).
-                restorePending = store.position != nil
                 self.store = store
                 self.session = session
             } catch {
@@ -305,13 +302,7 @@ struct BookView: View {
                 case .tapped(_, let zone):
                     if zone == .center { status = "" }
                 case .positionChanged(let position):
-                    if restorePending, let saved = store?.position {
-                        // First position after the initial load: go back to where the book was closed.
-                        restorePending = false
-                        Task { await session.go(to: saved) }
-                    } else {
-                        store?.position = position
-                    }
+                    store?.position = position
                     previousPosition = lastPosition
                     lastPosition = position
                 case .annotationTapped(let id, _):

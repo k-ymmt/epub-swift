@@ -36,9 +36,9 @@ struct BookScreen: View {
         }
         .task {
             let container = try await EPUBContainer(url: fileURL)
-            session = ReaderSession(container: container, settings: settings)
+            // 前回位置は作成時に渡す。最初の読み込みがその章・ページを開く（最初の章が一瞬見えることはない）
+            session = ReaderSession(container: container, settings: settings, initialPosition: lastPosition)
             session?.annotations = annotations   // M6 で変更: highlights → annotations
-            if let last = lastPosition { await session?.go(to: last) }
         }
     }
 }
@@ -96,8 +96,13 @@ public struct ReadingPosition: Codable, Hashable, Sendable {
 ```
 
 M3 実装済み。位置は CFI だけで決まり、残りは記録時点の表示用の値。復元は `ReaderSession.go(to:)` に渡す。
-アプリが開いた直後に前回位置へ戻すには、最初の章が表示された（最初の `positionChanged`）あとで `go(to:)` を呼ぶ
-（`ReaderDemo` の `BookView` 参照）。読み込み前に `go(to:)` を受け付ける API は M3 では作っていない（`TODO.md`）。
+アプリが開いた直後に前回位置へ戻すには、`ReaderSession(container:settings:initialPosition:)` に渡す（M6 後に追加）。
+`loadIfNeeded()` の最初の読み込みが `go(to:)` と同じ規則でその位置の章・ページを開くので、最初の `positionChanged` から
+前回位置になり、本の先頭が一瞬見えることはない（`ReaderDemo` の `BookView` 参照）。CFI がどの spine item も指さない位置は
+無視して最初の線形 spine item を開き、章内で解決できない CFI はその章の先頭ページを開く。初期位置は最初の読み込みが
+完了した時点で捨てる（読み込みが失敗したら次の `loadIfNeeded()` で再び使う）。`position` は最初の読み込みまで nil のまま。
+M3 の時点ではこの引数がなく、アプリは最初の `positionChanged` を待って `go(to:)` を呼んでいた（`viewportSize` が決まる前の
+`go(to:)` は何もしない。これは今も同じ）。
 
 ### 2.5 注釈（`Annotation`）
 
@@ -183,7 +188,8 @@ M1 実装済み:
 ```swift
 @MainActor @Observable
 public final class ReaderSession {
-    public init(container: EPUBContainer, settings: ReaderSettings = .init())
+    public init(container: EPUBContainer, settings: ReaderSettings = .init(),
+                initialPosition: ReadingPosition? = nil)   // initialPosition は M6 後に追加
 
     public let publication: Publication
     public let container: EPUBContainer

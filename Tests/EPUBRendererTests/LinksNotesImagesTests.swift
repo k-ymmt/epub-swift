@@ -25,6 +25,7 @@ final class EventRecorder {
     var notes: [NoteContent] { events.compactMap { if case .noteref(let note) = $0 { note } else { nil } } }
     var images: [TappedImage] { events.compactMap { if case .imageTapped(let image) = $0 { image } else { nil } } }
     var taps: [CGPoint] { events.compactMap { if case .tapped(let point, _) = $0 { point } else { nil } } }
+    var positions: [ReadingPosition] { events.compactMap { if case .positionChanged(let position) = $0 { position } else { nil } } }
 }
 
 /// Links, noterefs and image taps (M5, docs/design/02-rendering.md §4.2, 03-api §3.4) on `links-sample.epub`.

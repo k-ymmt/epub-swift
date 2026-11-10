@@ -16,7 +16,6 @@
 
 ## M3 の積み残し（2026-11-09）
 
-- [ ] `ReaderSession` に読み込み前の初期位置を渡す手段がない（`go(to:)` は `viewportSize` が決まり章が読み込まれてから有効）。アプリは最初の `positionChanged` を待って `go(to:)` を呼ぶ必要があり、最初の章が一瞬見える。`ReaderSession(container:settings:initialPosition:)` か `loadIfNeeded(at:)` を検討する。
 - [ ] `cfiForPage` はページ先頭の「見えている最初のテキスト」を `caretRangeFromPoint` の数点のプローブと矩形走査で決めるため、浮動要素や多段のテーブルではページ先頭より後ろの文字を返すことがある。`cfiForVisibleRange()`（02-rendering §4.1）と合わせて、ページ内の全テキスト矩形から厳密に先頭を選ぶ実装を検討する。
 - [ ] iOS の `buildMenu(with:)` による編集メニュー追加はシミュレータの手動確認のみ（Renderer の自動テストは macOS の `willOpenMenu` 経路だけ）。iOS で動く回帰テストの置き場（M1 の積み残し）と合わせて決める。
 - [ ] `ReaderSession.annotations`（M6 で `highlights` から改名）の変更は毎回表示中の面の全ハイライトを `setHighlights` で描き直す（差分適用なし）。数百件規模で設定変更やタップのたびに全件を解決するコストを測り、必要なら id ごとの追加・削除に分ける。

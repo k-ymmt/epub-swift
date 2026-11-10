@@ -70,7 +70,7 @@ UTF-16 コードユニット、`CFI` は spine ステップを保持し `Publica
 `SelectionAction` は EPUBRenderer に置き `ReaderSession.selectionActions` を公開する、選択メニューは `currentSelection()` を
 その場で呼ばずデバウンス済みの `currentSelection` を使う、`cfiForVisibleRange` は未実装、`TextLength` は `TextMap` に統合、
 `SearchResult.matchedText` と `ReaderSession.pageIndex(for:)` を追加。
-積み残しは `TODO.md` に置く（読み込み前の初期位置指定、`cfiForPage` の確率的な先頭判定、iOS の選択メニューの自動テスト、
+積み残しは `TODO.md` に置く（読み込み前の初期位置指定（M6 後に `ReaderSession(container:settings:initialPosition:)` で解消）、`cfiForPage` の確率的な先頭判定、iOS の選択メニューの自動テスト、
 ハイライトのスタイル更新時の差分適用など）。
 
 ### M4. FXL と見開き
