@@ -15,8 +15,10 @@ public enum ReaderEvent: Sendable {
     /// Book-wide page numbering changed: a chapter was measured, or the layout changed and the counts were reset
     /// to estimates / restored from the cache (M2).
     case paginationUpdated(BookPagination)
-    /// A tap on one of `ReaderSession.highlights`. Rects are in the visible page's coordinate space (M3).
-    case highlightTapped(Highlight.ID, rects: [CGRect])
+    /// A tap on a drawn highlight: one of `ReaderSession.annotations`, or of `publicationAnnotations` (look the id
+    /// up in both; the app's annotation is on top when both cover the tap). Rects are in the visible page's
+    /// coordinate space (M6; replaces `highlightTapped`).
+    case annotationTapped(Annotation.ID, rects: [CGRect])
     /// The text selection changed; nil when it was cleared (M3). Mirrors `ReaderSession.currentSelection`.
     case selectionChanged(SelectedText?)
     /// A fixed-layout face was pinch-zoomed in (`true`) or returned to scale 1 (M4). Mirrors `ReaderSession.isZoomed`.

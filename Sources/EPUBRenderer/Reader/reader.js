@@ -11,7 +11,7 @@
 //   noteref {href, rect, sameDocument, html?, text?, cfi?}   click on <a epub:type="noteref"> (M5); the note's content
 //                                   when it is in the same document
 //   imageTap {src, alt, rect, x, y} click on <img> / SVG <image> outside a link (M5); not on fixed-layout pages
-//   highlightTap {id, rects}        click/tap inside a highlight set with setHighlights
+//   highlightTap {id, rects}        click/tap inside a highlight set with setHighlights (the topmost one)
 //   tap {x, y}                      click/tap on anything that is not a link (viewport coordinates)
 //   selectionChanged {cfiRange, text, rects} | null   the selection changed (debounced)
 // Positions are EPUB CFI strings; the CFI module below mirrors EPUBCore (docs/design/01-core.md §5).
@@ -26,6 +26,9 @@
   if (window.__epubReader) { return; }
 
   const SENTINEL_ID = "__reader_end";
+  // The overlay layer for outline highlights: the last child of <html>, after <body>, so that no CFI step inside
+  // <body> changes (06-annotations §10.3).
+  const OVERLAY_ID = "__reader_overlay";
   const state = {
     pageWidth: 0,
     pageHeight: 0,
@@ -34,8 +37,10 @@
     readySent: false,
     // Spine steps of this document ("/6/14[xchapter_001]"), set by `layout`; prefixed to every generated CFI.
     spineSteps: [],
-    // [{id, range}] of the highlights currently drawn, for hit testing.
+    // [{id, range}] of the highlights currently drawn, bottom first, for hit testing.
     highlights: [],
+    // [{range, color}] of the outline highlights, drawn as boxes in the overlay layer (06-annotations §10.3).
+    outlines: [],
     // Pre-paginated document inside a spread wrapper: one page, no columns (M4).
     fixedLayout: false,
     // Columns per page asked for (2 for a reflowable spread in horizontal writing; vertical writing ignores it, M4).
@@ -210,6 +215,7 @@
     if (state.fixedLayout) {
       // The page is the publisher's fixed design: no sentinel, no columns, exactly one page (02-rendering §6.1).
       state.pageCount = 1;
+      drawOverlay();
       return { pageCount: 1, writingMode: state.writingMode, columnsPerPage: 1 };
     }
     const columns = applyColumns();
@@ -217,6 +223,7 @@
     void root().offsetWidth; // flush layout
     state.pageCount = computePageCount();
     applyExtent();
+    drawOverlay();
     return { pageCount: state.pageCount, writingMode: state.writingMode, columnsPerPage: columns };
   }
 
@@ -284,6 +291,7 @@
     void root().offsetWidth;
     state.pageCount = computePageCount();
     applyExtent();
+    drawOverlay();
     return { pageCount: state.pageCount, writingMode: state.writingMode, columnsPerPage: columns };
   }
 
@@ -800,7 +808,7 @@
           }
           if (!fallbackElement) {
             const el = document.elementFromPoint(cx, cy);
-            if (el && el !== document.body && el !== root() && el.id !== SENTINEL_ID) { fallbackElement = el; }
+            if (el && el !== document.body && el !== root() && el.id !== SENTINEL_ID && !isInOverlay(el)) { fallbackElement = el; }
           }
         }
       }
@@ -940,31 +948,80 @@
 
   function cssIdent(id) { return HIGHLIGHT_PREFIX + String(id).replace(/[^A-Za-z0-9_-]/g, "_"); }
 
-  // Draws [{id, cfiRange, color, style: "background" | "underline"}]. Replaces the previous set. Returns the ids
-  // whose range resolved.
+  // Draws [{id, cfiRange, color, style: "solid" | "underline" | "strikethrough" | "outline"}] (06-annotations §10.2).
+  // Replaces the previous set. Later items are drawn above earlier ones and win the hit test. Returns the ids whose
+  // range resolved.
   function setHighlights(list) {
     if (typeof CSS === "undefined" || !CSS.highlights) { return []; }
     for (const key of Array.from(CSS.highlights.keys())) {
       if (key.indexOf(HIGHLIGHT_PREFIX) === 0) { CSS.highlights.delete(key); }
     }
     state.highlights = [];
+    state.outlines = [];
     const rules = [];
     const applied = [];
+    let priority = 0;
     for (const item of list || []) {
       const range = CFI.toRange(item.cfiRange);
       if (!range || range.collapsed) { continue; }
-      const key = cssIdent(item.id);
-      CSS.highlights.set(key, new Highlight(range));
-      if (item.style === "underline") {
-        rules.push("::highlight(" + key + ") { text-decoration: underline; text-decoration-color: " + item.color + "; text-decoration-thickness: 2px; text-underline-offset: 2px; }");
+      if (item.style === "outline") {
+        state.outlines.push({ range: range, color: item.color });
       } else {
-        rules.push("::highlight(" + key + ") { background-color: " + item.color + "; }");
+        const key = cssIdent(item.id);
+        const h = new Highlight(range);
+        h.priority = priority++;
+        CSS.highlights.set(key, h);
+        if (item.style === "underline" || item.style === "strikethrough") {
+          const line = item.style === "underline" ? "underline" : "line-through";
+          const offset = item.style === "underline" ? " text-underline-offset: 2px;" : "";
+          rules.push("::highlight(" + key + ") { text-decoration: " + line + "; text-decoration-color: " + item.color + "; text-decoration-thickness: 2px;" + offset + " }");
+        } else {
+          rules.push("::highlight(" + key + ") { background-color: " + item.color + "; }");
+        }
       }
       state.highlights.push({ id: item.id, range: range });
       applied.push(item.id);
     }
     highlightStyleElement().textContent = rules.join("\n");
+    drawOverlay();
     return applied;
+  }
+
+  function isInOverlay(node) {
+    for (let n = node; n; n = n.parentNode) { if (n.id === OVERLAY_ID) { return true; } }
+    return false;
+  }
+
+  // (Re)draws the outline boxes: one 2px frame per client rect of each range, in document coordinates (client
+  // rects plus the scroll offset). The boxes do not follow the text by themselves, so layout, applySettings and late
+  // reflows call this again (06-annotations §10.3, §12.3). The layer is removed when there is nothing to draw.
+  function drawOverlay() {
+    let o = document.getElementById(OVERLAY_ID);
+    if (!state.outlines.length) {
+      if (o) { o.remove(); }
+      return;
+    }
+    if (!o) {
+      o = document.createElement("div");
+      o.id = OVERLAY_ID;
+      o.setAttribute("aria-hidden", "true");
+      o.setAttribute("style", "position: absolute; left: 0; top: 0; width: 0; height: 0; margin: 0; padding: 0; border: 0; pointer-events: none;");
+    }
+    // Always the last child of <html>, also when the document added nodes after it.
+    if (o.parentNode !== root() || root().lastChild !== o) { root().appendChild(o); }
+    while (o.firstChild) { o.removeChild(o.firstChild); }
+    const sx = window.scrollX, sy = window.scrollY;
+    for (const outline of state.outlines) {
+      const rects = outline.range.getClientRects();
+      for (let k = 0; k < rects.length; k++) {
+        const c = rects[k];
+        if (c.width <= 0 || c.height <= 0) { continue; }
+        const b = document.createElement("div");
+        b.setAttribute("style", "position: absolute; box-sizing: border-box; margin: 0; padding: 0; border: 2px solid " + outline.color
+          + "; border-radius: 2px; left: " + (c.left + sx) + "px; top: " + (c.top + sy) + "px; width: " + c.width + "px; height: " + c.height + "px;");
+        o.appendChild(b);
+      }
+    }
   }
 
   // Whether a CFI's spine steps name this document (a CFI without spine steps, or a document laid out without
@@ -995,7 +1052,8 @@
   }
 
   function highlightAt(x, y) {
-    for (const h of state.highlights) {
+    for (let i = state.highlights.length - 1; i >= 0; i--) {
+      const h = state.highlights[i];
       const rects = h.range.getClientRects();
       for (let k = 0; k < rects.length; k++) {
         const r = rects[k];
@@ -1550,6 +1608,7 @@
       const before = state.pageCount;
       state.pageCount = computePageCount();
       applyExtent();
+      drawOverlay();
       if (state.pageCount !== before) {
         post("pageCountChanged", { pageCount: state.pageCount });
       }

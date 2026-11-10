@@ -208,8 +208,9 @@ protocol SpineRenderer: AnyObject {
     func pageFor(_ cfi: CFI) async throws -> Int?
     /// Client rects (viewport coordinates of the three-slot frame) of a CFI range.
     func rects(for range: CFIRange) async throws -> [CGRect]
-    /// Draws the highlights (replacing the previous set). Returns the ids that resolved.
-    func setHighlights(_ highlights: [Highlight]) async throws -> [String]
+    /// Draws the highlights (replacing the previous set), later ones above earlier ones. Returns the ids that
+    /// resolved.
+    func setHighlights(_ highlights: [HighlightDrawing]) async throws -> [String]
     /// Draws (or with nil, removes) the single temporary highlight.
     func setTransientHighlight(_ range: CFIRange?) async throws
     func currentSelection() async throws -> BridgeSelection?
@@ -218,4 +219,34 @@ protocol SpineRenderer: AnyObject {
     func snapshot(slot: Int) async throws -> (image: CGImage, scale: CGFloat)?
     /// The slot currently aligned with the visible area.
     var visibleSlot: Int { get }
+}
+
+/// One highlight as `reader.js` draws it (06-annotations §10.2). `id` is the bridge id (layer prefix plus the
+/// annotation id).
+struct HighlightDrawing: Hashable, Sendable {
+    enum Style: String, Sendable {
+        case solid, underline, strikethrough, outline
+    }
+
+    var id: String
+    var range: CFIRange
+    var color: ReaderColor
+    var style: Style
+
+    /// How `annotation` is drawn with `theme`: `.other` styles draw solid, colors outside the palette in the
+    /// fallback color.
+    init(id: String, annotation: Annotation, range: CFIRange, theme: ReaderTheme) {
+        self.id = id
+        self.range = range
+        var color = theme.color(for: annotation.color)
+        switch annotation.style {
+        case .underline: style = .underline
+        case .strikethrough: style = .strikethrough
+        case .outline: style = .outline
+        case .solid, .other:
+            style = .solid
+            color.alpha *= ReaderTheme.solidHighlightOpacity
+        }
+        self.color = color
+    }
 }

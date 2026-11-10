@@ -420,6 +420,31 @@ public enum HighlightColor: Hashable, Sendable, RawRepresentable {
     }
 }
 
+/// Encoded as the label string (palettes keyed by color encode as JSON objects).
+extension HighlightColor: Codable, CodingKeyRepresentable {
+    public init(from decoder: any Decoder) throws {
+        self.init(rawValue: try decoder.singleValueContainer().decode(String.self))
+    }
+
+    public func encode(to encoder: any Encoder) throws {
+        var container = encoder.singleValueContainer()
+        try container.encode(rawValue)
+    }
+
+    public var codingKey: any CodingKey { Key(stringValue: rawValue) }
+
+    public init?<T: CodingKey>(codingKey: T) {
+        self.init(rawValue: codingKey.stringValue)
+    }
+
+    private struct Key: CodingKey {
+        var stringValue: String
+        var intValue: Int? { nil }
+        init(stringValue: String) { self.stringValue = stringValue }
+        init?(intValue: Int) { nil }
+    }
+}
+
 /// The four highlight styles of the specification, plus any other value read from a file (kept, drawn solid).
 public enum HighlightStyle: Hashable, Sendable, RawRepresentable {
     case solid, underline, strikethrough, outline

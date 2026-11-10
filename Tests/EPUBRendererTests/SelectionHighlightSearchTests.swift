@@ -67,48 +67,57 @@ import AppKit
         collector.cancel()
     }
 
+    /// The CSS highlight key `reader.js` uses for an app annotation.
+    static func key(_ annotation: Annotation) -> String {
+        "reader-h-" + ("a:" + annotation.id).map { $0.isASCII && ($0.isLetter || $0.isNumber || $0 == "_" || $0 == "-") ? String($0) : "_" }.joined()
+    }
+
     @Test func highlightsFollowTheChapterAndTheSet() async throws {
         let host = try await SessionHost(url: Self.sample)
         await host.session.loadIfNeeded()
-        let inC1 = Highlight(range: try #require(CFIRange("epubcfi(/6/2[c1]!/4[body]/4[p1],/1:0,/1:15)")))
-        let inC2 = Highlight(range: try #require(CFIRange("epubcfi(/6/4[c2]!/4[body]/2[p1],/1:0,/1:4)")), style: .underline(ReaderColor(hex: 0xFF0000)))
-        let broken = Highlight(range: try #require(CFIRange("epubcfi(/6/2[c1]!/4[body]/40[nope],/1:0,/1:4)")))
-        host.session.highlights = [inC1, inC2, broken]
+        let publication = host.session.publication
+        let inC1 = Annotation.highlight(try #require(CFIRange("epubcfi(/6/2[c1]!/4[body]/4[p1],/1:0,/1:15)")), in: publication)
+        let inC2 = Annotation.highlight(try #require(CFIRange("epubcfi(/6/4[c2]!/4[body]/2[p1],/1:0,/1:4)")), in: publication, color: .pink, style: .underline)
+        let broken = Annotation.highlight(try #require(CFIRange("epubcfi(/6/2[c1]!/4[body]/40[nope],/1:0,/1:4)")), in: publication)
+        // Bookmarks are not drawn.
+        let bookmark = Annotation.bookmark(at: try #require(CFI("epubcfi(/6/2[c1]!/4[body]/4[p1]/1:0)")), in: publication)
+        host.session.annotations = [inC1, inC2, broken, bookmark]
 
-        func key(_ highlight: Highlight) -> String { "reader-h-" + highlight.id.uuidString }
-        try await host.waitUntil { (try? await self.highlightKeys(host)) == [key(inC1)] }
-        let rects = await host.session.rects(for: inC1.range)
+        try await host.waitUntil { (try? await self.highlightKeys(host)) == [Self.key(inC1)] }
+        let rects = await host.session.rects(for: try #require(inC1.range))
         #expect(!rects.isEmpty)
-        #expect(await host.session.rects(for: inC2.range).isEmpty)
-        #expect(await host.session.rects(for: broken.range).isEmpty)
+        #expect(await host.session.rects(for: try #require(inC2.range)).isEmpty)
+        #expect(await host.session.rects(for: try #require(broken.range)).isEmpty)
         let rule = try await host.js("return document.getElementById('__reader_highlights').textContent;") as? String
-        #expect(rule?.contains("::highlight(\(key(inC1))) { background-color: rgba(255, 224, 102, 0.6); }") == true)
+        // Solid: the palette's yellow (FFCC00) at 0.4.
+        #expect(rule?.contains("::highlight(\(Self.key(inC1))) { background-color: rgba(255, 204, 0, 0.4); }") == true)
 
-        // The next chapter draws its own highlight, with the underline style.
+        // The next chapter draws its own highlight, with the underline style in the opaque palette color.
         await host.session.go(toSpineIndex: 1)
-        try await host.waitUntil { (try? await self.highlightKeys(host)) == [key(inC2)] }
+        try await host.waitUntil { (try? await self.highlightKeys(host)) == [Self.key(inC2)] }
         let rule2 = try await host.js("return document.getElementById('__reader_highlights').textContent;") as? String
-        #expect(rule2?.contains("text-decoration: underline") == true)
+        #expect(rule2?.contains("text-decoration: underline; text-decoration-color: rgba(255, 79, 139, 1.0)") == true)
 
         // Removing from the set removes the drawing.
-        host.session.highlights = []
+        host.session.annotations = []
         try await host.waitUntil { (try? await self.highlightKeys(host)) == [] }
     }
 
-    @Test func tappingAHighlightEmitsHighlightTapped() async throws {
+    @Test func tappingAHighlightEmitsAnnotationTapped() async throws {
         let host = try await SessionHost(url: Self.sample)
-        var tapped: [(Highlight.ID, [CGRect])] = []
+        var tapped: [(Annotation.ID, [CGRect])] = []
         let stream = host.session.events
         let collector = Task { @MainActor in
             for await event in stream {
-                if case .highlightTapped(let id, let rects) = event { tapped.append((id, rects)) }
+                if case .annotationTapped(let id, let rects) = event { tapped.append((id, rects)) }
             }
         }
         await host.session.loadIfNeeded()
-        let highlight = Highlight(range: try #require(CFIRange("epubcfi(/6/2[c1]!/4[body]/4[p1],/1:0,/1:15)")))
-        host.session.highlights = [highlight]
+        let range = try #require(CFIRange("epubcfi(/6/2[c1]!/4[body]/4[p1],/1:0,/1:15)"))
+        let highlight = Annotation.highlight(range, in: host.session.publication)
+        host.session.annotations = [highlight]
         try await host.waitUntil { (try? await self.highlightKeys(host))?.count == 1 }
-        let rects = await host.session.rects(for: highlight.range)
+        let rects = await host.session.rects(for: range)
         let first = try #require(rects.first)
         _ = try await host.js("""
             const el = document.getElementById("p1");

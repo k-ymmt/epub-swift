@@ -338,14 +338,9 @@ final class WebViewSpineRenderer: NSObject, SpineRenderer {
         return BridgeMessage.rects(from: result)
     }
 
-    func setHighlights(_ highlights: [Highlight]) async throws -> [String] {
+    func setHighlights(_ highlights: [HighlightDrawing]) async throws -> [String] {
         let list: [[String: Any]] = highlights.map { highlight in
-            let style: String
-            switch highlight.style {
-            case .background: style = "background"
-            case .underline: style = "underline"
-            }
-            return ["id": highlight.id.uuidString, "cfiRange": highlight.range.description, "color": highlight.style.color.cssString, "style": style]
+            ["id": highlight.id, "cfiRange": highlight.range.description, "color": highlight.color.cssString, "style": highlight.style.rawValue]
         }
         let result = try await call("return window.__epubReader.setHighlights(list)", arguments: ["list": list])
         return (result as? [String]) ?? []

@@ -10,7 +10,7 @@ import UIKit
 ///
 /// Loads a spine item into the web view, pages within it, crosses chapter boundaries, applies `ReaderSettings`
 /// with position restoration, provides page snapshots for the UI layer's page-turn effects (M1 / M2), and keeps
-/// the reading position as a CFI (`position`), the selection, the highlights and the search (M3).
+/// the reading position as a CFI (`position`), the selection, the annotations (M6) and the search (M3).
 @MainActor
 @Observable
 public final class ReaderSession {
@@ -97,14 +97,37 @@ public final class ReaderSession {
     /// the menu opens; not observed (EPUBUI assigns it on every view update, since handlers cannot be compared).
     @ObservationIgnored public var selectionActions: [SelectionAction] = []
 
-    /// Highlights to draw (03-api §2.5). The app owns and persists them; the session draws the ones in the current
-    /// chapter whenever the set changes and after every chapter load. Ranges that no longer resolve are skipped.
-    public var highlights: [Highlight] = [] {
+    /// The app's annotations, highlights and bookmarks alike (docs/design/06-annotations.md §10.1). The app owns and
+    /// persists them. The session draws the highlights with a range (`motivation == .highlighting`) on the visible
+    /// face whenever the list changes and after every load; bookmarks are not drawn, and ranges that no longer
+    /// resolve are skipped.
+    public var annotations: [Annotation] = [] {
         didSet {
-            guard highlights != oldValue else { return }
+            guard annotations != oldValue else { return }
+            appAnnotationsBySpine = Self.drawable(annotations, in: publication)
             enqueue { [weak self] in await self?.applyHighlights() }
         }
     }
+
+    /// The annotations shipped in the EPUB (`META-INF/annotations.json`), read in the background after the session
+    /// is created. Read-only; drawn under the app's annotations while `showsPublicationAnnotations` is on.
+    public private(set) var publicationAnnotations: [Annotation] = [] {
+        didSet {
+            publicationAnnotationsBySpine = Self.drawable(publicationAnnotations, in: publication)
+            enqueue { [weak self] in await self?.applyHighlights() }
+        }
+    }
+
+    public var showsPublicationAnnotations = true {
+        didSet {
+            guard showsPublicationAnnotations != oldValue else { return }
+            enqueue { [weak self] in await self?.applyHighlights() }
+        }
+    }
+
+    /// Drawable highlights by spine index.
+    @ObservationIgnored private var appAnnotationsBySpine: [Int: [(annotation: Annotation, range: CFIRange)]] = [:]
+    @ObservationIgnored private var publicationAnnotationsBySpine: [Int: [(annotation: Annotation, range: CFIRange)]] = [:]
 
     /// Size of one visible page. Set by `EPUBReaderView`; changing it re-layouts and restores the position.
     public var viewportSize: CGSize = .zero {
@@ -224,6 +247,16 @@ public final class ReaderSession {
         renderer.setContentHidden(true)
         schemeHandler.rootStyle = ContentInjector.rootStyle(settings: settings, pageSize: .zero, publicationID: container.id)
         currentSpineIndex = publication.linearReadingOrder.first?.index ?? 0
+        if publication.hasEmbeddedAnnotations {
+            Task { [weak self, container] in
+                do {
+                    let set = try await container.embeddedAnnotations()
+                    self?.publicationAnnotations = set?.items ?? []
+                } catch {
+                    self?.logger.debug("embedded annotations failed: \(error.localizedDescription)")
+                }
+            }
+        }
         paginationService.onChapterMeasured = { [weak self] _, _ in self?.rebuildPagination() }
         rebuildPagination()
         #if canImport(UIKit)
@@ -656,6 +689,10 @@ public final class ReaderSession {
         guard hasLoaded else { return }
         isLoading = true
         enqueue { [weak self] in await self?.relayoutPreservingPosition() }
+        // Highlight colors come from the theme's palette.
+        if settings.theme != oldValue.theme {
+            enqueue { [weak self] in await self?.applyHighlights() }
+        }
     }
 
     private func viewportSizeDidChange() {
@@ -786,15 +823,48 @@ public final class ReaderSession {
         }
     }
 
-    // MARK: - Highlights
+    // MARK: - Annotations
+
+    /// Resolves the positions of an imported set against this book and checks that the set is about it
+    /// (06-annotations §6, §7). Runs in the background.
+    public func resolve(_ set: AnnotationSet) async -> AnnotationResolution {
+        await AnnotationResolver(container: container).resolve(set)
+    }
+
+    /// Bridge id prefixes: the two layers may hold the same annotation id.
+    private static let appLayerPrefix = "a:"
+    private static let publicationLayerPrefix = "p:"
+
+    private static func drawable(_ annotations: [Annotation], in publication: Publication) -> [Int: [(annotation: Annotation, range: CFIRange)]] {
+        var out: [Int: [(annotation: Annotation, range: CFIRange)]] = [:]
+        for annotation in annotations where annotation.motivation == .highlighting {
+            guard let range = annotation.range, let index = publication.spineIndex(of: range.start) else { continue }
+            out[index, default: []].append((annotation, range))
+        }
+        return out
+    }
 
     /// Draws the highlights of the documents on `unit` (default: the visible face), replacing the previous set.
+    /// Publication annotations go first so that the app's are drawn above them.
     private func applyHighlights(for unit: SpreadPlan.Unit? = nil) async {
         if unit == nil { guard hasLoaded else { return } }
-        let indices = Set(unit?.spineIndices ?? currentUnit?.spineIndices ?? [currentSpineIndex])
-        let visible = highlights.filter { publication.spineIndex(of: $0.range.start).map(indices.contains) ?? false }
+        let indices = unit?.spineIndices ?? currentUnit?.spineIndices ?? [currentSpineIndex]
+        let theme = settings.theme
+        var drawings: [HighlightDrawing] = []
+        if showsPublicationAnnotations {
+            for index in indices {
+                for item in publicationAnnotationsBySpine[index] ?? [] {
+                    drawings.append(HighlightDrawing(id: Self.publicationLayerPrefix + item.annotation.id, annotation: item.annotation, range: item.range, theme: theme))
+                }
+            }
+        }
+        for index in indices {
+            for item in appAnnotationsBySpine[index] ?? [] {
+                drawings.append(HighlightDrawing(id: Self.appLayerPrefix + item.annotation.id, annotation: item.annotation, range: item.range, theme: theme))
+            }
+        }
         do {
-            _ = try await renderer.setHighlights(visible)
+            _ = try await renderer.setHighlights(drawings)
         } catch {
             logger.debug("setHighlights failed: \(error.localizedDescription)")
         }
@@ -982,8 +1052,9 @@ public final class ReaderSession {
                 : .center
             emit(.tapped(point, zone: zone))
         case .highlightTap(let id, let rects):
-            if let uuid = UUID(uuidString: id) {
-                emit(.highlightTapped(uuid, rects: pageRects(fromViewport: rects)))
+            for prefix in [Self.appLayerPrefix, Self.publicationLayerPrefix] where id.hasPrefix(prefix) {
+                emit(.annotationTapped(String(id.dropFirst(prefix.count)), rects: pageRects(fromViewport: rects)))
+                return
             }
         case .selectionChanged(let selection):
             let selected = selection.map { SelectedText(range: $0.range, text: $0.text, rects: pageRects(fromViewport: $0.rects)) }

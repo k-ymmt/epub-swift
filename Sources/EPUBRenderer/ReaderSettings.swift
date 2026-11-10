@@ -86,13 +86,58 @@ public struct ReaderTheme: Codable, Hashable, Sendable {
     public var link: ReaderColor
     /// Dims images and sets `color-scheme: dark`.
     public var isDark: Bool
+    /// The colors of the highlight labels (docs/design/06-annotations.md §10.2). Line styles (underline,
+    /// strikethrough, outline) use the color as it is; `solid` draws it behind the text at `solidHighlightOpacity`
+    /// times its alpha.
+    public var annotationPalette: [HighlightColor: ReaderColor]
+    /// The color of labels outside the specification (`.other`) and of labels missing from the palette.
+    public var annotationFallbackColor: ReaderColor
 
-    public init(foreground: ReaderColor, background: ReaderColor, link: ReaderColor, isDark: Bool) {
+    /// Alpha factor of `solid` highlights.
+    static let solidHighlightOpacity = 0.4
+
+    public init(
+        foreground: ReaderColor,
+        background: ReaderColor,
+        link: ReaderColor,
+        isDark: Bool,
+        annotationPalette: [HighlightColor: ReaderColor]? = nil,
+        annotationFallbackColor: ReaderColor? = nil
+    ) {
         self.foreground = foreground
         self.background = background
         self.link = link
         self.isDark = isDark
+        self.annotationPalette = annotationPalette ?? (isDark ? Self.darkPalette : Self.lightPalette)
+        self.annotationFallbackColor = annotationFallbackColor ?? (isDark ? Self.darkFallback : Self.lightFallback)
     }
+
+    /// The color a highlight label is drawn in.
+    public func color(for label: HighlightColor) -> ReaderColor {
+        annotationPalette[label] ?? annotationFallbackColor
+    }
+
+    public static let lightPalette: [HighlightColor: ReaderColor] = [
+        .pink: ReaderColor(hex: 0xFF4F8B),
+        .orange: ReaderColor(hex: 0xFF9500),
+        .yellow: ReaderColor(hex: 0xFFCC00),
+        .green: ReaderColor(hex: 0x34C759),
+        .blue: ReaderColor(hex: 0x1E88FF),
+        .purple: ReaderColor(hex: 0xAF52DE),
+    ]
+
+    /// Darker colors, so that solid highlights do not glare on a dark page.
+    public static let darkPalette: [HighlightColor: ReaderColor] = [
+        .pink: ReaderColor(hex: 0xC2406E),
+        .orange: ReaderColor(hex: 0xC07418),
+        .yellow: ReaderColor(hex: 0xB89A12),
+        .green: ReaderColor(hex: 0x2E9E50),
+        .blue: ReaderColor(hex: 0x2F78C8),
+        .purple: ReaderColor(hex: 0x8E4CB8),
+    ]
+
+    static let lightFallback = ReaderColor(hex: 0x8E8E93)
+    static let darkFallback = ReaderColor(hex: 0x6E6E73)
 
     public static let light = ReaderTheme(
         foreground: ReaderColor(hex: 0x1C1C1E),
@@ -114,4 +159,21 @@ public struct ReaderTheme: Codable, Hashable, Sendable {
         link: ReaderColor(hex: 0x7FB2FF),
         isDark: true
     )
+
+    private enum CodingKeys: String, CodingKey {
+        case foreground, background, link, isDark, annotationPalette, annotationFallbackColor
+    }
+
+    /// Themes saved before M6 have no palette; they get the default one.
+    public init(from decoder: any Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        self.init(
+            foreground: try c.decode(ReaderColor.self, forKey: .foreground),
+            background: try c.decode(ReaderColor.self, forKey: .background),
+            link: try c.decode(ReaderColor.self, forKey: .link),
+            isDark: try c.decode(Bool.self, forKey: .isDark),
+            annotationPalette: try c.decodeIfPresent([HighlightColor: ReaderColor].self, forKey: .annotationPalette),
+            annotationFallbackColor: try c.decodeIfPresent(ReaderColor.self, forKey: .annotationFallbackColor)
+        )
+    }
 }
