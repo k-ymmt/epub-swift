@@ -243,7 +243,7 @@ M5 で変更（右から左の言語）: `<html dir="rtl">`（アラビア語な
 | `pageForFragment(id)` | 文書内リンクと目次の `#fragment` が指す要素のページを返す |
 | `pageFor(cfi)` | CFI（点、または範囲の始点）を Range に解決し、その文字（要素なら要素）の矩形からページ番号を返す。解決できなければ null |
 | `cfiForPage(index, margins)` | そのページの先頭に見えるテキスト位置の CFI を返す。3 スロットのフレーム内のページは `caretRangeFromPoint` を余白の内側から何点か試す。フレーム外のページ（`caretRangeFromPoint` が効かない）はテキストノードの矩形を走査し、ページ境界をまたぐノードは文字の矩形を二分探索して先頭文字を決める。テキストがなければ 1 ページに収まる要素、それもなければ葉要素（ページより大きい画像など）の CFI。何もなければ null（M3） |
-| `setHighlights([{id, cfiRange, color, style}])` | CSS Custom Highlight API（`CSS.highlights`、キー `reader-h-<id>`）で描画する。DOM を変更しない。`style` は `background` / `underline` で、`<style id="__reader_highlights">` に `::highlight()` 規則を書く。解決できた id の配列を返す |
+| `setHighlights([{id, cfiRange, color, style}])` | CSS Custom Highlight API（`CSS.highlights`、キー `reader-h-<id>`）で描画する。`style` は `solid` / `underline` / `strikethrough` / `outline`（M6 で変更。旧 `background` / `underline`）。`outline` 以外は `<style id="__reader_highlights">` に `::highlight()` 規則を書く。`outline` は重ね描きレイヤー `<div id="__reader_overlay">`（`<html>` の最後の子）に枠として描く（06-annotations §10.3）。配列の後ろほど上に描き（`Highlight.priority`）、タップの判定も後ろを優先する。解決できた id の配列を返す |
 | `setTransientHighlight(cfiRange)` | 検索結果用の一時ハイライト 1 つ（キー `reader-transient`、`reader-before.css` でスタイル）。null で消す（M3） |
 | `rectsFor(cfiRange)` | WebView（3 スロットのフレーム）座標の矩形配列を返す。Swift 側がスロットのオフセットを引いて可視ページ座標にする |
 | `applySettings({...})` | CSS 変数とフォント上書き属性を更新する。必要なら `layout` を再実行する |
@@ -251,6 +251,12 @@ M5 で変更（右から左の言語）: `<html dir="rtl">`（アラビア語な
 | `clearSelection()` | 選択を解除する |
 
 `layout` は `spineSteps`（`/6/4[chap01]` の形）も受け取り、生成する CFI の先頭に付ける。
+
+M6 で追加: 重ね描きレイヤーの枠は `Range` を追わないので、`layout`・`applySettings`・遅延画像やフォントによる再計測
+（`pageCountChanged` の判定）のたびに `reader.js` が描き直す。outline が 1 つも無ければレイヤー要素ごと取り除く。
+レイヤーは `pointer-events: none`・`aria-hidden` で、`<body>` の後ろにあるので CFI のステップとページ数に影響しない
+（06-annotations §12.3）。`cfiForPage` の予備の要素選びはレイヤー内の要素を飛ばす。Swift 側の id は層ごとに `a:`（アプリ）/
+`p:`（同梱注釈）を前に付けたもので、`highlightTap` を受けたら外して `annotationTapped` にする。
 M3 で変更: `captureAnchor` / `pageForAnchor`（M1〜M2 の DOM アンカー）は削除した。`cfiForVisibleRange()` は
 使い道がまだないので実装していない。
 
@@ -277,7 +283,7 @@ iframe 内の文書（`window.top !== window`）は Swift にメッセージを�
 | `noteref` | `{href, rect, sameDocument, html?, text?, cfi?}` | `a[epub\:type~="noteref"]` のクリック。同一文書内なら参照先要素の `innerHTML`・テキスト・CFI を同梱する（M5 で変更） |
 | `imageTap` | `{src, alt, rect, x, y}` | `img` または `svg image` のタップ（リンク内と FXL のページを除く。M5 で変更） |
 | `selectionChanged` | `{selection: {cfiRange, text, rects} \| null}` | `selectionchange`（120 ms デバウンス）。空白だけの選択は null |
-| `highlightTap` | `{id, rects}` | `setHighlights` で描いた範囲へのクリック。リンク → ハイライト → `tap` の順で判定する（M3） |
+| `highlightTap` | `{id, rects}` | `setHighlights` で描いた範囲へのクリック。リンク → ハイライト → `tap` の順で判定する（M3）。重なっていれば上に描いたもの（M6） |
 | `tap` | `{x, y}` | リンクでもハイライトでもない場所のタップ。タップゾーン判定に使う |
 
 `a` のクリックは常に `preventDefault` し、ナビゲーションは Swift が決める。

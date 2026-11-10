@@ -80,6 +80,10 @@ CLAUDE.md の「位置は CFI」の規則は「位置の正は CFI。EPUB Annota
 
 すべて `Sendable` / `Hashable`。`Codable` は仕様の JSON そのもの（§4）。
 
+M6 で変更: 型は `Codable` にしなかった。JSON は `AnnotationCodec`（§9.1）だけが読み書きする（メンバーの順序を決めた書き出しと、
+1 件ずつ捨てる寛容な読み込みを 1 か所にまとめるため）。例外は `HighlightColor` で、テーマのパレット（§10.2）の辞書キーに
+使うのでラベルの文字列として `Codable` / `CodingKeyRepresentable` にした。
+
 ### 3.1 AnnotationSet
 
 ```swift
@@ -147,6 +151,11 @@ public enum Origin: Hashable, Sendable {
 `Highlight` の `note` は M3 のデモで「選択時のテキスト」を入れていたが、`Body` のテキストはメモ（利用者の注記）であり、
 選ばれた本文ではない。選ばれた本文は TextQuoteSelector の `exact` が持つ。
 
+M6 で追加: 読み取り用に `range`（`CFIRange?`）、`startCFI`（範囲の始点かしおりの位置）、`color` / `style`（`body` が無ければ
+yellow / solid）、`note`（テキストのメモ。設定もできる）と、ミリ秒に切り捨てた現在時刻 `Annotation.now()` を足した。
+ファクトリの日時もミリ秒に切り捨てる（storage の往復で値が変わらないように）。仕様外の `motivation` の値は `.highlighting`
+として読み、元の値を `extensions["motivation"]` に残して書き戻す。
+
 ### 3.3 Target と位置
 
 ```swift
@@ -167,9 +176,23 @@ public struct Target: Hashable, Sendable {
 }
 ```
 
+M6 で変更:
+
+- `public internal(set) var generatedSelectors: [AnnotationSelector]?` を足した。`AnnotationResolver.generatingSelectors(for:)` が
+  CFI から作った標準セレクタ（範囲は `[CssSelector(refinedBy: TextPositionSelector), TextQuoteSelector]`、しおりは引用なし）を
+  入れ、`export` の符号化が原本の無い注釈に使う。生成せずに書き出すと CFI セレクタだけになる。
+- `position` を変えると `originalSelectors` と `generatedSelectors` の両方を捨てる。読み込んだ原本の JSON はセレクタの値とは
+  別に内部で持ち、書き出しでそのまま戻す（数値や未知のメンバーの表記を変えないため）。解決で位置を入れるときは原本を残す
+  （内部の `setResolvedPosition`）。
+- `source` は §6.1 のとおりパーセントデコード済みのパス。`Annotation.highlight` / `bookmark` は CFI の spine ステップから
+  spine item のパスを入れる。
+
 ### 3.4 Selector
 
 読み込んだセレクタを失わずに持つための型。アプリが直接作る必要はない。
+
+M6 で変更: 型名は `AnnotationSelector` にした。`Selector` は Foundation の Objective-C の `Selector` と衝突し、`import Foundation`
+と一緒に使うと曖昧になるため。下の定義の `Selector` は `AnnotationSelector` と読み替える。
 
 ```swift
 public indirect enum Selector: Hashable, Sendable {
@@ -302,6 +325,17 @@ public struct ExportOptions: Sendable {
 - `export` は `epubswift:origin` を書かない。`AnnotationFilter` の既定は `origin` が `.publication` のもの（同梱注釈）を除く。
 - `timestampPrecision: .day` は `created` / `modified` / `generated` を UTC の日の始まりに丸める。
 
+M6 で確定した点:
+
+- CFI セレクタ: 原本に `epubswift:CfiSelector` があっても書き出しでは取り除き、`includesCFI` のときに現在の位置から作り直して
+  セレクタ配列の末尾に足す（古い CFI を残さない）。`storage` は原本（あれば）と現在の CFI だけを書き、生成した標準セレクタは
+  書かない（読み込みで CFI を信頼するので要らない）。
+- `storage` の日時はミリ秒まで書く。`epubswift:origin` は `{"kind": "local" | "imported" | "publication", "set", "importedAt"}`。
+  `epubswift:origin` の無い注釈（他人の書き出し）は読み込みで `.imported(setID: その集合の id, importedAt: 読み込み時刻)` になる。
+- ハイライトは `body` を必ず書く（色とスタイルの置き場）。しおりの `body` は既定以外（メモ、タグ、色など）のときだけ書く。
+- `AnnotationImportLimits` の既定: JSON 32 MB、注釈 10 万件、入れ子 32、文字列 1 MB（注釈の中で超えたらその注釈を
+  `stringTooLong` の警告付きで捨て、集合の項目で超えたら全体を失敗にする）、`refinedBy` の深さ 8、ZIP の展開後の合計 512 MB。
+
 ## 5. セレクタの生成（CFI → セレクタ、EPUBCore）
 
 位置を変えていない読み込み済みの注釈は原本を書き出すので、生成は自分で作った注釈と位置を変えた注釈に対して行う。
@@ -356,6 +390,19 @@ public struct ExportOptions: Sendable {
 - どれでも決まらなければ `.unresolved` として原本を保持する。セレクタが空の配列、または `selector` が無ければ `.resource`。
 - 取り込んだ注釈の位置は CFI に解決しても `originalSelectors` に原本を残す（§2.1）。
 
+M6 で確定した点:
+
+- 入口は `AnnotationResolver(container:)` の `resolve(_ set:) -> AnnotationResolution` と `resolve(_ annotations:)`。結果は
+  `annotationSet`（位置を入れた集合）、`match`（§7）、注釈ごとの `methods: [Annotation.ID: ResolutionMethod]`（`trusted` /
+  `cfi` / `cssSelector` / `textQuote` / `elementFragment` / `textFragment` / `resource` / `unresolved`）と `unresolvedIDs`。
+- 原本の無い注釈（`storage` で保存した自分の注釈、CFI セレクタだけの注釈）は DOM を開かずに CFI を信頼する（`trusted`）。
+- 順 1 の「覆うテキストが同じ」は、CFI の範囲と標準セレクタの範囲の始点と終点を、同じ章の `.rendered` の木の本文での
+  UTF-16 オフセットにして比べる（しおりは始点だけ）。
+- 順 3 の文脈の削り方: `prefix` は先頭側、`suffix` は末尾側から半分ずつ削って探し直し、最後は `exact` だけで探す。
+  候補が複数なら、順 2 が示した位置（無ければ順 1 の CFI の位置）に最も近いもの。
+- 順 5 の Text Fragment は `prefix-` / `-suffix` と本文の間の空白を許す（`text=Call%20me-,Ishmael` が「Call me Ishmael」に当たる）。
+- 同じ章の注釈はまとめて解決し、章の DOM（両方の木と対応表）は 1 回だけ作る。Moby-Dick の 400 件（CFI 無し）で約 1 秒。
+
 ### 6.3 CSS の部分集合
 
 `#id`、型セレクタ（`p`）、`:nth-child(n)`、`:nth-of-type(n)`、子結合子 `>` とその連結だけを解釈する。それ以外（クラス、属性、
@@ -380,6 +427,9 @@ public struct AnnotationSetMatch: Sendable {
 `dc:identifier` は同じ値を別の本が使うことがある（00-overview §5.3 の `PublicationID` の理由と同じ）ので、一致だけで同じ本と
 決めない。
 
+M6 で確定した点: `creators` は集合の作成者がすべて本の著者に含まれれば `.match`。`resolvedSourceRatio` /
+`resolvedPositionRatio` は集合の注釈の数に対する割合で、注釈が 0 件なら 0。`AnnotationResolution.match` として返る。
+
 ## 8. 取り込みのマージ
 
 取り込みは既存の注釈を直接書き換えず、マージ計画を返す。仕様 §7 は同じ `id` を重複させず、更新するか利用者に尋ねるよう
@@ -398,6 +448,14 @@ public struct AnnotationMergePlan: Sendable {
 
 既定の適用は `added` と `updated` を入れ、`conflicts` はアプリのクロージャで決める。取り込んだ注釈の `origin` は
 `.imported(setID:importedAt:)` にする。既存の `origin` が `.local` の注釈を更新した場合も `.imported` に変わる。
+
+M6 で確定した点:
+
+- 「内容が同じ」は `motivation`、位置（アサーションを除いた CFI。未解決なら `source` と原本セレクタ）、`body`（無い `body` は
+  既定の `Body()` と同じ）で比べ、日時・作成者・出自は比べない。`export` は日時を丸め作成者を消すので、自分の書き出しを
+  読み直しても `unchanged` になる。
+- `init(existing:incoming:importedAt:)` が計画を作る。`incoming` は解決済みの集合（`AnnotationResolution.annotationSet`）を渡す。
+- 衝突を既存のまま残す `applying(to:)` を足した。`added` は取り込み順で末尾に足す。
 
 ## 9. パッケージ
 
@@ -427,6 +485,14 @@ public struct AnnotationArchive: Sendable {
 ```
 
 - 読み込みは既存の `ZIPArchive` を使い、`annotations.json` を探す。
+
+M6 で変更: プロパティ名は `set` ではなく `annotationSet` にした（`set` はプロパティ名に使うと setter の宣言と解釈される）。
+ほかに `warnings: [AnnotationImportWarning]`、メモリ上の ZIP を読む `read(data:limits:)`、ZIP のバイト列を返す
+`data(_:options:resources:)`（共有シートに渡すアプリ向け）、失敗の種類 `AnnotationArchive.Failure`（ZIP でない、
+`annotations.json` が無い、展開後の合計が上限超え、ZIP の外を指すパス、絶対 URL、資源が無い）を足した。
+読み込みは中身を見る（拡張子は見ない）。展開後の合計サイズを先に検査してから `annotations.json` を復号する。
+`resource(at:)` は絶対 URL と ZIP の外を指すパスを拒否する。`write` は同じディレクトリの一時ファイルに書いてから置き換える。
+`annotations.json` は deflate、音声等の資源はすでに圧縮されているので stored で入れる。
 - 書き出しのために EPUBCore に `ZIPWriter` を足す。stored と deflate（Compression）、UTF-8 名のフラグ、ZIP64 は 4 GiB か
   65,535 項目を超えたときだけ。ファイルに逐次書き、音声などの大きな資源を全部メモリに載せない。
 - 音声等の body の `id` は ZIP 内の相対 URL として書く。アプリが `resources` で中身を渡す。
@@ -437,6 +503,8 @@ public struct AnnotationArchive: Sendable {
   パースはしない。
 - `container.embeddedAnnotations()` が要求時に読み、`origin` を `.publication` にして返す。結果はコンテナがキャッシュする。
 - 同梱注釈は読み取り専用で、アプリの注釈とは別のレイヤーとして描く（§10.1）。
+- M6 で確定: `embeddedAnnotations()` は位置の解決（§6）まで行って返す。`ReaderSession` は作成時に
+  `hasEmbeddedAnnotations` なら裏で読み、`publicationAnnotations` に入れる。
 
 ### 9.4 EPUB への埋め込み書き出し（将来）
 
@@ -496,6 +564,19 @@ solid は背景色として半透明で、線のスタイルは不透明で描�
   描くときもこのレイヤーを使う。
 
 `setHighlights` の引数は `{id, cfiRange, color, style}` の `style` に `strikethrough` / `outline` を加える（02-rendering §4.1）。
+
+M6 で確定した点:
+
+- パレットの色は不透明で持ち、線のスタイル（underline / strikethrough / outline）はそのまま、solid は alpha に
+  `ReaderTheme.solidHighlightOpacity`（0.4）を掛けて描く。暗いテーマの既定パレット（`darkPalette`）は明度を下げた色にした。
+  灰色の既定は明るいテーマ `0x8E8E93`、暗いテーマ `0x6E6E73`。
+- 重なりは `::highlight()` の `priority`（`setHighlights` の配列順）で決め、同梱注釈を先、アプリの注釈を後に渡す。
+  タップの判定も配列の後ろから行うので、上に描いた注釈が `annotationTapped` になる。outline は重ね描きレイヤーにあるので
+  ほかのスタイルの上に出る。
+- 2 つの層は同じ id を持ちうるので、ブリッジの id に `a:`（アプリ）/ `p:`（同梱）を付け、`annotationTapped` では外して返す。
+  どちらの層の注釈かはアプリが `annotations` と `publicationAnnotations` を引いて決める。
+- テーマを変えるとパレットが変わるので、再レイアウトの後に描き直す。
+- outline が 1 つも無いときは重ね描きレイヤーの要素を取り除く。レイヤーは `aria-hidden`。
 
 ## 11. セキュリティとプライバシー
 
@@ -599,3 +680,10 @@ FXL の全 fixture（haruko、page-blanche、cole）、修復済み XHTML 3 文�
 - **ZIP**: `ZIPWriter` で書いたものを `ZIPArchive` で読める（stored / deflate / ZIP64 境界）。
 - **Renderer**（macOS の実 WKWebView）: 4 つのスタイルの描画（色を数える）、outline の再レイアウト追従、`annotationTapped`、
   同梱注釈の表示切り替え。
+
+M6 で実装したテスト: `AnnotationCodecTests`、`AnnotationResolverTests`（ベクタの両方向、引用だけ、CFI の一致と食い違い、
+編集した本、Moby-Dick 400 件の CFI 無し往復、source のパス、フラグメント、照合、CSS の部分集合）、`AnnotationMergePlanTests`、
+`AnnotationArchiveTests`（`ZIPWriter` の往復、ZIP64 の強制、ファイル出力、`.annotations` の読み書き、資源のパス拒否、同梱注釈）、
+`AnnotationRenderingTests`（4 つのスタイルを画素で確かめる、outline の再レイアウト追従とテーマ変更、同梱注釈の層と優先順位、
+テーマの `Codable`、書き出し → 削除 → 取り込みで同じ描画に戻ること（CFI あり・なし））。`ZIPWriter` の出力は `unzip -t` と
+Python の `zipfile` でも読めることを確かめた（ZIP64 を強制したものを含む）。

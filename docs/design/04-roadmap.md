@@ -151,6 +151,24 @@ M4 で `public` になっていた `SpreadBuilder` / `SpreadPlan` を `internal`
 
 EPUB への埋め込み書き出しと、画像の領域（`xywh`）の描画は M6 に含めない（06-annotations §9.4、§6.2）。
 
+**完了（2026-11-10、コミット ad3596f〜b6ea1b6 と文書のコミット）。** EPUBCore に注釈のモデルと JSON の符号化（storage / export）、
+CFI ⇄ 標準セレクタの生成と解決（`.source` の木で数え `.rendered` の木の CFI に対応させる）、書籍との照合、マージ計画、
+`ZIPWriter` と `.annotations` の読み書き、同梱注釈の遅延読み込みを入れた。EPUBRenderer は `ReaderSession.annotations` /
+`publicationAnnotations` で 4 つのスタイルを描き（outline は `<html>` 末尾の重ね描きレイヤー）、テーマにパレットを持たせ、
+`Highlight` / `Bookmark` を削除した。`Examples/ReaderDemo` は保存ファイルを注釈に移し、色ラベルとスタイルの編集、しおり、
+`.annotations` の書き出し（CFI あり・なし）と取り込み（解決・照合・マージの確認）を持つ。
+完了条件は `AnnotationRenderingTests.exportDeleteImportRestoresTheDrawing` で、ReaderDemo と同じ呼び出し（セレクタ生成 →
+`AnnotationArchive` → 全削除 → 読み込み → `resolve` → `AnnotationMergePlan`）を Moby-Dick の 4 スタイルのハイライトと
+しおりに対して CFI あり・なしの両方で行い、同じ id・位置・色・スタイルと同じ描画（`::highlight()` の規則と枠の数）に戻ることを
+確かめた。macOS 27 の `swift test` は 4 つのテストターゲットで計 217 件が通る。ReaderDemo はビルドまでで、画面を操作しての
+書き出し・取り込みの確認はしていない（`TODO.md`）。
+実装中に設計を変えた点は各文書に「M6 で変更」「M6 で追加」「M6 で確定」として反映した（01-core §1、03-api §2.5 / §3.1 /
+§3.2 / §3.4、02-rendering §4.1 / §4.2、06-annotations §3 / §4.3 / §6.2 / §7 / §8 / §9.2 / §9.3 / §10 / §14）。主な変更:
+`Selector` は Foundation と衝突するので `AnnotationSelector` に、`AnnotationArchive.set` は `annotationSet` にした。
+標準セレクタは `Target.generatedSelectors` に生成してから書き出す。CFI セレクタは書き出しのたびに現在の位置から作り直す。
+マージの「同じ内容」は日時と作成者を比べない。Text Fragment の前後の文脈の間の空白を許す。
+積み残しは `TODO.md` に置く。
+
 ## 2. 先に検証する項目（検証済み）
 
 実装前に `Spikes/` の小さなコードで確かめた。詳細と根拠は `05-spike-results.md`。設計文書には反映済み。

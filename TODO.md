@@ -19,8 +19,8 @@
 - [ ] `ReaderSession` に読み込み前の初期位置を渡す手段がない（`go(to:)` は `viewportSize` が決まり章が読み込まれてから有効）。アプリは最初の `positionChanged` を待って `go(to:)` を呼ぶ必要があり、最初の章が一瞬見える。`ReaderSession(container:settings:initialPosition:)` か `loadIfNeeded(at:)` を検討する。
 - [ ] `cfiForPage` はページ先頭の「見えている最初のテキスト」を `caretRangeFromPoint` の数点のプローブと矩形走査で決めるため、浮動要素や多段のテーブルではページ先頭より後ろの文字を返すことがある。`cfiForVisibleRange()`（02-rendering §4.1）と合わせて、ページ内の全テキスト矩形から厳密に先頭を選ぶ実装を検討する。
 - [ ] iOS の `buildMenu(with:)` による編集メニュー追加はシミュレータの手動確認のみ（Renderer の自動テストは macOS の `willOpenMenu` 経路だけ）。iOS で動く回帰テストの置き場（M1 の積み残し）と合わせて決める。
-- [ ] `ReaderSession.highlights` の変更は毎回現在章の全ハイライトを `setHighlights` で描き直す（差分適用なし）。数百件規模で設定変更やタップのたびに全件を解決するコストを測り、必要なら id ごとの追加・削除に分ける。
-- [ ] `SelectedText.rects` / `highlightTapped` の矩形は `selectionChanged` 受信時点の可視ページ座標で、その後ページ移動や再レイアウトがあると古くなる。アプリがメニューを出すときは `rects(for:)` で取り直す運用にしているが、ライブラリ側で位置変更時に `currentSelection` を更新するか検討する。
+- [ ] `ReaderSession.annotations`（M6 で `highlights` から改名）の変更は毎回表示中の面の全ハイライトを `setHighlights` で描き直す（差分適用なし）。数百件規模で設定変更やタップのたびに全件を解決するコストを測り、必要なら id ごとの追加・削除に分ける。
+- [ ] `SelectedText.rects` / `annotationTapped`（M6 で `highlightTapped` から改名）の矩形は `selectionChanged` 受信時点の可視ページ座標で、その後ページ移動や再レイアウトがあると古くなる。アプリがメニューを出すときは `rects(for:)` で取り直す運用にしているが、ライブラリ側で位置変更時に `currentSelection` を更新するか検討する。
 - [ ] `SearchService` の抽出結果（`TextMap`）は spine item ごとに actor 内へ無期限にキャッシュする。大きな本では本文全体をメモリに持つことになるので、上限を検討する（M2 の `contentDocuments` の積み残しと同じ話。メモリ警告での破棄は M5 で入れた: `ReaderSession` がサービスごと捨てる）。
 - [ ] 検索は線形 spine item のみ。非線形（`linear="no"`）の文書は対象外にしている。必要なら `SearchOptions` にフラグを足す。
 
@@ -71,3 +71,15 @@
 ## M6 の事前検証（2026-11-10）で見つけたこと
 
 - [ ] 06-annotations §12 の「他実装との往復」は未検証。他の Reading System が出した `.annotations` を入手したら M6 の実装で読み込みを確かめる。
+
+## M6 の積み残し（2026-11-10）
+
+- [ ] ReaderDemo の画面を操作した確認をしていない（macOS / iOS とも）。選択メニューの 4 スタイル、タップした注釈の編集シート（色ラベル・スタイル・メモ・削除）、しおり、`.annotations` の書き出し（CFI あり・なし）→「Delete all annotations」→ 取り込みの確認ダイアログ → 同じ位置・色・スタイルで出ること。ライブラリ側の同じ流れは `AnnotationRenderingTests.exportDeleteImportRestoresTheDrawing` で確かめた。
+- [ ] ReaderDemo の旧 `Highlight` JSON からの変換（`LegacyHighlight`、最も近い色ラベル）は実際の旧ファイルで試していない。M3〜M5 のデモで保存したファイルがある環境で開いて確かめる。
+- [ ] ReaderDemo の `.annotations` は Info.plist で型を宣言していない（SwiftPM の実行ファイル）ので、`UTType(filenameExtension:conformingTo: .zip)` の動的な型で書き出す。iOS の `fileExporter` / `fileImporter` で `.annotations` が選べるか、共有シートで他アプリに渡せるかを確かめる。
+- [ ] 見開きラッパー（FXL、縦書き・右綴じの見開き）の中の outline と 4 スタイルを `ReaderSession` 経由で描くテストがない。§12.3 の事前検証（直接 JS で描いた枠）と、`setHighlights` が iframe に転送されることに頼っている。
+- [ ] 隣の章・ページのスナップショット（`PaginationService` の非表示 WebView、02-rendering §8.3）にはハイライトを描いていないので、章をまたいでめくると到着後にハイライトが現れる。M3 からの挙動。非表示 WebView にも `setHighlights` を渡すか検討する。
+- [ ] 音声・画像・動画の body を持つ注釈を作る API がアプリ側の `Body(content:)` だけで、ReaderDemo は扱っていない。`AnnotationArchive.write` の `resources` で資源を渡す流れは `AnnotationArchiveTests` だけで確かめた。
+- [ ] `LocalizableText` の `language` / `direction` はメモの表示に使っていない（ReaderDemo はテキストだけを出す）。右から左のメモをアプリがどう出すかの指針を 03-api に足すか検討する。
+- [ ] EPUB への埋め込み書き出し（06-annotations §9.4）と、画像の領域（`xywh`）の描画（§6.2 の順 6）は M6 の範囲外のまま。
+

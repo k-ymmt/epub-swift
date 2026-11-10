@@ -22,6 +22,11 @@ Apple 標準に ZIP コンテナを扱う API はないので自前で実装す�
 パス正規化: Central Directory のファイル名は UTF-8 として扱い、`./` や `//` を除去する。
 OPF からの参照は OPF のディレクトリを基準に解決し、パーセントデコードしてから一致させる。
 
+M6 で追加: 書き出し用の `ZIPWriter`（`public final class`）を置いた。ファイルへ逐次書く `init(url:date:)` と、メモリに書く
+`init(date:)` がある。`add(_:data:method:)` は stored / deflate（縮まなければ stored に戻す）、UTF-8 名のフラグ、DOS 日時を書き、
+`..`・`/` 始まり・重複の名前を拒否する。ZIP64 の構造はサイズかオフセットが 4 GiB 以上、または 65,535 項目以上のときだけ書く。
+`.annotations` の書き出しが使い、将来の EPUB への埋め込み（06-annotations §9.4）でも共有する。
+
 ### 1.2 `EPUBContainer`（actor）
 
 - `init(url: URL) async throws`。ZIP を開き、container.xml → OPF → nav → encryption.xml の順に解析して
@@ -33,6 +38,9 @@ OPF からの参照は OPF のディレクトリを基準に解決し、パー�
 - `init(data: Data) async throws` も持つ（テストとメモリ上の EPUB 用）。
 - 小さいエントリ（OPF、nav、CSS、XHTML）は読んだ結果を `NSCache` に入れる。画像はキャッシュしない。
 - `publicationID: PublicationID` を保持する。
+- M6 で追加: 開くときに `META-INF/annotations.json` の有無だけを見て `Publication.hasEmbeddedAnnotations` に入れる。
+  `embeddedAnnotations() async throws -> AnnotationSet?` が初回に読み、本に対して位置を解決し（`AnnotationResolver`）、
+  `origin` を `.publication` にしてキャッシュする（06-annotations §9.3）。
 
 ## 2. OCF と OPF
 

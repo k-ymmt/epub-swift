@@ -21,7 +21,7 @@ struct BookScreen: View {
                     .pageTransition(.slide)
                     .selectionActions([
                         SelectionAction(title: "ハイライト", systemImage: "highlighter") { selected in
-                            highlights.append(Highlight(range: selected.range, style: .background(.yellow)))
+                            annotations.append(.highlight(selected.range, in: session.publication, color: .yellow))
                         },
                     ])
                     .onReaderEvent { event in
@@ -37,7 +37,7 @@ struct BookScreen: View {
         .task {
             let container = try await EPUBContainer(url: fileURL)
             session = ReaderSession(container: container, settings: settings)
-            session?.highlights = highlights
+            session?.annotations = annotations   // M6 で変更: highlights → annotations
             if let last = lastPosition { await session?.go(to: last) }
         }
     }
@@ -99,37 +99,34 @@ M3 実装済み。位置は CFI だけで決まり、残りは記録時点の表
 アプリが開いた直後に前回位置へ戻すには、最初の章が表示された（最初の `positionChanged`）あとで `go(to:)` を呼ぶ
 （`ReaderDemo` の `BookView` 参照）。読み込み前に `go(to:)` を受け付ける API は M3 では作っていない（`TODO.md`）。
 
-### 2.5 `Highlight` / `Bookmark`
+### 2.5 注釈（`Annotation`）
 
-M6 で置き換え: EPUB Annotations 1.0 に沿った `Annotation`（ハイライトとしおりを `motivation` で区別）に統合し、
-この節の型は削除する。設計は 06-annotations。下の記述は M3〜M5 の実装状態。
+M6 で変更: `Highlight` / `Bookmark` は削除し、EPUB Annotations 1.0 に沿った `Annotation`（ハイライトとしおりを `motivation` で
+区別）に統合した。型・符号化・セレクタの生成と解決・照合・マージ・`.annotations` の読み書きは 06-annotations に書く。
+アプリから見た主な入口:
 
 ```swift
-public struct ReaderColor: Codable, Hashable, Sendable {
-    public var red, green, blue, alpha: Double
-}
+let highlight = Annotation.highlight(range, in: publication, color: .yellow, style: .solid, note: "メモ")
+let bookmark = Annotation.bookmark(at: cfi, in: publication)
+session.annotations = [highlight, bookmark]               // 描画（§3.2）。保存はアプリ
 
-public struct Highlight: Identifiable, Codable, Hashable, Sendable {
-    public var id: UUID
-    public var range: CFIRange
-    public var style: Style
-    public var note: String?
-    public enum Style: Codable, Hashable, Sendable {
-        case background(ReaderColor)
-        case underline(ReaderColor)
-    }
-}
+// 保存と読み戻し（DOM を開かない。位置は CFI のまま信頼する）
+let data = try AnnotationCodec.encode(AnnotationSet(id: setID, items: annotations), mode: .storage)
+let (set, warnings) = try AnnotationCodec.decode(data)
 
-public struct Bookmark: Identifiable, Codable, Hashable, Sendable {
-    public var id: UUID
-    public var position: ReadingPosition
-    public var createdAt: Date
-}
+// 書き出し: CFI から標準セレクタを作ってから ZIP にする
+let withSelectors = await AnnotationResolver(container: container).generatingSelectors(for: set)
+try await AnnotationArchive.write(withSelectors, options: ExportOptions(includesCFI: true), resources: { _ in Data() }, to: url)
+
+// 取り込み: 位置の解決と照合、マージ計画。適用はアプリが利用者に確かめてから
+let archive = try await AnnotationArchive.read(from: url)
+let resolution = await session.resolve(archive.annotationSet)       // AnnotationResolver(container:).resolve と同じ
+let plan = AnnotationMergePlan(existing: annotations, incoming: resolution.annotationSet)
+annotations = plan.applying(to: annotations)                         // 衝突は既存を残す
 ```
 
-EPUBCore は SwiftUI を import しないので色は `ReaderColor`。EPUBUI に `Color` との相互変換を置く
-（`Color(_ readerColor:)`）。M3 実装済み: `Highlight` の既定スタイルは黄色の背景（`0xFFE066`、alpha 0.6）、
-`spineIndex` を `range` から返す。`Bookmark` は型だけで、ライブラリは何もしない。
+`ReaderColor` は残る（テーマとパレットの色。EPUBUI の `Color(_ readerColor:)` も同じ）。ハイライトの色は任意の RGBA ではなく
+色ラベル（`HighlightColor`）で持ち、テーマのパレット（§3.1）で描く。
 
 ### 2.6 `SearchService`
 
@@ -166,9 +163,16 @@ public struct ReaderTheme: Codable, Hashable, Sendable {
     public var background: ReaderColor
     public var link: ReaderColor
     public var isDark: Bool            // 画像の減光と color-scheme に使う
+    public var annotationPalette: [HighlightColor: ReaderColor]   // M6 で追加（06-annotations §10.2）
+    public var annotationFallbackColor: ReaderColor              // M6 で追加。.other とパレットに無いラベル
+    public func color(for label: HighlightColor) -> ReaderColor  // M6 で追加
     public static let light, sepia, dark: ReaderTheme
+    public static let lightPalette, darkPalette: [HighlightColor: ReaderColor]   // M6 で追加。init の既定
 }
 ```
+
+M6 で追加: `init` の `annotationPalette` / `annotationFallbackColor` は省略でき、`isDark` に応じて `lightPalette` /
+`darkPalette` と灰色になる。M6 より前に保存したテーマ（パレットの無い JSON）も同じ既定で読める。
 
 ### 3.2 `ReaderSession`
 
@@ -217,7 +221,7 @@ M3 で追加（CFI 依存。実装済み）:
 
 ```swift
 extension ReaderSession {
-    public var highlights: [Highlight]             // 変更で現在章の分を setHighlights。章の表示前にも適用
+    public var annotations: [Annotation]           // M6 で変更（旧 highlights）。下記
     public private(set) var position: ReadingPosition?   // 章の表示後は常に非 nil（02-rendering §5.3）
     public private(set) var currentSelection: SelectedText?
     public var selectionActions: [SelectionAction] // M3 で変更: EPUBUI の .selectionActions がここに転送する
@@ -234,6 +238,20 @@ extension ReaderSession {
 
 `SearchService` はセッションが遅延生成して保持する。`go(to:)` 系はすべて操作キューで直列化され、移動が
 完了するまで待つ。
+
+M6 で追加（06-annotations §10.1）:
+
+```swift
+extension ReaderSession {
+    public var annotations: [Annotation]                     // アプリの注釈。highlighting で範囲のあるものを描く。しおりは描かない
+    public private(set) var publicationAnnotations: [Annotation]   // EPUB 同梱。セッション作成時に裏で読む
+    public var showsPublicationAnnotations: Bool            // 既定 true
+    public func resolve(_ set: AnnotationSet) async -> AnnotationResolution
+}
+```
+
+`annotations` を変えると spine index ごとの表を作り直し、表示中の面の分を描き直す（同梱注釈を下、アプリの注釈を上）。
+テーマを変えたときもパレットの色で描き直す。
 
 M2 で追加（実装済み）:
 
@@ -321,7 +339,7 @@ public enum ReaderEvent: Sendable {
     case paginationUpdated(BookPagination)  // 章の計測が進むたび。ReaderSession.pagination と同じ値
     // M3 実装済み
     case positionChanged(ReadingPosition)   // ページ・章の移動と、同じテキストのままの再レイアウト。ReaderSession.position と同じ値
-    case highlightTapped(Highlight.ID, rects: [CGRect])   // 矩形は可視ページ座標
+    case annotationTapped(Annotation.ID, rects: [CGRect]) // M6 で変更（旧 highlightTapped）。矩形は可視ページ座標
     case selectionChanged(SelectedText?)    // nil は解除。ReaderSession.currentSelection と同じ値
     // M4 実装済み
     case zoomChanged(Bool)                  // FXL の面のピンチズーム。true の間 EPUBUI はめくりジェスチャを止める。ReaderSession.isZoomed と同じ値
