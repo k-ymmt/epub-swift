@@ -8,7 +8,7 @@
 //   ready {writingMode, href}       after `load` and `document.fonts.ready` (writingMode: computed value, e.g. "vertical-rl")
 //   pageCountChanged {pageCount}    when late image loads change the layout
 //   link {href, isExternal}         click on <a>; the default is prevented, Swift decides navigation
-//   noteref {href, rect, sameDocument, html?, text?, cfi?}   click on <a epub:type="noteref"> (M5); the note's content
+//   noteref {href, rect, sameDocument, html?, text?, cfi?, hidden?}   click on <a epub:type="noteref"> (M5); the note's content
 //                                   when it is in the same document
 //   imageTap {src, alt, rect, x, y} click on <img> / SVG <image> outside a link (M5); not on fixed-layout pages
 //   highlightTap {id, rects}        click/tap inside a highlight set with setHighlights (the topmost one)
@@ -1555,6 +1555,9 @@
       payload.html = note.innerHTML;
       payload.text = (note.textContent || "").replace(/\s+/g, " ").trim();
       payload.cfi = CFI.fromNode(note, null);
+      // Not laid out (the aside hideReferencedNotes took out of the flow, or the publication's own `display: none`):
+      // there is no place on a page to go to, the note can only be read from this message.
+      payload.hidden = note.getClientRects().length === 0;
     }
     post("noteref", payload);
   }

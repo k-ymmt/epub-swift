@@ -296,7 +296,7 @@ iframe 内の文書（`window.top !== window`）は Swift にメッセージを�
 | `ready` | `{writingMode, readyState, href}` | 文書の読み込み完了（`layout` は Swift が続けて呼ぶ）。`href` は文書の `location.href`。Swift は `load` ごとに URL へ一意なクエリ `__reader_load=<n>` を付けるので、同じ章を続けて読み込んだときも、置き換えられた古い文書の `ready` を取り違えずに捨てられる（M2 で変更。フラグメントでは同一文書ナビゲーションになり `reader.js` が再実行されないのでクエリを使う。スキームハンドラは `url.path` で解決するためクエリは無視される）。`.atDocumentEnd` の `WKUserScript` は `DOMContentLoaded` 相当（`readyState = "interactive"`）で動き、画像とフォントはまだ読み込まれていない。`reader.js` は `document.fonts.ready` と `load` を待ってから初回 `layout` を確定し `ready` を送る。それ以降の増減は `pageCountChanged` で補正する |
 | `pageCountChanged` | `{pageCount}` | 画像読み込みやフォント読み込みで高さが変わったとき |
 | `link` | `{href, isExternal}` | `a` のクリック（`preventDefault` 済み） |
-| `noteref` | `{href, rect, sameDocument, html?, text?, cfi?}` | `a[epub\:type~="noteref"]` のクリック。同一文書内なら参照先要素の `innerHTML`・テキスト・CFI を同梱する（M5 で変更） |
+| `noteref` | `{href, rect, sameDocument, html?, text?, cfi?, hidden?}` | `a[epub\:type~="noteref"]` のクリック。同一文書内なら参照先要素の `innerHTML`・テキスト・CFI を同梱する（M5 で変更） |
 | `imageTap` | `{src, alt, rect, x, y}` | `img` または `svg image` のタップ（リンク内と FXL のページを除く。M5 で変更） |
 | `selectionChanged` | `{selection: {cfiRange, text, rects} \| null}` | `selectionchange`（120 ms デバウンス）。空白だけの選択は null |
 | `highlightTap` | `{id, rects}` | `setHighlights` で描いた範囲へのクリック。リンク → ハイライト → `tap` の順で判定する（M3）。重なっていれば上に描いたもの（M6） |
@@ -312,8 +312,9 @@ M5 で変更（`link` / `noteref` / `imageTap` の実際の形）:
   CFI はフラグメントの要素（EPUBCore の `CFIGenerator.cfi(forElementWithID:)`）か、なければ文書先頭。外部 URL は
   `externalLink` を出すだけで移動しない。spine 外の資源（画像への直接リンクなど）は無視し、欠落は `missingResource` 警告。M1 の `handleLink` にあった二重のパーセントデコードはやめた。
 - `noteref` は `epub:type~="noteref"` のリンクだけ（`role="doc-noteref"` だけのリンクや脚注番号風の普通のリンクは `link` 扱い）。
-  payload は `{href, rect, sameDocument, html?, text?, cfi?}`。同じ文書の脚注は参照先要素（`aside` / `li` などを
-  `noteElement` で上にたどった要素）の `innerHTML`、空白を詰めた `textContent`、要素の CFI を同梱する。別文書の脚注は Swift が
+  payload は `{href, rect, sameDocument, html?, text?, cfi?, hidden?}`。同じ文書の脚注は参照先要素（`aside` / `li` などを
+  `noteElement` で上にたどった要素）の `innerHTML`、空白を詰めた `textContent`、要素の CFI、ページ上に組まれていないか
+  （`hidden`: 要素の `getClientRects()` が空。下の隠した `aside` と、出版物の CSS の `display: none`）を同梱する。別文書の脚注は Swift が
   EPUBCore で文書を読み、`XMLDocument.notePath(forElementWithID:)` で要素を見つけてテキストと CFI を作る（`html` は nil）。
 - `imageTap` は `{src, alt, rect, x, y}`。`img` と SVG の `image`（`alt` は `aria-label` / `<title>`）。リンク内の画像はリンク扱い。
   FXL のページでは送らない（絵がページそのものなので、タップはめくりに使う）。

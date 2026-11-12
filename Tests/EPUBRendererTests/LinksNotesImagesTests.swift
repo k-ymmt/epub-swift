@@ -173,10 +173,34 @@ final class EventRecorder {
         #expect(note.cfi?.description.contains("[fn1]") == true)
         #expect(note.sourceRect.width > 0 && note.sourceRect.height > 0)
         #expect(note.sourceRect.minX >= 0 && note.sourceRect.maxX <= 400)
+        // The aside is out of the page flow: there is no place to go to.
+        #expect(note.isHidden)
         // The session does not move for a noteref.
         #expect(host.session.currentSpineIndex == 0)
         #expect(host.session.currentPageIndex == 0)
         #expect(recorder.internalLinks.isEmpty)
+    }
+
+    /// A note that is an ordinary paragraph of the noteref's document stays on the page: the app can go to it.
+    @Test func sameDocumentNoterefToANoteOnThePageIsNotHidden() async throws {
+        let host = try await SessionHost(url: Self.sample)
+        let recorder = EventRecorder(host.session)
+        await host.session.loadIfNeeded()
+
+        try await click("ref4", in: host)
+        try await host.waitUntil { !recorder.notes.isEmpty }
+        let note = try #require(recorder.notes.first)
+        #expect(note.isInSameDocument)
+        #expect(note.fragment == "pn1")
+        #expect(note.text == "4. The note that is part of the page.")
+        #expect(!note.isHidden)
+        #expect(host.session.currentPageIndex == 0)
+
+        let page = try #require(try await host.renderer.pageForFragment("pn1"))
+        #expect(page > 0)
+        await host.session.go(to: try #require(note.cfi))
+        #expect(host.session.currentSpineIndex == 0)
+        #expect(host.session.currentPageIndex == page)
     }
 
     @Test func noterefIntoAnotherDocumentResolvesTheNoteThroughEPUBCore() async throws {
@@ -192,6 +216,8 @@ final class EventRecorder {
         #expect(aside.spineIndex == 3)
         #expect(aside.html == nil)
         #expect(aside.text == "The endnote text.")
+        // Another document is not rendered here: whether its note is displayed is not known.
+        #expect(!aside.isHidden)
         #expect(aside.cfi?.description.contains("[en1]") == true)
 
         recorder.reset()

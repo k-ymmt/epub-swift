@@ -113,7 +113,8 @@ enum BridgeMessage: Sendable {
                 isSameDocument: payload["sameDocument"] as? Bool ?? false,
                 html: payload["html"] as? String,
                 text: payload["text"] as? String,
-                cfi: (payload["cfi"] as? String).flatMap(CFI.init)
+                cfi: (payload["cfi"] as? String).flatMap(CFI.init),
+                isHidden: payload["hidden"] as? Bool ?? false
             ))
         case "imageTap":
             guard let src = payload["src"] as? String else { return nil }
@@ -140,7 +141,7 @@ enum BridgeMessage: Sendable {
     }
 }
 
-/// `{href, rect, sameDocument, html?, text?, cfi?}` from a `noteref` message (M5).
+/// `{href, rect, sameDocument, html?, text?, cfi?, hidden?}` from a `noteref` message (M5).
 struct BridgeNoteref: Sendable {
     var href: String
     var rect: CGRect
@@ -148,6 +149,8 @@ struct BridgeNoteref: Sendable {
     var html: String?
     var text: String?
     var cfi: CFI?
+    /// The note element is not laid out on the page (same-document notes only).
+    var isHidden = false
 }
 
 /// `{cfiRange, text, rects}` from `currentSelection` / `selectionChanged`. Rects are viewport coordinates.

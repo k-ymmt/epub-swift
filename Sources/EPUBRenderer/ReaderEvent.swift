@@ -68,7 +68,7 @@ public struct ReaderNavigation: Sendable, Hashable {
 /// For a note in the same document the content comes from the rendered DOM (`html` is the note element's
 /// `innerHTML`, `text` its whitespace-collapsed text). For a note in another document of the publication, `text`
 /// comes from EPUBCore's parse of that document and `html` is nil. `cfi` addresses the note element in both cases,
-/// so the app can `go(to:)` it.
+/// so the app can `go(to:)` it, unless `isHidden` says the note has no place on a page.
 public struct NoteContent: Sendable, Hashable {
     /// Container path of the document that holds the note.
     public let path: String
@@ -86,8 +86,14 @@ public struct NoteContent: Sendable, Hashable {
     public let isInSameDocument: Bool
     /// The noteref's box on the visible page (anchor for a popover).
     public let sourceRect: CGRect
+    /// `true` when the note is not laid out on the page: the footnote / endnote / rearnote `aside` the library takes
+    /// out of the page flow because a noteref of its document points at it, or a note the publication's own style
+    /// does not display. `go(to:)` its `cfi` shows nothing, so the app shows `text` (or `html`) instead of offering
+    /// to go there. Known for notes in the noteref's document only (`isInSameDocument`); `false` for the others,
+    /// whose document is not rendered when the noteref is tapped.
+    public let isHidden: Bool
 
-    public init(path: String, fragment: String?, spineIndex: Int?, cfi: CFI?, html: String?, text: String?, isInSameDocument: Bool, sourceRect: CGRect) {
+    public init(path: String, fragment: String?, spineIndex: Int?, cfi: CFI?, html: String?, text: String?, isInSameDocument: Bool, sourceRect: CGRect, isHidden: Bool = false) {
         self.path = path
         self.fragment = fragment
         self.spineIndex = spineIndex
@@ -96,6 +102,7 @@ public struct NoteContent: Sendable, Hashable {
         self.text = text
         self.isInSameDocument = isInSameDocument
         self.sourceRect = sourceRect
+        self.isHidden = isHidden
     }
 }
 

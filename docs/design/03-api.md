@@ -400,6 +400,7 @@ public struct NoteContent: Sendable, Hashable {
     public let text: String?                // 空白を詰めたテキスト。別文書の脚注は EPUBCore の解析から
     public let isInSameDocument: Bool
     public let sourceRect: CGRect           // noteref の矩形（可視ページ座標）。ポップオーバーの起点
+    public let isHidden: Bool               // ページ上に組まれていない脚注（同じ文書の脚注だけ分かる）。go(to:) しても何も出ない
 }
 
 public struct TappedImage: Sendable {
@@ -418,6 +419,10 @@ M5 で変更・確定した点:
   別文書の脚注（rearnote など）は `html` を持たない（描画済みの DOM がないため）。アプリは `text` を表示するか `cfi` へ移動する。
 - 同じ文書の noteref が指す `aside`（footnote / endnote / rearnote）は本文から隠す。ポップアップで読む前提のため
   （02-rendering §4.2）。`epub:type="noteref"` のないリンクは脚注番号の形でも `internalLink` として移動する。
+- `NoteContent.isHidden`（2026-11-12 追加）: 脚注の要素がページ上に組まれていないとき true（上の隠した `aside`、
+  出版物の CSS が `display: none` にした脚注）。その `cfi` へ `go(to:)` しても見えるものがないので、アプリは「脚注へ移動」を
+  出さずに `text` を表示する。章末の段落やリスト項目のようにページに残る脚注は false で、移動できる。分かるのは同じ文書の
+  脚注だけ（別文書は noteref を押した時点で描画していないので常に false）。
 - `TappedImage` は Hashable にしない（データ取得クロージャを持つため）。FXL のページでは送らない。
 - `externalLink` の扱いは変わらない（移動せず通知のみ）。`internalLink` は移動の後に出る。
 - `ReaderError.loadTimeout` は従来どおり再試行をアプリに任せる。`webContentTerminated` ではセッションが表示中の面を

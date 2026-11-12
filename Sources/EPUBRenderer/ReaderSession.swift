@@ -1167,7 +1167,7 @@ public final class ReaderSession {
             return
         }
         if note.isSameDocument {
-            emit(.noteref(NoteContent(path: path, fragment: fragment, spineIndex: spineIndex, cfi: note.cfi, html: note.html, text: note.text, isInSameDocument: true, sourceRect: rect)))
+            emit(.noteref(NoteContent(path: path, fragment: fragment, spineIndex: spineIndex, cfi: note.cfi, html: note.html, text: note.text, isInSameDocument: true, sourceRect: rect, isHidden: note.isHidden)))
             return
         }
         Task { @MainActor [weak self] in
