@@ -52,8 +52,14 @@ public struct ReaderProgressSlider: View {
     /// The page the thumb stays on between the release and the end of the move it started.
     @State private var settlingPage: Int?
     @State private var moveSerial = 0
+    /// The last move started; the next one waits for it, so moves happen in the order of the releases even when
+    /// the app's `navigate` awaits something of its own first.
+    @State private var lastMove: Task<Void, Never>?
+    /// Counts presses: a cancellation noticed for one press must not end the next.
+    @State private var pressSerial = 0
     @State private var bubbleSize: CGSize = .zero
     @GestureState private var isPressed = false
+    @FocusState private var isFocused: Bool
     @Environment(\.colorScheme) private var colorScheme
 
     /// - Parameters:
@@ -148,11 +154,12 @@ public struct ReaderProgressSlider: View {
             .contentShape(Rectangle())
             .gesture(press(geometry: geometry, placed: placed), isEnabled: geometry.totalPages > 1)
             .focusable(geometry.totalPages > 1, interactions: .activate)
+            .focused($isFocused)
             .onKeyPress(keys: [.leftArrow, .rightArrow]) { press in
-                // Arrow keys follow the picture: left is towards the left edge, whichever way the book runs
+                // Arrow keys follow the picture: left is towards the left edge, whichever way the book runs. A key
+                // that cannot move (no page shown: a non-linear item) is left to whoever else wants it.
                 let towardsRight = press.key == .rightArrow
-                step(by: towardsRight != geometry.isRightToLeft ? 1 : -1, geometry: geometry)
-                return .handled
+                return step(by: towardsRight != geometry.isRightToLeft ? 1 : -1, geometry: geometry) ? .handled : .ignored
             }
         }
         .frame(height: Metrics.height)
@@ -161,14 +168,32 @@ public struct ReaderProgressSlider: View {
         .accessibilityElement(children: .contain)
         .onChange(of: isPressed) { _, pressed in
             // A press the system took away (no `onEnded`). Checked one turn later: `onEnded` runs around the same time
-            // as this reset and must see the press first.
+            // as this reset and must see the press first. Only the press that was taken away is ended: a new one
+            // may have started by then.
             guard !pressed else { return }
+            let press = pressSerial
             Task { @MainActor in
-                guard interaction.isActive else { return }
-                interaction.cancelled()
-                onEditingChanged(false)
+                guard press == pressSerial else { return }
+                endPressWithoutMoving()
             }
         }
+        .onChange(of: isFocused) { _, focused in ProgressSliderFocus.set(focused, for: session) }
+        .onChange(of: ObjectIdentifier(session)) { old, new in
+            // The same slider with another session (the app opened another book in place)
+            ProgressSliderFocus.set(false, for: old)
+            ProgressSliderFocus.set(isFocused, for: new)
+        }
+        .onDisappear {
+            // Removed while pressed (the app hid its bar) or focused: neither `onEnded` nor the reset above runs
+            endPressWithoutMoving()
+            ProgressSliderFocus.set(false, for: session)
+        }
+    }
+
+    private func endPressWithoutMoving() {
+        guard interaction.isActive else { return }
+        interaction.cancelled()
+        onEditingChanged(false)
     }
 
     // MARK: Drawing
@@ -207,8 +232,11 @@ public struct ReaderProgressSlider: View {
             .padding(.horizontal, 10)
             .padding(.vertical, 5)
             .background(.regularMaterial, in: Capsule())
+            // As wide as its text, at most the slider's width (a long chapter title is truncated). `fixedSize` after
+            // the frame: without it the frame takes the whole proposed width, the measured width is the slider's,
+            // and the label sits in the middle of the track instead of above the thumb.
             .frame(maxWidth: geometry.width)
-            .fixedSize(horizontal: false, vertical: true)
+            .fixedSize()
             .onGeometryChange(for: CGSize.self, of: { $0.size }) { bubbleSize = $0 }
             .position(x: x, y: -(Metrics.bubbleGap + bubbleSize.height / 2))
             .allowsHitTesting(false)
@@ -243,6 +271,7 @@ public struct ReaderProgressSlider: View {
                 if !interaction.isActive {
                     let thumb = (settlingPage ?? session.currentPage).map { geometry.x(ofPage: $0) }
                     interaction.began(at: value.startLocation.x, thumbX: thumb, thumbReach: Metrics.thumbReach)
+                    pressSerial += 1
                     onEditingChanged(true)
                 }
                 interaction.moved(to: value.location.x, geometry: geometry)
@@ -261,27 +290,42 @@ public struct ReaderProgressSlider: View {
     }
 
     /// One step of the adjustable action and the arrow keys: a hundredth of the book, at least a page, forward in
-    /// reading order for a positive `direction`.
-    private func step(by direction: Int, geometry: ProgressSliderGeometry) {
-        guard geometry.totalPages > 1, let current = settlingPage ?? session.currentPage else { return }
-        let stride = max(1, geometry.totalPages / 100)
-        let page = min(max(0, current + direction * stride), geometry.totalPages - 1)
-        guard page != current else { return }
+    /// reading order for a positive `direction`. Returns whether there was somewhere to go.
+    @discardableResult
+    private func step(by direction: Int, geometry: ProgressSliderGeometry) -> Bool {
+        // From the page a move in flight is heading for; otherwise from what is visible (both pages of a spread,
+        // so a step never lands on the page next to the one counted as current)
+        let visible: ClosedRange<Int>
+        if let settlingPage {
+            visible = settlingPage...settlingPage
+        } else {
+            let pages = session.visiblePages
+            guard let first = pages.first, let last = pages.last else { return false }
+            visible = first...last
+        }
+        guard let page = geometry.page(steppingFrom: visible, by: direction) else { return false }
         go(.page(page), showing: page)
+        return true
     }
 
     /// Starts the move and keeps the thumb at its target until the session has arrived (or a newer move started).
+    /// Moves run one after the other, in the order they were started.
     private func go(_ destination: Destination, showing page: Int) {
         settlingPage = page
         moveSerial += 1
         let serial = moveSerial
-        Task { @MainActor in
+        let previous = lastMove
+        lastMove = Task { @MainActor in
+            await previous?.value
             if let navigate {
                 await navigate(destination)
             } else {
                 await session.go(to: destination)
             }
-            if serial == moveSerial { settlingPage = nil }
+            if serial == moveSerial {
+                settlingPage = nil
+                lastMove = nil
+            }
         }
     }
 }

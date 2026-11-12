@@ -262,23 +262,31 @@ struct BookView: View {
         status = "Imported: \(pending.plan.added.count) added, \(pending.plan.updated.count) updated, \(pending.plan.conflicts.count) conflicts kept as they were"
     }
 
-    /// The places to go back to, as marks on the progress slider.
+    /// The places to go back to, as marks on the progress slider. A mark's identity is its position (not its index in
+    /// the stack, which changes when an earlier place is removed); a place recorded twice is one mark.
     private var backMarks: [ReaderProgressSlider.Mark] {
-        backStack.enumerated().map { index, position in
-            ReaderProgressSlider.Mark(id: "\(index):\(position.cfi.description)", position: position, label: "Previous position")
-        }
+        var seen: Set<String> = []
+        return backStack.reversed().compactMap { position -> ReaderProgressSlider.Mark? in
+            let id = position.cfi.description
+            guard seen.insert(id).inserted else { return nil }
+            return ReaderProgressSlider.Mark(id: id, position: position, label: "Previous position")
+        }.reversed()
     }
 
     /// A release of the progress slider. A move by page leaves a mark where the reader was; going to a mark takes it
-    /// off the stack.
+    /// off the stack. The history changes only once the move has happened: a move that goes nowhere (a load that
+    /// failed, the page already shown) leaves it as it was.
     private func move(_ session: ReaderSession, to destination: ReaderProgressSlider.Destination) async {
+        let origin = session.position
+        let before = session.currentPage
+        await session.go(to: destination)
+        guard session.currentPage != before else { return }
         switch destination {
         case .page:
-            if let here = session.position { backStack.append(here) }
+            if let origin { backStack.append(origin) }
         case .mark(let mark):
             backStack.removeAll { $0 == mark.position }
         }
-        await session.go(to: destination)
     }
 
     @ViewBuilder private func reader(_ session: ReaderSession) -> some View {

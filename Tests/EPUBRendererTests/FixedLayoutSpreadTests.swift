@@ -77,6 +77,7 @@ import EPUBCore
         // p01 is page-spread-left and stands alone on the left half of a two-page face.
         #expect(session.currentSpineIndex == 0)
         #expect(session.visibleSpineIndices == [0])
+        #expect(session.visiblePages == [0])
         #expect(session.isShowingSpread)
         #expect(session.chapterPageCount == 1)
         var frames = try await Self.frames(host)
@@ -104,6 +105,9 @@ import EPUBCore
         #expect(abs(left.x + 600 * left.scale - right.x) < 0.5)
         #expect(abs((left.x + right.x + 600 * right.scale) / 2 - 400) < 0.5) // centered
         #expect(session.position?.spineIndex == 1)
+        // The visible book pages are both pages of the pair; `currentPage` is the first of them.
+        #expect(session.currentPage == 1)
+        #expect(session.visiblePages == [1, 2])
         // Both pages count one book page each.
         #expect(session.pagination.chapter(spineIndex: 1)?.pageCount == 1)
         #expect(session.pagination.chapter(spineIndex: 2)?.pageCount == 1)

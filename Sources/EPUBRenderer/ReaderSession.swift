@@ -34,6 +34,8 @@ public final class ReaderSession {
     public private(set) var isLoading: Bool = false
     /// `true` once the first chapter is visible.
     public private(set) var hasLoaded: Bool = false
+    /// A page has been shown at least once (`hasLoaded` goes back to false when the automatic reloads run out).
+    private var hasEverLoaded = false
     /// Writing mode of the current document as reported by the bridge (M2: typed; was the raw CSS string in M1).
     public private(set) var writingMode: WritingMode = .horizontalTB
 
@@ -76,6 +78,17 @@ public final class ReaderSession {
     public var currentPage: Int? {
         guard hasLoaded else { return nil }
         return pagination.pageIndex(spineIndex: currentSpineIndex, pageIndex: currentPageIndex)
+    }
+
+    /// Book page indices of everything on the visible face, ascending: `currentPage`, and for a fixed-layout spread
+    /// the other page of the pair too. Empty while nothing is loaded and for a non-linear item.
+    public var visiblePages: [Int] {
+        guard let current = currentPage else { return [] }
+        var pages: Set<Int> = [current]
+        for index in visibleSpineIndices where index != currentSpineIndex {
+            if let page = pagination.pageIndex(spineIndex: index, pageIndex: 0) { pages.insert(page) }
+        }
+        return pages.sorted()
     }
 
     /// The page as it looked before the relayout in progress (settings change, resize), until the position has been
@@ -388,12 +401,14 @@ public final class ReaderSession {
 
     /// Runs one move (inside an operation) and reports it as `ReaderEvent.navigated` when the visible page changed.
     /// The first load and moves that end where they started (a failed load, the page already shown) report nothing.
+    /// A move after the automatic reloads ran out (the session is not loaded any more, but it has shown a page) is
+    /// reported like any other.
     private func reportingNavigation(_ cause: ReaderNavigation.Cause, _ move: @MainActor () async -> Void) async {
-        let wasLoaded = hasLoaded
+        let hadShownAPage = hasEverLoaded
         let before = (spineIndex: currentSpineIndex, pageIndex: currentPageIndex)
         let from = position
         await move()
-        guard wasLoaded, hasLoaded, before != (spineIndex: currentSpineIndex, pageIndex: currentPageIndex), let to = position else { return }
+        guard hadShownAPage, hasLoaded, before != (spineIndex: currentSpineIndex, pageIndex: currentPageIndex), let to = position else { return }
         emit(.navigated(ReaderNavigation(cause: cause, from: from, to: to)))
     }
 
@@ -541,6 +556,7 @@ public final class ReaderSession {
             let sizeChangedDuringLoad = viewportSize != layoutSize && pendingResize == nil
             isLoading = pendingResize != nil || sizeChangedDuringLoad
             hasLoaded = true
+            hasEverLoaded = true
             initialCFI = nil
             renderer.setContentHidden(false)
             if !sizeChangedDuringLoad { recordChapterMeasurement(unit: unit, pageCount: result.pageCount) }

@@ -235,6 +235,12 @@ M2 以降、`Examples/ReaderDemo` で次を Instruments またはログで記録
   `ReaderEvent.navigated`（03-api §3.4）、`Publication.chapterTitle(forSpineIndex:)` を足した。`Examples/ReaderDemo` は
   ステータスバーにスライダーを置き、戻るスタックを印として出す（リンクの移動元は `navigated` から取る）。テストは
   `EPUBUITests/ProgressSliderTests`（算術）と `EPUBRendererTests/NavigationEventTests`（実 WKWebView）。
+  同日の codex レビュー（5967cbe）で直したこと: ドラッグ中のラベルが常に中央に出た（枠が提案の幅いっぱいに広がり、その幅を
+  測っていた）、macOS でフォーカスのあるスライダーより先にリーダーが ← → を取った、見開きで増減が進まなかった
+  （`ReaderSession.visiblePages` を足した）、移動を始めた順に行わなかった、前の押下の取り消しが次の押下を終わらせえた、
+  押している間に外されると `onEditingChanged(false)` が出なかった、読み直しの上限の後の移動に `navigated` が出なかった、
+  ReaderDemo の戻りの印を移動の成功前に書き換えていた。見送り: ドラッグ中のページ数の測り直しへの追従、章名の索引化
+  （03-api §4.6 の既知の制限）。
 
 ## 4. 将来の拡張点（今回は作らない）
 

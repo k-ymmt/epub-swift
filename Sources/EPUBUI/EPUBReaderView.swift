@@ -108,6 +108,8 @@ public struct EPUBReaderView: View {
             onKey: { key in
                 // While a fixed-layout face is zoomed in the keys are left to the web view (M4 / M5).
                 guard gestures.keyboardEnabled, session.hasLoaded, !session.isZoomed else { return false }
+                // The session's progress slider has keyboard focus: the keys are its own (§4.6).
+                guard !ProgressSliderFocus.isFocused(session) else { return false }
                 perform(key.action(isRightToLeft: session.isRightToLeft))
                 return true
             },

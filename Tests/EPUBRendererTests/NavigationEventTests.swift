@@ -117,5 +117,24 @@ import EPUBCore
         let titled = try #require(publication.toc.first { $0.spineIndex != nil })
         #expect(publication.chapterTitle(forSpineIndex: try #require(titled.spineIndex)) != nil)
         #expect(publication.chapterTitle(forSpineIndex: 10_000) == nil)
+
+        // "Last in document order": a nested entry comes after its parent, a later sibling after both
+        func entry(_ label: String, _ spineIndex: Int?, _ children: [TOCEntry] = []) -> TOCEntry {
+            TOCEntry(label: label, href: spineIndex.map { "c\($0).xhtml" }, spineIndex: spineIndex, fragment: nil, children: children)
+        }
+        let toc = [
+            entry("Part one", 0, [entry("Chapter 1", 0), entry("Chapter 2", 1, [entry("Section 2.1", 1)])]),
+            entry("Part two", 2, [entry("Chapter 3", 2)]),
+            entry("Chapter 3, again", 2),
+            entry("Heading without a link", nil, [entry("Appendix", 4)]),
+        ]
+        let made = Publication(id: PublicationID(), metadata: Metadata(title: "t"), manifest: [], readingOrder: [], toc: toc, pageList: [],
+                               landmarks: [], layout: .reflowable, spread: .auto, pageProgression: .default, coverImagePath: nil,
+                               packageDocumentPath: "p.opf", navigationDocumentPath: nil, warnings: [])
+        #expect(made.chapterTitle(forSpineIndex: 0) == "Chapter 1")
+        #expect(made.chapterTitle(forSpineIndex: 1) == "Section 2.1")
+        #expect(made.chapterTitle(forSpineIndex: 2) == "Chapter 3, again")
+        #expect(made.chapterTitle(forSpineIndex: 3) == nil)
+        #expect(made.chapterTitle(forSpineIndex: 4) == "Appendix")
     }
 }

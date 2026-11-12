@@ -105,11 +105,42 @@ import EPUBCore
         #expect(!host.session.hasLoaded, "no reload after the limit")
         #expect(host.renderer.isContentHidden)
 
+        recorder.reset()
         await host.session.go(to: position)
         #expect(host.session.hasLoaded)
         #expect(host.session.currentSpineIndex == 6)
         #expect(host.session.currentPageIndex == 2)
         #expect(!host.renderer.isContentHidden)
+        try await Task.sleep(for: .milliseconds(100))
+        #expect(recorder.navigations.isEmpty, "loading the same page again is not a move")
+    }
+
+    /// A move to another place after the limit is a move like any other (`ReaderEvent.navigated`): it is neither the
+    /// first load nor a reload of the same page.
+    @Test func aMoveAfterTheReloadLimitIsReported() async throws {
+        let host = try await SessionHost(url: ReaderSessionTests.mobyDick)
+        let recorder = EventRecorder(host.session)
+        await host.session.loadIfNeeded()
+        await host.session.go(toSpineIndex: 6)
+        let position = try #require(host.session.position)
+        for crash in 1...ReaderSession.maximumAutomaticReloads {
+            host.session.webContentProcessDidTerminate()
+            try await host.waitUntil(timeout: .seconds(15)) {
+                recorder.events.filter { if case .error(.webContentTerminated) = $0 { true } else { false } }.count == crash
+                    && host.session.hasLoaded && !host.session.isLoading
+            }
+        }
+        host.session.webContentProcessDidTerminate()
+        #expect(!host.session.hasLoaded)
+        recorder.reset()
+
+        await host.session.go(toSpineIndex: 8)
+        #expect(host.session.hasLoaded)
+        try await host.waitUntil { !recorder.navigations.isEmpty }
+        let navigation = try #require(recorder.navigations.first)
+        #expect(navigation.cause == .jump)
+        #expect(navigation.from?.cfi == position.cfi)
+        #expect(navigation.to.spineIndex == 8)
     }
 
     /// The limit can be reached by a crash during a load: that load must not stay "loading".

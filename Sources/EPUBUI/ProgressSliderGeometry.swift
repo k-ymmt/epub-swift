@@ -36,6 +36,16 @@ struct ProgressSliderGeometry: Equatable {
         return clamped(Int((fraction * Double(totalPages - 1)).rounded()))
     }
 
+    /// The page one step away from the visible pages: a hundredth of the book, at least one page, forward in reading
+    /// order for a positive `direction`. A step starts from the visible page on that side (the far page of a
+    /// two-page spread), so it always leaves what is shown; nil when there is nowhere to go.
+    func page(steppingFrom visible: ClosedRange<Int>, by direction: Int) -> Int? {
+        guard totalPages > 1, direction != 0 else { return nil }
+        let stride = max(1, totalPages / 100)
+        let page = direction > 0 ? clamped(visible.upperBound + stride) : clamped(visible.lowerBound - stride)
+        return visible.contains(page) ? nil : page
+    }
+
     /// The part of the book this page ends at, as shown to readers (`BookPagination.progression`'s arithmetic).
     func progression(ofPage page: Int) -> Double {
         guard totalPages > 0 else { return 0 }
@@ -116,5 +126,30 @@ struct ProgressSliderInteraction: Equatable {
 
     mutating func cancelled() {
         self = ProgressSliderInteraction()
+    }
+}
+
+/// Sessions whose progress slider has keyboard focus. On macOS the reader observes keys with a window-wide monitor
+/// (the web view is first responder most of the time), which runs before the focused view: while the slider of the
+/// same session has focus, the reader leaves the arrow keys to it (`EPUBReaderView`).
+@MainActor
+enum ProgressSliderFocus {
+    private static var focused: Set<ObjectIdentifier> = []
+
+    static func set(_ isFocused: Bool, for session: AnyObject) {
+        set(isFocused, for: ObjectIdentifier(session))
+    }
+
+    /// By identifier: for a session the slider no longer has (it was given another one).
+    static func set(_ isFocused: Bool, for session: ObjectIdentifier) {
+        if isFocused {
+            focused.insert(session)
+        } else {
+            focused.remove(session)
+        }
+    }
+
+    static func isFocused(_ session: AnyObject) -> Bool {
+        focused.contains(ObjectIdentifier(session))
     }
 }

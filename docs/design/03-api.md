@@ -270,6 +270,7 @@ M2 で追加（実装済み）:
 extension ReaderSession {
     public private(set) var pagination: BookPagination     // 計測が進むたびに更新。ReaderEvent.paginationUpdated と同じ値
     public var currentPage: Int?                           // 書籍全体の 0 始まりページ index。未読み込み / 非線形の章では nil
+    public var visiblePages: [Int]                         // 今の面にある書籍ページ（昇順）。FXL の見開きは 2 つ。currentPage が nil なら空
     public private(set) var relayoutSnapshot: PageSnapshot? // 再レイアウト中だけ非 nil（§4.5）
     public func go(toPage index: Int) async                // BookPagination の番号で移動。推定中の章では章内ページが近似になる
 }
@@ -427,7 +428,8 @@ M5 で変更・確定した点:
 - 移動の操作が終わり、可視ページ（spine index と章内ページ）が変わっていたときに 1 回出る。その移動の `positionChanged` の後、
   リンクなら `internalLink` の前。
 - 出ないもの: 最初の読み込み、移動先が今のページだった操作、読み込みに失敗した操作、同じテキストのままの再レイアウト
-  （設定変更、リサイズ、遅れて届くページ数、WebContent の復旧）。`positionChanged` はこれらでも出るので、アプリが
+  （設定変更、リサイズ、遅れて届くページ数、WebContent の復旧）。自動の読み直しが上限に達した後（`hasLoaded` が false に
+  戻っている）の別の場所への移動は、最初の読み込みではないので出る（`from` は落ちる前の `position`）。`positionChanged` はこれらでも出るので、アプリが
   「読者が動いた」と「組み直された」を分けるにはこのイベントを見る（ページをめくったらバーを隠す、移動元を覚えて戻る、など）。
 - テキストの無いページどうしの移動では `from.cfi == to.cfi` になりうる（`position` が前の CFI を保つため）。それでもページは
   変わっているので出る。
@@ -608,17 +610,27 @@ extension ReaderSession {
   （`layoutDirection`）には従わない: 本の向きだけで決める。
 - **ページの端。** 先頭のページと最後のページは、トラックの両端からつまみの半分だけ内側。割合の表示は
   `BookPagination.progression` と同じ「そのページの終わりまで」（最後のページで 100%）。
-- **`navigate`** を渡すと、移動は部品でなくその処理が行う（移動の前に何かしたいアプリ用。中から `session.go(to:)` を呼ぶ）。
-  nil なら部品が `session.go(to:)` を呼ぶ。`onEditingChanged` は押下の始まりと終わり（離した・取り消された）。
+- **`navigate`** を渡すと、移動は部品でなくその処理が行う（移動の前後に何かしたいアプリ用。中から `session.go(to:)` を呼ぶ）。
+  nil なら部品が `session.go(to:)` を呼ぶ。移動は始めた順に 1 つずつ行う: 前の `navigate` が戻るまで次を呼ばないので、
+  `navigate` の中で何かを待っても順番は入れ替わらず、`navigate` の中で見るセッションの前後はその移動のもの。
+  `onEditingChanged` は押下の始まりと終わり（離した・取り消された・押している間にビューが外された）。
+- **ドラッグ中のラベル**は文字の幅のカプセルで、つまみの真上。スライダーの幅からはみ出す分は内側へ寄せ、幅より長い章名は
+  切り詰める。
 - **見た目は最小限。** トラック、印、つまみ、ドラッグ中のラベルだけを描く。読んだ部分の色は `.tint`。周りの帯や、いつ出すかは
   アプリが決める。高さは固定（iOS 32 pt、macOS 22 pt）で、ドラッグ中のラベルは枠の上にはみ出して出る（載せる側は切り抜かない）。
 - **支援技術。** トラック全体が 1 つの調整可能な要素（名前は `label`、値は「章名, 割合」、識別子 `ReaderProgressSlider`）で、
   1 回の増減は本の 1/100（最低 1 ページ）。印はそれぞれボタン（名前は `Mark.label`、値は「章名, 割合」、識別子
   `ReaderProgressSliderMark-<marks の添字>`）。キーボードのフォーカス（システムのキーボードナビゲーションが有効なとき）を
-  受け、← → で見た目の向きに 1/100 ずつ動く。
+  受け、← → で見た目の向きに 1/100 ずつ動く。増減は見えているページ（`visiblePages`）の外へ出る: 見開きでは、進むときは
+  2 ページ目の次、戻るときは 1 ページ目の前から数える（1 ページ目から数えると、行き先が見開きのもう 1 ページになって動かず、
+  何度押しても進まない）。ページが無いとき（非線形の章）は動かず、← → は他へ渡す。
+- **macOS のキー。** `EPUBReaderView` はウィンドウのキーをローカルモニタで受ける（§4.3）ので、フォーカスのあるビューより先に
+  ← → を取る。同じセッションのスライダーにフォーカスがある間は、リーダーはキーを取らない（`ProgressSliderFocus`、`internal`）。
 - ページ数は `ReaderSession.pagination` のもので、全章の計測が済むまでは推定を含む。計測が進むと、つまみと印が少し動く。
 - 算術（ページ ⇄ 位置、1 回の押下の結果）は `ProgressSliderGeometry` / `ProgressSliderInteraction`（`internal`）に分け、
   `EPUBUITests/ProgressSliderTests` で検証する。ビューそのものの自動テストは無い（ReaderDemo と、組み込み先の UI テストで見る）。
+- 既知の制限: ドラッグの途中でページ数が測り直されると、次に指が動くまでつまみとラベルが少しずれる（離したときの行き先は、
+  そのときのページ数で指の位置から決める）。`chapterTitle(forSpineIndex:)` は呼ぶたびに目次を走査する（索引は持たない）。
 
 ## 5. 公開しない型
 

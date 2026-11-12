@@ -4,7 +4,7 @@ import Testing
 
 /// The arithmetic of `ReaderProgressSlider` (docs/design/03-api.md §4.6): pages along the track, and what one press
 /// (drag, tap on a mark, tap on the track) does on release.
-@Suite struct ProgressSliderTests {
+@Suite @MainActor struct ProgressSliderTests {
     let geometry = ProgressSliderGeometry(totalPages: 101, width: 220, inset: 10, isRightToLeft: false)
     var rightBound: ProgressSliderGeometry {
         var g = geometry
@@ -131,5 +131,39 @@ import Testing
         // Page 50 is at 110 either way; dragging left reads forward
         let result = press(from: 110, to: 70, in: rightBound)
         #expect(result.outcome == .page(70))
+    }
+
+    @Test func aStepLeavesTheVisiblePages() {
+        let book = ProgressSliderGeometry(totalPages: 10, width: 220, inset: 10, isRightToLeft: false)
+        #expect(book.page(steppingFrom: 4...4, by: 1) == 5)
+        #expect(book.page(steppingFrom: 4...4, by: -1) == 3)
+        // A two-page spread: the step starts from the page on that side, not from the first of the pair (a step to
+        // the partner page would not move, and the next step would start from the same place again)
+        #expect(book.page(steppingFrom: 1...2, by: 1) == 3)
+        #expect(book.page(steppingFrom: 1...2, by: -1) == 0)
+        // The ends of the book
+        #expect(book.page(steppingFrom: 8...9, by: 1) == nil)
+        #expect(book.page(steppingFrom: 0...0, by: -1) == nil)
+        #expect(book.page(steppingFrom: 9...9, by: -1) == 8)
+        // A long book moves a hundredth at a time, and stops at its ends
+        #expect(geometry.page(steppingFrom: 50...50, by: 1) == 51)
+        let long = ProgressSliderGeometry(totalPages: 1_000, width: 220, inset: 10, isRightToLeft: false)
+        #expect(long.page(steppingFrom: 500...500, by: 1) == 510)
+        #expect(long.page(steppingFrom: 500...501, by: -1) == 490)
+        #expect(long.page(steppingFrom: 995...995, by: 1) == 999)
+        // Nothing to step through
+        #expect(ProgressSliderGeometry(totalPages: 1, width: 220, inset: 10, isRightToLeft: false).page(steppingFrom: 0...0, by: 1) == nil)
+        #expect(book.page(steppingFrom: 4...4, by: 0) == nil)
+    }
+
+    @Test func aFocusedSliderIsKnownPerSession() {
+        final class Owner {}
+        let first = Owner(), second = Owner()
+        #expect(!ProgressSliderFocus.isFocused(first))
+        ProgressSliderFocus.set(true, for: first)
+        #expect(ProgressSliderFocus.isFocused(first))
+        #expect(!ProgressSliderFocus.isFocused(second))
+        ProgressSliderFocus.set(false, for: first)
+        #expect(!ProgressSliderFocus.isFocused(first))
     }
 }
