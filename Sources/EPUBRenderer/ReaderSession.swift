@@ -1150,6 +1150,9 @@ public final class ReaderSession {
         emit(.internalLink(cfi))
     }
 
+    /// Test hook: runs after a note in another document was read and before the noteref is reported.
+    @ObservationIgnored var noterefLookupDidFinish: (@MainActor () async -> Void)?
+
     private func handleNoteref(_ note: BridgeNoteref) {
         let rect = pageRects(fromViewport: [note.rect]).first ?? .zero
         let destination = LinkDestination.resolve(note.href, publicationID: container.id, publication: publication, contains: container.contains(path:))
@@ -1170,9 +1173,18 @@ public final class ReaderSession {
             emit(.noteref(NoteContent(path: path, fragment: fragment, spineIndex: spineIndex, cfi: note.cfi, html: note.html, text: note.text, isInSameDocument: true, sourceRect: rect, isHidden: note.isHidden)))
             return
         }
+        // The lookup reads another document, and the reader may move on before it ends. The noteref's box is then no
+        // longer on the visible page, so the note is dropped: an app would anchor its popover to a place that is gone
+        // (codex review of 99facab).
+        let tappedAt = (loadGeneration, currentSpineIndex, currentPageIndex)
         Task { @MainActor [weak self] in
             guard let self else { return }
             let found = if let fragment { await FragmentLookup.note(path: path, fragment: fragment, spineIndex: spineIndex, in: self.container) } else { nil as (cfi: CFI?, text: String)? }
+            await self.noterefLookupDidFinish?()
+            guard tappedAt == (self.loadGeneration, self.currentSpineIndex, self.currentPageIndex) else {
+                self.logger.debug("noteref to \(path) dropped: the page moved before the note was read")
+                return
+            }
             self.emit(.noteref(NoteContent(path: path, fragment: fragment, spineIndex: spineIndex, cfi: found?.cfi, html: nil, text: found?.text, isInSameDocument: false, sourceRect: rect)))
         }
     }

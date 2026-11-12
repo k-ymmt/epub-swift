@@ -314,7 +314,8 @@ M5 で変更（`link` / `noteref` / `imageTap` の実際の形）:
 - `noteref` は `epub:type~="noteref"` のリンクだけ（`role="doc-noteref"` だけのリンクや脚注番号風の普通のリンクは `link` 扱い）。
   payload は `{href, rect, sameDocument, html?, text?, cfi?, hidden?}`。同じ文書の脚注は参照先要素（`aside` / `li` などを
   `noteElement` で上にたどった要素）の `innerHTML`、空白を詰めた `textContent`、要素の CFI、ページ上に組まれていないか
-  （`hidden`: 要素の `getClientRects()` が空。下の隠した `aside` と、出版物の CSS の `display: none`）を同梱する。別文書の脚注は Swift が
+  （`hidden`: 要素にもその中身にも `getClientRects()` が無い = 下の隠した `aside` と出版物の CSS の `display: none`、
+  または `visibility` が `hidden` / `collapse`）を同梱する。別文書の脚注は Swift が
   EPUBCore で文書を読み、`XMLDocument.notePath(forElementWithID:)` で要素を見つけてテキストと CFI を作る（`html` は nil）。
 - `imageTap` は `{src, alt, rect, x, y}`。`img` と SVG の `image`（`alt` は `aria-label` / `<title>`）。リンク内の画像はリンク扱い。
   FXL のページでは送らない（絵がページそのものなので、タップはめくりに使う）。

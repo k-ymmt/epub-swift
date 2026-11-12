@@ -1545,6 +1545,22 @@
     return target;
   }
 
+  // Whether a note has no place on a page: not laid out (the aside hideReferencedNotes took out of the flow, or the
+  // publication's own `display: none`) or not painted (`visibility: hidden`). The note can then only be read from
+  // the noteref message. A `display: contents` note has no box of its own, but its content has: the content is asked
+  // too (codex review of 99facab).
+  function isHiddenNote(note) {
+    let laidOut = note.getClientRects().length > 0;
+    if (!laidOut) {
+      const range = document.createRange();
+      range.selectNodeContents(note);
+      laidOut = range.getClientRects().length > 0;
+    }
+    if (!laidOut) { return true; }
+    const style = getComputedStyle(note);
+    return style.visibility === "hidden" || style.visibility === "collapse";
+  }
+
   // noteref click (02-rendering §4.2, M5): the note's markup and text when it is in this document.
   function noteref(a, href, x, y) {
     const payload = { href: href, rect: rectObject(rectAt(a, x, y)), sameDocument: false };
@@ -1555,9 +1571,7 @@
       payload.html = note.innerHTML;
       payload.text = (note.textContent || "").replace(/\s+/g, " ").trim();
       payload.cfi = CFI.fromNode(note, null);
-      // Not laid out (the aside hideReferencedNotes took out of the flow, or the publication's own `display: none`):
-      // there is no place on a page to go to, the note can only be read from this message.
-      payload.hidden = note.getClientRects().length === 0;
+      payload.hidden = isHiddenNote(note);
     }
     post("noteref", payload);
   }

@@ -422,7 +422,10 @@ M5 で変更・確定した点:
 - `NoteContent.isHidden`（2026-11-12 追加）: 脚注の要素がページ上に組まれていないとき true（上の隠した `aside`、
   出版物の CSS が `display: none` にした脚注）。その `cfi` へ `go(to:)` しても見えるものがないので、アプリは「脚注へ移動」を
   出さずに `text` を表示する。章末の段落やリスト項目のようにページに残る脚注は false で、移動できる。分かるのは同じ文書の
-  脚注だけ（別文書は noteref を押した時点で描画していないので常に false）。
+  脚注だけ（別文書は noteref を押した時点で描画していないので常に false）。判定は要素かその中身に矩形があるか
+  （`display: contents` の脚注は中身で見る）と `visibility`（`hidden` / `collapse` は隠れている扱い）。
+- 別文書の脚注は、押した後に文書を読んでから `noteref` を出す。読む間にページが動いていたら出さない（noteref の矩形が
+  もう可視ページに無い。2026-11-12）。
 - `TappedImage` は Hashable にしない（データ取得クロージャを持つため）。FXL のページでは送らない。
 - `externalLink` の扱いは変わらない（移動せず通知のみ）。`internalLink` は移動の後に出る。
 - `ReaderError.loadTimeout` は従来どおり再試行をアプリに任せる。`webContentTerminated` ではセッションが表示中の面を

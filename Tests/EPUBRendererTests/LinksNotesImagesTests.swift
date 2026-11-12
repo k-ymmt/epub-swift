@@ -203,6 +203,51 @@ final class EventRecorder {
         #expect(host.session.currentPageIndex == page)
     }
 
+    /// A note the publication's style shows through its content only (`display: contents`) is on the page; one it
+    /// does not paint (`visibility: hidden`) is not (codex review of 99facab).
+    @Test func aNotesOwnStyleDecidesWhetherItIsHidden() async throws {
+        let host = try await SessionHost(url: Self.sample)
+        let recorder = EventRecorder(host.session)
+        await host.session.loadIfNeeded()
+
+        func isHidden(withStyle style: String) async throws -> Bool {
+            recorder.reset()
+            _ = try await host.js("document.getElementById('pn1').setAttribute('style', '\(style)'); return true;")
+            try await click("ref4", in: host)
+            try await host.waitUntil { !recorder.notes.isEmpty }
+            return try #require(recorder.notes.first).isHidden
+        }
+        #expect(try await isHidden(withStyle: "display: contents") == false)
+        #expect(try await isHidden(withStyle: "visibility: hidden") == true)
+        #expect(try await isHidden(withStyle: "display: none") == true)
+        #expect(try await isHidden(withStyle: "") == false)
+    }
+
+    /// The note of another document is read after the tap. When the reader moved meanwhile, the noteref's box is not
+    /// on the page any more: nothing is reported (codex review of 99facab).
+    @Test func aNoterefWhoseNoteIsReadAfterThePageMovedIsDropped() async throws {
+        let host = try await SessionHost(url: Self.sample)
+        let recorder = EventRecorder(host.session)
+        await host.session.loadIfNeeded()
+
+        var finished = 0
+        host.session.noterefLookupDidFinish = { [session = host.session] in
+            await session.goForward()
+            finished += 1
+        }
+        try await click("ref2", in: host)
+        try await host.waitUntil { finished == 1 }
+        try await Task.sleep(for: .milliseconds(200))
+        #expect(host.session.currentPageIndex == 1)
+        #expect(recorder.notes.isEmpty, "the popover's anchor is on a page that is gone")
+
+        // The next tap is reported as usual.
+        host.session.noterefLookupDidFinish = nil
+        try await click("ref2", in: host)
+        try await host.waitUntil { !recorder.notes.isEmpty }
+        #expect(recorder.notes.first?.text == "The endnote text.")
+    }
+
     @Test func noterefIntoAnotherDocumentResolvesTheNoteThroughEPUBCore() async throws {
         let host = try await SessionHost(url: Self.sample)
         let recorder = EventRecorder(host.session)
