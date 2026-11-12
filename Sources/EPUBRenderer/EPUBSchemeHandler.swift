@@ -79,6 +79,12 @@ final class EPUBSchemeHandler: NSObject, WKURLSchemeHandler {
         ContainerPath.normalize(url.path)
     }
 
+    /// The bundled stylesheet `name` (`reader-after.css`).
+    nonisolated static func readerResourceFileURL(name: String, in bundle: Bundle = .module) -> URL? {
+        let base = (name as NSString).deletingPathExtension
+        return bundle.url(forResource: base, withExtension: "css", subdirectory: "Reader") ?? bundle.url(forResource: base, withExtension: "css")
+    }
+
     static func readerResourceURL(publicationID: PublicationID, name: String) -> String {
         "\(scheme)://\(publicationID)/_reader/css/\(name)"
     }
@@ -167,8 +173,7 @@ final class EPUBSchemeHandler: NSObject, WKURLSchemeHandler {
         }
         switch components[1] {
         case "css":
-            let name = (components[2] as NSString).deletingPathExtension
-            if let fileURL = bundle.url(forResource: name, withExtension: "css", subdirectory: "Reader") ?? bundle.url(forResource: name, withExtension: "css"),
+            if let fileURL = Self.readerResourceFileURL(name: components[2], in: bundle),
                let data = try? Data(contentsOf: fileURL) {
                 finish(task, taskID: taskID, response: Self.response(url: url, mediaType: "text/css", length: data.count), data: data)
             } else {

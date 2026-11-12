@@ -139,7 +139,7 @@ enum ContentInjector {
         }
         var css = ":root { " + declarations.joined(separator: "; ") + "; }"
         if case .custom(let resource) = settings.font {
-            let url = "epub://\(publicationID)/_reader/fonts/\(ContainerPath.percentEncoded(resource.familyName))"
+            let url = "epub://\(publicationID)/_reader/fonts/\(fontURLSegment(resource.familyName))"
             css += " @font-face { font-family: \(cssString(resource.familyName)); src: url(\"\(url)\"); }"
         }
         // The attributes reader.js sets after load, pre-applied through the selector-less fallback so that the
@@ -155,10 +155,13 @@ enum ContentInjector {
         return css + (rootAttrs.isEmpty ? "" : " " + rootAttrs.joined(separator: " "))
     }
 
-    /// What a font override applies to: everything in the body except code (`pre`, `code`, `kbd`, `samp`, `tt` and
-    /// what is inside them). Code keeps the publisher's font, or the browser's `monospace`, because it is aligned by
-    /// column. `reader-after.css` has the same selector behind `html[data-reader-font="override"]`.
-    static let fontOverrideSelector = "html body, html body *:not(:is(pre, code, kbd, samp, tt), :is(pre, code, kbd, samp, tt) *)"
+    /// What a font override applies to: everything in the body except code (`pre`, `code`, `kbd`, `samp`, `tt`), MathML
+    /// and SVG, and what is inside them. Code keeps the publisher's font, or the browser's `monospace`, because it is
+    /// aligned by column; math needs its math font and the text of a figure the font it was laid out with.
+    /// `reader-after.css` has the same selector behind `html[data-reader-font="override"]`
+    /// (`readerAfterStylesheetHasTheSameFontOverrideSelector`).
+    static let fontOverrideSelector = "html body, html body *:not(\(fontOverrideExclusions), \(fontOverrideExclusions) *)"
+    private static let fontOverrideExclusions = ":is(pre, code, kbd, samp, tt, math, svg)"
 
     /// The fonts behind every override: the platform's standard text font.
     private static let systemFontFamilyCSS = "-apple-system, system-ui, sans-serif"
@@ -172,11 +175,30 @@ enum ContentInjector {
         }
     }
 
-    /// A family name as a CSS string. The characters that could end the string (a quote, a backslash, a line break or
-    /// another control character) are dropped: no font family is named with them.
+    /// A family name as a CSS string. Every character that could end the string (a quote, a backslash, a line break or
+    /// another control character) or that means something to the document the style is embedded in (`&`, `<`, `>`: the
+    /// `<style>` of an XHTML document is parsed as XML) is written as a CSS escape (`\26 `), so the name stays the same
+    /// name and the text needs no second escaping for XHTML or HTML.
     static func cssString(_ name: String) -> String {
-        let kept = name.unicodeScalars.filter { $0 != "\"" && $0 != "\\" && !CharacterSet.controlCharacters.contains($0) && !CharacterSet.newlines.contains($0) }
-        return "\"\(String(String.UnicodeScalarView(kept)))\""
+        var result = "\""
+        for scalar in name.unicodeScalars {
+            switch scalar {
+            case "\"", "\\", "'", "&", "<", ">", "\u{7F}", "\u{85}", "\u{2028}", "\u{2029}":
+                result += "\\" + String(scalar.value, radix: 16) + " "
+            case _ where scalar.value < 0x20:
+                result += "\\" + String(scalar.value, radix: 16) + " "
+            default:
+                result.unicodeScalars.append(scalar)
+            }
+        }
+        return result + "\""
+    }
+
+    /// A family name as one path segment of the `epub://<id>/_reader/fonts/<name>` URL: everything but unreserved
+    /// characters is percent-encoded, so the URL can stand in a CSS `url("…")` inside XHTML as it is.
+    static func fontURLSegment(_ name: String) -> String {
+        let unreserved = CharacterSet(charactersIn: "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~")
+        return name.addingPercentEncoding(withAllowedCharacters: unreserved) ?? ""
     }
 
     /// Never traps: values outside `Int` (a fixed-layout viewport of `width=1e30`) are formatted without conversion.

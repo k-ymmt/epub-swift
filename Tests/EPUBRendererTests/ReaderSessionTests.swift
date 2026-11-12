@@ -194,8 +194,10 @@ final class SessionHost {
     }
 
     /// Code is aligned by column, so a font override leaves `pre` / `code` / `kbd` / `samp` / `tt` and what is inside
-    /// them alone: both the load-time rule (`ContentInjector.rootStyle`) and the one in `reader-after.css` apply here.
-    @Test func fontOverrideLeavesCodeInItsOwnFont() async throws {
+    /// them alone, and so it does MathML and SVG (math fonts, the text of a figure). Both the load-time rule
+    /// (`ContentInjector.rootStyle`) and the one in `reader-after.css` apply here: either one without the exclusion
+    /// fails this test (`readerAfterStylesheetHasTheSameFontOverrideSelector` keeps the two the same).
+    @Test func fontOverrideLeavesCodeMathAndSVGInTheirOwnFont() async throws {
         var settings = ReaderSettings()
         settings.font = .system(name: "Helvetica")
         let host = try await SessionHost(url: Self.mobyDick, settings: settings)
@@ -204,18 +206,22 @@ final class SessionHost {
         let families = try await host.js("""
             const holder = document.createElement("div");
             holder.innerHTML = '<p id="t-p">a <code id="t-code">b</code> <kbd id="t-kbd">c</kbd> <samp id="t-samp">d</samp> <tt id="t-tt">e</tt> <em id="t-em">f</em></p>'
-              + '<pre id="t-pre">g <span id="t-span">h</span></pre><h2 id="t-h2">i</h2>';
+              + '<pre id="t-pre">g <span id="t-span">h</span></pre><h2 id="t-h2">i</h2>'
+              + '<math xmlns="http://www.w3.org/1998/Math/MathML" id="t-math"><mi id="t-mi">x</mi></math>'
+              + '<svg xmlns="http://www.w3.org/2000/svg" width="10" height="10"><text id="t-text" font-family="Courier">y</text></svg>';
             document.body.appendChild(holder);
             const family = id => getComputedStyle(document.getElementById(id)).fontFamily;
-            return ["t-p", "t-em", "t-h2", "t-code", "t-kbd", "t-samp", "t-tt", "t-pre", "t-span"].map(family);
+            return ["t-p", "t-em", "t-h2", "t-code", "t-kbd", "t-samp", "t-tt", "t-pre", "t-span", "t-math", "t-mi", "t-text"].map(family);
             """) as? [String]
         let all = try #require(families)
-        #expect(all.count == 9)
+        #expect(all.count == 12)
         for overridden in all.prefix(3) { #expect(overridden.contains("Helvetica"), "\(all)") }
-        for code in all.dropFirst(3) {
+        for code in all[3..<9] {
             #expect(!code.contains("Helvetica"), "\(all)")
             #expect(code.contains("monospace"), "\(all)")
         }
+        for kept in all[9...] { #expect(!kept.contains("Helvetica") && !kept.isEmpty, "\(all)") }
+        #expect(all[11].contains("Courier"), "the SVG text keeps its presentation attribute: \(all)")
 
         // The same holds for a font chosen after the load.
         host.session.settings.font = .system(name: "Times New Roman")

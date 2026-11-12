@@ -24,11 +24,12 @@ a, a:link, a:visited {
   color: var(--reader-link) !important;
 }
 
-/* Font override (ReaderSettings.font != .publisher). reader.js sets the attribute. Code (pre, code, kbd, samp, tt
-   and what is inside them) keeps its own font: it is aligned by column. The same selector, without the attribute,
-   is ContentInjector.fontOverrideSelector (the first paint). */
+/* Font override (ReaderSettings.font != .publisher). reader.js sets the attribute. Code (pre, code, kbd, samp, tt),
+   MathML and SVG, and what is inside them, keep their own font: code is aligned by column, math needs its math
+   font, a figure's text the font it was laid out with. The same selector, without the attribute, is
+   ContentInjector.fontOverrideSelector (the first paint). */
 html[data-reader-font="override"] body,
-html[data-reader-font="override"] body *:not(:is(pre, code, kbd, samp, tt), :is(pre, code, kbd, samp, tt) *) {
+html[data-reader-font="override"] body *:not(:is(pre, code, kbd, samp, tt, math, svg), :is(pre, code, kbd, samp, tt, math, svg) *) {
   font-family: var(--reader-font-family) !important;
 }
 

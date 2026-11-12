@@ -108,18 +108,50 @@ import EPUBCore
         #expect(ContentInjector.fontFamilyCSS(.publisher) == nil)
         #expect(ContentInjector.fontFamilyCSS(.systemUI) == "-apple-system, system-ui, sans-serif")
         #expect(ContentInjector.fontFamilyCSS(.system(name: "Hiragino Mincho ProN")) == "\"Hiragino Mincho ProN\", -apple-system, system-ui, sans-serif")
-        // A quote or a backslash in a name cannot end the CSS string.
-        #expect(ContentInjector.fontFamilyCSS(.system(name: "A\"; } body { display: none } x\\")) == "\"A; } body { display: none } x\", -apple-system, system-ui, sans-serif")
+        #expect(ContentInjector.fontFamilyCSS(.system(name: "游明朝体")) == "\"游明朝体\", -apple-system, system-ui, sans-serif")
     }
 
-    @Test func rootStyleOverridesTheFontOnlyOutsideCode() {
+    /// A family name is written as a CSS string in which every character that could end the string, or mean something
+    /// to the XHTML / HTML document the style is embedded in, is a CSS escape: the name stays the same name, and the
+    /// text contains none of `"`, `\` + letter, `&`, `<`, `>` or a line break (codex review of e5ac1d1).
+    @Test func familyNamesAreEscapedForCSSAndMarkup() {
+        #expect(ContentInjector.cssString("B&H \"Lucida\"") == "\"B\\26 H \\22 Lucida\\22 \"")
+        #expect(ContentInjector.cssString("a\\b") == "\"a\\5c b\"")
+        #expect(ContentInjector.cssString("a\nb") == "\"a\\a b\"")
+        let hostile = "A&quot;; } body { display: none !important } /*</style><style>*{}"
+        let css = ContentInjector.cssString(hostile)
+        #expect(!css.dropFirst().dropLast().contains("\""))
+        for forbidden in ["&", "<", ">", "\n"] { #expect(!css.contains(forbidden), "\(forbidden) in \(css)") }
+
+        // The style element of an XHTML document is parsed as XML: the settings style stays well-formed and one rule.
+        var settings = ReaderSettings()
+        settings.font = .custom(FontResource(familyName: hostile, fileURL: URL(fileURLWithPath: "/tmp/x.ttf")))
+        let style = ContentInjector.rootStyle(settings: settings, pageSize: .zero, publicationID: PublicationID())
+        for forbidden in ["&", "<"] { #expect(!style.contains(forbidden), "\(forbidden) in \(style)") }
+        #expect(!style.contains("display: none !important } /*</style>"))
+        #expect((try? XMLDocument(xmlString: "<style>\(style)</style>")) != nil)
+    }
+
+    @Test func rootStyleOverridesTheFontOnlyOutsideCodeMathAndSVG() {
         var settings = ReaderSettings()
         let publisher = ContentInjector.rootStyle(settings: settings, pageSize: .zero, publicationID: PublicationID())
         #expect(!publisher.contains("font-family"))
+        let kept = ":is(pre, code, kbd, samp, tt, math, svg)"
+        #expect(ContentInjector.fontOverrideSelector == "html body, html body *:not(\(kept), \(kept) *)")
         for font in [ReaderSettings.FontChoice.systemUI, .system(name: "Avenir")] {
             settings.font = font
             let css = ContentInjector.rootStyle(settings: settings, pageSize: .zero, publicationID: PublicationID())
-            #expect(css.contains("html body, html body *:not(:is(pre, code, kbd, samp, tt), :is(pre, code, kbd, samp, tt) *) { font-family: var(--reader-font-family) !important; }"))
+            #expect(css.contains("\(ContentInjector.fontOverrideSelector) { font-family: var(--reader-font-family) !important; }"))
         }
+    }
+
+    /// `reader-after.css` repeats the selector behind the attribute `reader.js` sets; the two must not drift apart.
+    @Test func readerAfterStylesheetHasTheSameFontOverrideSelector() throws {
+        let url = try #require(EPUBSchemeHandler.readerResourceFileURL(name: "reader-after.css"))
+        let css = try String(contentsOf: url, encoding: .utf8)
+        let attributed = ContentInjector.fontOverrideSelector
+            .replacingOccurrences(of: "html body", with: "html[data-reader-font=\"override\"] body")
+            .replacingOccurrences(of: "body, html", with: "body,\nhtml")
+        #expect(css.contains("\(attributed) {\n  font-family: var(--reader-font-family) !important;\n}"), "\(attributed)")
     }
 }
