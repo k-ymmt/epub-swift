@@ -31,6 +31,36 @@ public enum ReaderEvent: Sendable {
     case noteref(NoteContent)
     /// A tap on an image (`<img>`, SVG `<image>`) that is not inside a link, on a reflowable page (M5).
     case imageTapped(TappedImage)
+    /// The visible page changed because the reader moved: a page turn, a jump (`go(to:)`, `go(toPage:)`,
+    /// `show(_:)`, …) or a followed link. Emitted after the move's `positionChanged` (and before `internalLink`).
+    /// Not emitted for the first load, nor when only the layout changed under the same text (settings, resize, a
+    /// late page count): apps tell "the reader went somewhere" from "the page was laid out again" by this event.
+    case navigated(ReaderNavigation)
+}
+
+/// One move of the reader (docs/design/03-api.md §3.4): why the visible page changed, and from where to where.
+public struct ReaderNavigation: Sendable, Hashable {
+    public enum Cause: Sendable, Hashable {
+        /// `goForward()` / `goBackward()`: the next or previous page (EPUBUI's taps, swipes and keys).
+        case pageTurn
+        /// A move the app asked for: `go(to:)`, `go(toPage:)`, `go(toSpineIndex:)`, `go(toPageInChapter:)`, `show(_:)`.
+        case jump
+        /// A link inside the publication that the reader tapped (`ReaderEvent.internalLink` follows).
+        case link
+    }
+
+    public var cause: Cause
+    /// The position before the move; nil when none had been published yet.
+    public var from: ReadingPosition?
+    /// The position after the move (`ReaderSession.position`). On a page without text it can hold the same CFI as
+    /// `from`.
+    public var to: ReadingPosition
+
+    public init(cause: Cause, from: ReadingPosition?, to: ReadingPosition) {
+        self.cause = cause
+        self.from = from
+        self.to = to
+    }
 }
 
 /// The note a noteref points at (docs/design/03-api.md §3.4, M5).

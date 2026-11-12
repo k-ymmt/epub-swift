@@ -291,13 +291,15 @@ public final class ReaderSession {
     /// Next page, or the first page of the next linear spine item.
     public func goForward() async {
         await run { [self] in
-            // Ask the document for page `current + 1` even when it looks like the last page: the page count can grow
-            // after late image loads, and `goToPage` re-measures before clamping. Only when the document cannot move
-            // forward is the next chapter loaded.
-            let before = currentPageIndex
-            let moved = await goToPageInChapter(currentPageIndex + 1, clampToKnownCount: false)
-            if moved, currentPageIndex == before, let next = nextLinearSpineIndex(after: currentSpineIndex) {
-                await loadChapter(next, target: .first)
+            await reportingNavigation(.pageTurn) { [self] in
+                // Ask the document for page `current + 1` even when it looks like the last page: the page count can
+                // grow after late image loads, and `goToPage` re-measures before clamping. Only when the document
+                // cannot move forward is the next chapter loaded.
+                let before = currentPageIndex
+                let moved = await goToPageInChapter(currentPageIndex + 1, clampToKnownCount: false)
+                if moved, currentPageIndex == before, let next = nextLinearSpineIndex(after: currentSpineIndex) {
+                    await loadChapter(next, target: .first)
+                }
             }
         }
     }
@@ -305,10 +307,12 @@ public final class ReaderSession {
     /// Previous page, or the last page of the previous linear spine item.
     public func goBackward() async {
         await run { [self] in
-            if currentPageIndex > 0 {
-                await goToPageInChapter(currentPageIndex - 1)
-            } else if let previous = previousLinearSpineIndex(before: currentSpineIndex) {
-                await loadChapter(previous, target: .last)
+            await reportingNavigation(.pageTurn) { [self] in
+                if currentPageIndex > 0 {
+                    await goToPageInChapter(currentPageIndex - 1)
+                } else if let previous = previousLinearSpineIndex(before: currentSpineIndex) {
+                    await loadChapter(previous, target: .last)
+                }
             }
         }
     }
@@ -316,9 +320,11 @@ public final class ReaderSession {
     public func go(toSpineIndex index: Int) async {
         guard publication.readingOrder.indices.contains(index) else { return }
         await run { [self] in
-            // The other page of the visible fixed-layout spread is already on screen.
-            if hasLoaded, isShowing(spineIndex: index), isShowingWrapper, currentUnit?.isFixedLayout == true { return }
-            await loadChapter(index, target: .first)
+            await reportingNavigation(.jump) { [self] in
+                // The other page of the visible fixed-layout spread is already on screen.
+                if hasLoaded, isShowing(spineIndex: index), isShowingWrapper, currentUnit?.isFixedLayout == true { return }
+                await loadChapter(index, target: .first)
+            }
         }
     }
 
@@ -328,18 +334,22 @@ public final class ReaderSession {
         // The nav keeps the href's fragment as written; the document is asked for the decoded id.
         let fragment = entry.fragment.flatMap { $0.isEmpty ? nil : ($0.removingPercentEncoding ?? $0) }
         await run { [self] in
-            if isShowing(spineIndex: spineIndex), hasLoaded, let fragment {
-                if let page = try? await renderer.pageForFragment(fragment) { await goToPageInChapter(page) }
-                return
+            await reportingNavigation(.jump) { [self] in
+                if isShowing(spineIndex: spineIndex), hasLoaded, let fragment {
+                    if let page = try? await renderer.pageForFragment(fragment) { await goToPageInChapter(page) }
+                    return
+                }
+                if hasLoaded, isShowing(spineIndex: spineIndex), isShowingWrapper, currentUnit?.isFixedLayout == true { return }
+                await loadChapter(spineIndex, target: fragment.map { .fragment($0) } ?? .first)
             }
-            if hasLoaded, isShowing(spineIndex: spineIndex), isShowingWrapper, currentUnit?.isFixedLayout == true { return }
-            await loadChapter(spineIndex, target: fragment.map { .fragment($0) } ?? .first)
         }
     }
 
     /// Page `index` within the current chapter.
     public func go(toPageInChapter index: Int) async {
-        await run { [self] in await goToPageInChapter(index) }
+        await run { [self] in
+            await reportingNavigation(.jump) { [self] in await goToPageInChapter(index) }
+        }
     }
 
     /// Book page `index` (0-based, `BookPagination` numbering). For a chapter whose count is still an estimate the
@@ -347,10 +357,12 @@ public final class ReaderSession {
     public func go(toPage index: Int) async {
         guard let location = pagination.location(ofPageIndex: index) else { return }
         await run { [self] in
-            if isShowing(spineIndex: location.spineIndex), hasLoaded {
-                await goToPageInChapter(location.pageIndex)
-            } else {
-                await loadChapter(location.spineIndex, target: .page(location.pageIndex))
+            await reportingNavigation(.jump) { [self] in
+                if isShowing(spineIndex: location.spineIndex), hasLoaded {
+                    await goToPageInChapter(location.pageIndex)
+                } else {
+                    await loadChapter(location.spineIndex, target: .page(location.pageIndex))
+                }
             }
         }
     }
@@ -359,7 +371,9 @@ public final class ReaderSession {
     /// chapter lands on the chapter's first page.
     public func go(to cfi: CFI) async {
         guard let spineIndex = publication.spineIndex(of: cfi) else { return }
-        await run { [self] in await goToCFI(cfi, spineIndex: spineIndex) }
+        await run { [self] in
+            await reportingNavigation(.jump) { [self] in await goToCFI(cfi, spineIndex: spineIndex) }
+        }
     }
 
     /// The body of `go(to:)`, for use inside an operation.
@@ -370,6 +384,17 @@ public final class ReaderSession {
         } else {
             await loadChapter(spineIndex, target: .cfi(cfi))
         }
+    }
+
+    /// Runs one move (inside an operation) and reports it as `ReaderEvent.navigated` when the visible page changed.
+    /// The first load and moves that end where they started (a failed load, the page already shown) report nothing.
+    private func reportingNavigation(_ cause: ReaderNavigation.Cause, _ move: @MainActor () async -> Void) async {
+        let wasLoaded = hasLoaded
+        let before = (spineIndex: currentSpineIndex, pageIndex: currentPageIndex)
+        let from = position
+        await move()
+        guard wasLoaded, hasLoaded, before != (spineIndex: currentSpineIndex, pageIndex: currentPageIndex), let to = position else { return }
+        emit(.navigated(ReaderNavigation(cause: cause, from: from, to: to)))
     }
 
     /// Restores a position recorded earlier (`position`), for example at the next launch.
@@ -906,7 +931,7 @@ public final class ReaderSession {
         guard let spineIndex = publication.spineIndex(of: result.range.start) else { return }
         await run { [self] in
             keepTransientHighlight = true
-            await goToCFI(result.range.start, spineIndex: spineIndex)
+            await reportingNavigation(.jump) { [self] in await goToCFI(result.range.start, spineIndex: spineIndex) }
             keepTransientHighlight = false
             guard hasLoaded, isShowing(spineIndex: spineIndex) else { return }
             do {
@@ -959,15 +984,7 @@ public final class ReaderSession {
 
     /// Label of the last table-of-contents entry (document order) that points at the spine item.
     private func chapterTitle(forSpineIndex index: Int) -> String? {
-        func search(_ entries: [TOCEntry]) -> String? {
-            var found: String?
-            for entry in entries {
-                if entry.spineIndex == index { found = entry.label }
-                if let nested = search(entry.children) { found = nested }
-            }
-            return found
-        }
-        return search(publication.toc)
+        publication.chapterTitle(forSpineIndex: index)
     }
 
     /// Viewport (three-slot frame) point → visible page coordinates: the slot offset is along the paging axis.
@@ -1097,16 +1114,18 @@ public final class ReaderSession {
 
     /// Moves to a spine item (and the element its fragment names), then emits `internalLink`.
     private func followInternalLink(spineIndex: Int, path: String, fragment: String?) async {
-        if isShowing(spineIndex: spineIndex), hasLoaded {
-            // The same document (or the other page of the visible fixed-layout spread): only the page may change. A link
-            // without a fragment goes to the document's start, like a link into another document.
-            if let fragment {
-                if let page = try? await renderer.pageForFragment(fragment) { await goToPageInChapter(page) }
+        await reportingNavigation(.link) { [self] in
+            if isShowing(spineIndex: spineIndex), hasLoaded {
+                // The same document (or the other page of the visible fixed-layout spread): only the page may change.
+                // A link without a fragment goes to the document's start, like a link into another document.
+                if let fragment {
+                    if let page = try? await renderer.pageForFragment(fragment) { await goToPageInChapter(page) }
+                } else {
+                    await goToPageInChapter(0)
+                }
             } else {
-                await goToPageInChapter(0)
+                await loadChapter(spineIndex, target: fragment.map { .fragment($0) } ?? .first)
             }
-        } else {
-            await loadChapter(spineIndex, target: fragment.map { .fragment($0) } ?? .first)
         }
         guard hasLoaded, isShowing(spineIndex: spineIndex) else { return }
         let cfi = await FragmentLookup.cfi(path: path, fragment: fragment, spineIndex: spineIndex, in: container)

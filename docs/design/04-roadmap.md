@@ -229,6 +229,13 @@ M2 以降、`Examples/ReaderDemo` で次を Instruments またはログで記録
 - めくり 1 回のフレーム落ち（60 fps 維持）
 - 読書中のメモリ（表示用 + 事前ページ化用 WebView、目標 150 MB 以下）
 
+### 3.4 マイルストーン後の追加
+
+- **2026-11-12: 進捗スライダーと移動のイベント。** 組み込み先（Laperm）の要望で、EPUBUI に `ReaderProgressSlider`（03-api §4.6）、
+  `ReaderEvent.navigated`（03-api §3.4）、`Publication.chapterTitle(forSpineIndex:)` を足した。`Examples/ReaderDemo` は
+  ステータスバーにスライダーを置き、戻るスタックを印として出す（リンクの移動元は `navigated` から取る）。テストは
+  `EPUBUITests/ProgressSliderTests`（算術）と `EPUBRendererTests/NavigationEventTests`（実 WKWebView）。
+
 ## 4. 将来の拡張点（今回は作らない）
 
 - `SpineRenderer` を公開し、ネイティブ描画（Core Text）を日本語小説向けに差し替える

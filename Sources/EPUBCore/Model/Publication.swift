@@ -106,6 +106,20 @@ public struct Publication: Sendable {
         readingOrder.filter(\.isLinear)
     }
 
+    /// Label of the last table-of-contents entry (document order) that points at the spine item; nil when no entry
+    /// does. `ReadingPosition.chapterTitle` is this value for the position's spine item.
+    public func chapterTitle(forSpineIndex index: Int) -> String? {
+        func search(_ entries: [TOCEntry]) -> String? {
+            var found: String?
+            for entry in entries {
+                if entry.spineIndex == index { found = entry.label }
+                if let nested = search(entry.children) { found = nested }
+            }
+            return found
+        }
+        return search(toc)
+    }
+
     // MARK: - CFI
 
     /// The spine steps of a CFI into spine item `index`: `/<spineElementIndex>/<itemref step>[idref]`.

@@ -77,6 +77,10 @@ M4 で追加: `Publication.orientation: RenditionOrientation`、`SpineItem.sprea
 `orientation: RenditionOrientation?` / `viewport: FixedLayoutViewport?` / `isFixedLayout`、`FixedLayoutViewport`
 （`width` / `height`、`init?(metaContent:)`）、`PublicationWarning.missingViewport(path:)`（01-core §3、§7）。
 
+2026-11-12 に追加: `Publication.chapterTitle(forSpineIndex:) -> String?`。その spine item を指す目次項目のうち、文書順で最後のものの
+ラベル（無ければ nil）。`ReadingPosition.chapterTitle` と同じ規則で、`ReaderSession` の中にあったものを公開した
+（`ReaderProgressSlider` がドラッグ先のページの章名を引く。§4.6）。
+
 ### 2.3 `CFI` / `CFIRange`
 
 01-core §5。`Codable` は文字列 1 つにエンコードする（`"epubcfi(...)"`）。
@@ -354,6 +358,19 @@ public enum ReaderEvent: Sendable {
     case internalLink(CFI)                  // 移動はライブラリが行う。通知のみ。CFI はフラグメントの要素か文書先頭
     case noteref(NoteContent)               // epub:type="noteref" のタップ。セッションは移動しない
     case imageTapped(TappedImage)           // リフローのページ上の img / SVG image（リンク内を除く）のタップ
+    // 2026-11-12 実装済み
+    case navigated(ReaderNavigation)        // 読者の移動で可視ページが変わった。理由と移動元つき（下記）
+}
+
+public struct ReaderNavigation: Sendable, Hashable {
+    public enum Cause: Sendable, Hashable {
+        case pageTurn                       // goForward() / goBackward()
+        case jump                           // go(to:) / go(toPage:) / go(toSpineIndex:) / go(toPageInChapter:) / show(_:)
+        case link                           // 出版物内のリンクをたどった（このあと internalLink が出る）
+    }
+    public var cause: Cause
+    public var from: ReadingPosition?       // 移動前の position。まだ無ければ nil
+    public var to: ReadingPosition          // 移動後の position
 }
 
 public enum ReaderError: Error, Sendable {
@@ -404,6 +421,19 @@ M5 で変更・確定した点:
 - `externalLink` の扱いは変わらない（移動せず通知のみ）。`internalLink` は移動の後に出る。
 - `ReaderError.loadTimeout` は従来どおり再試行をアプリに任せる。`webContentTerminated` ではセッションが表示中の面を
   `position` の CFI で読み直す（30 秒以内に 3 回まで。02-rendering §9）。
+
+`navigated`（2026-11-12 に追加）:
+
+- 移動の操作が終わり、可視ページ（spine index と章内ページ）が変わっていたときに 1 回出る。その移動の `positionChanged` の後、
+  リンクなら `internalLink` の前。
+- 出ないもの: 最初の読み込み、移動先が今のページだった操作、読み込みに失敗した操作、同じテキストのままの再レイアウト
+  （設定変更、リサイズ、遅れて届くページ数、WebContent の復旧）。`positionChanged` はこれらでも出るので、アプリが
+  「読者が動いた」と「組み直された」を分けるにはこのイベントを見る（ページをめくったらバーを隠す、移動元を覚えて戻る、など）。
+- テキストの無いページどうしの移動では `from.cfi == to.cfi` になりうる（`position` が前の CFI を保つため）。それでもページは
+  変わっているので出る。
+- 追加の理由: `positionChanged` だけでは移動の理由が分からず、アプリが「直前の position」を自分で覚えて `internalLink` の後に
+  使う、ビューポートと設定を覚えて再レイアウトを見分ける、といった推測をしていた（ReaderDemo の戻るスタック、Laperm のバーの
+  出し入れ）。
 
 ## 4. EPUBUI
 
@@ -541,6 +571,54 @@ FXL 書籍では `relayoutSnapshot` は面全体の画像になる。
 
 アプリ側の注意: `viewportSize` が数 pt でも変わるとレイアウトキーが変わり、全章の計測がやり直しになる。
 ステータスバーなど `EPUBReaderView` の周囲の UI は、表示内容（推定中インジケータなど）で高さが変わらないようにする。
+
+### 4.6 `ReaderProgressSlider`（2026-11-12 実装済み）
+
+本全体のスライダー。つまみが今のページで、ドラッグするかトラックを押すと、その位置へセッションを動かす。
+
+```swift
+public struct ReaderProgressSlider: View {
+    public struct Mark: Identifiable, Hashable, Sendable {
+        public var id: String
+        public var position: ReadingPosition
+        public var label: String            // 支援技術に出す名前（「以前の位置」など）。値（章名と割合）は部品が足す
+    }
+    public enum Destination: Hashable, Sendable {
+        case page(Int)                      // 本のページ（0 始まり、BookPagination の番号）
+        case mark(Mark)
+    }
+    public init(session: ReaderSession, marks: [Mark] = [], label: String = "Reading Progress",
+                navigate: (@MainActor (Destination) async -> Void)? = nil,
+                onEditingChanged: @escaping @MainActor (Bool) -> Void = { _ in })
+}
+
+extension ReaderSession {
+    public func go(to destination: ReaderProgressSlider.Destination) async   // page → go(toPage:)、mark → go(to: position)
+}
+```
+
+- **ページは離したときに変わる。** ドラッグ中はつまみの上に「章名 · 割合」のラベルを出すだけで、セッションは動かさない
+  （章をまたぐ移動は読み込みが入るので、追従させると遅れて見える）。離した後、移動が終わるまでつまみは行き先に留まる。
+- **トラックを押すとその位置へ動く。** つまみの上で始めた押下は、指とつまみの中心のずれを保つ（つまみが指の下へ飛ばない）。
+  4 pt 未満の動きはタップ。
+- **印（`marks`）** はアプリが載せたい位置（移動する前にいた位置など）。`ReaderSession.pageIndex(for:)` でページに直して
+  トラックの上に文字色の塗り丸で描く。印の近く（iOS 18 pt、macOS 10 pt 以内）のタップは印が優先で、その `position` へ動く。
+  つまみと印の両方に届くタップは近い方。印を覚える・消す・数を絞るのはアプリの仕事で、部品は渡されたものを描くだけ。
+- **向き。** 右綴じの本（`ReaderSession.isRightToLeft`）は右端が先頭で、左へ進む。インターフェースの向き
+  （`layoutDirection`）には従わない: 本の向きだけで決める。
+- **ページの端。** 先頭のページと最後のページは、トラックの両端からつまみの半分だけ内側。割合の表示は
+  `BookPagination.progression` と同じ「そのページの終わりまで」（最後のページで 100%）。
+- **`navigate`** を渡すと、移動は部品でなくその処理が行う（移動の前に何かしたいアプリ用。中から `session.go(to:)` を呼ぶ）。
+  nil なら部品が `session.go(to:)` を呼ぶ。`onEditingChanged` は押下の始まりと終わり（離した・取り消された）。
+- **見た目は最小限。** トラック、印、つまみ、ドラッグ中のラベルだけを描く。読んだ部分の色は `.tint`。周りの帯や、いつ出すかは
+  アプリが決める。高さは固定（iOS 32 pt、macOS 22 pt）で、ドラッグ中のラベルは枠の上にはみ出して出る（載せる側は切り抜かない）。
+- **支援技術。** トラック全体が 1 つの調整可能な要素（名前は `label`、値は「章名, 割合」、識別子 `ReaderProgressSlider`）で、
+  1 回の増減は本の 1/100（最低 1 ページ）。印はそれぞれボタン（名前は `Mark.label`、値は「章名, 割合」、識別子
+  `ReaderProgressSliderMark-<marks の添字>`）。キーボードのフォーカス（システムのキーボードナビゲーションが有効なとき）を
+  受け、← → で見た目の向きに 1/100 ずつ動く。
+- ページ数は `ReaderSession.pagination` のもので、全章の計測が済むまでは推定を含む。計測が進むと、つまみと印が少し動く。
+- 算術（ページ ⇄ 位置、1 回の押下の結果）は `ProgressSliderGeometry` / `ProgressSliderInteraction`（`internal`）に分け、
+  `EPUBUITests/ProgressSliderTests` で検証する。ビューそのものの自動テストは無い（ReaderDemo と、組み込み先の UI テストで見る）。
 
 ## 5. 公開しない型
 

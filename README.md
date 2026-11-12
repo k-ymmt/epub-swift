@@ -103,6 +103,9 @@ Common next steps:
 - Images: `.imageTapped(TappedImage)` carries the image bytes through `try await image.data()`.
 - Gestures: `.readerGestures(.disabled)` turns off built-in tap, swipe and keyboard handling, so the app drives the
   session itself.
+- Progress: `ReaderProgressSlider(session: session, marks: marks)` is a slider over the whole book (drag the thumb or
+  tap the track; marks are places the app wants to return to). `.navigated(ReaderNavigation)` tells a page turn, a
+  jump and a followed link apart and carries the position the reader came from.
 
 The complete example is `Examples/ReaderDemo`, a SwiftUI app for iOS and macOS. It shows the table of contents,
 search, annotations (with `.annotations` export and import), settings, footnote popovers, an image viewer and link

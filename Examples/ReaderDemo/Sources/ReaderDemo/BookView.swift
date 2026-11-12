@@ -29,10 +29,9 @@ struct BookView: View {
     @State private var note: NoteContent?
     @State private var image: ImageItem?
     @State private var pendingExternalURL: URL?
-    /// Where to return after following a link or going to a note (the app's business; the library only reports).
+    /// Where to return after following a link, going to a note or moving with the progress slider (the app's
+    /// business; the library only reports). The slider shows them as marks.
     @State private var backStack: [ReadingPosition] = []
-    @State private var previousPosition: ReadingPosition?
-    @State private var lastPosition: ReadingPosition?
     @Environment(\.openURL) private var openURL
 
     var body: some View {
@@ -263,6 +262,25 @@ struct BookView: View {
         status = "Imported: \(pending.plan.added.count) added, \(pending.plan.updated.count) updated, \(pending.plan.conflicts.count) conflicts kept as they were"
     }
 
+    /// The places to go back to, as marks on the progress slider.
+    private var backMarks: [ReaderProgressSlider.Mark] {
+        backStack.enumerated().map { index, position in
+            ReaderProgressSlider.Mark(id: "\(index):\(position.cfi.description)", position: position, label: "Previous position")
+        }
+    }
+
+    /// A release of the progress slider. A move by page leaves a mark where the reader was; going to a mark takes it
+    /// off the stack.
+    private func move(_ session: ReaderSession, to destination: ReaderProgressSlider.Destination) async {
+        switch destination {
+        case .page:
+            if let here = session.position { backStack.append(here) }
+        case .mark(let mark):
+            backStack.removeAll { $0 == mark.position }
+        }
+        await session.go(to: destination)
+    }
+
     @ViewBuilder private func reader(_ session: ReaderSession) -> some View {
         EPUBReaderView(session: session)
             .pageTransition(.slide)
@@ -289,8 +307,9 @@ struct BookView: View {
                     pendingExternalURL = url
                 case .internalLink(let cfi):
                     status = "Link → \(cfi.description)"
-                    // The session has already moved (and published the new position): go back to the one before.
-                    if let previousPosition { backStack.append(previousPosition) }
+                case .navigated(let navigation):
+                    // A followed link: the place it was tapped at is where "Back" returns to.
+                    if navigation.cause == .link, let origin = navigation.from { backStack.append(origin) }
                 case .noteref(let content):
                     note = content
                 case .imageTapped(let tapped):
@@ -303,8 +322,6 @@ struct BookView: View {
                     if zone == .center { status = "" }
                 case .positionChanged(let position):
                     store?.position = position
-                    previousPosition = lastPosition
-                    lastPosition = position
                 case .annotationTapped(let id, _):
                     editing = store?.annotations.first { $0.id == id } ?? session.publicationAnnotations.first { $0.id == id }
                 case .selectionChanged(let selected):
@@ -328,7 +345,9 @@ struct BookView: View {
                 }
             }
             .safeAreaInset(edge: .bottom) {
-                StatusBar(session: session, status: status, readThrough: readThrough)
+                StatusBar(session: session, status: status, readThrough: readThrough, marks: backMarks) { destination in
+                    await move(session, to: destination)
+                }
             }
             .preferredColorScheme(session.settings.theme.isDark ? .dark : nil)
     }
@@ -338,9 +357,14 @@ struct StatusBar: View {
     let session: ReaderSession
     let status: String
     let readThrough: ReadThroughResult?
+    let marks: [ReaderProgressSlider.Mark]
+    let navigate: @MainActor (ReaderProgressSlider.Destination) async -> Void
 
     var body: some View {
         VStack(spacing: 2) {
+            // The whole book: drag the thumb or tap the track to move, tap a mark to go back to it. A fixed height,
+            // like the rows below.
+            ReaderProgressSlider(session: session, marks: marks, navigate: navigate)
             HStack {
                 Text("Chapter \(chapterOrdinal)/\(session.publication.linearReadingOrder.count)")
                 Text("·")
