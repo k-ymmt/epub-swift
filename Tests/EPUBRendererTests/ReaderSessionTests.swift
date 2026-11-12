@@ -193,6 +193,54 @@ final class SessionHost {
         #expect(custom?.contains("ReaderTestFont") == true)
     }
 
+    /// Code is aligned by column, so a font override leaves `pre` / `code` / `kbd` / `samp` / `tt` and what is inside
+    /// them alone: both the load-time rule (`ContentInjector.rootStyle`) and the one in `reader-after.css` apply here.
+    @Test func fontOverrideLeavesCodeInItsOwnFont() async throws {
+        var settings = ReaderSettings()
+        settings.font = .system(name: "Helvetica")
+        let host = try await SessionHost(url: Self.mobyDick, settings: settings)
+        await host.session.loadIfNeeded()
+        await host.session.go(toSpineIndex: 6)
+        let families = try await host.js("""
+            const holder = document.createElement("div");
+            holder.innerHTML = '<p id="t-p">a <code id="t-code">b</code> <kbd id="t-kbd">c</kbd> <samp id="t-samp">d</samp> <tt id="t-tt">e</tt> <em id="t-em">f</em></p>'
+              + '<pre id="t-pre">g <span id="t-span">h</span></pre><h2 id="t-h2">i</h2>';
+            document.body.appendChild(holder);
+            const family = id => getComputedStyle(document.getElementById(id)).fontFamily;
+            return ["t-p", "t-em", "t-h2", "t-code", "t-kbd", "t-samp", "t-tt", "t-pre", "t-span"].map(family);
+            """) as? [String]
+        let all = try #require(families)
+        #expect(all.count == 9)
+        for overridden in all.prefix(3) { #expect(overridden.contains("Helvetica"), "\(all)") }
+        for code in all.dropFirst(3) {
+            #expect(!code.contains("Helvetica"), "\(all)")
+            #expect(code.contains("monospace"), "\(all)")
+        }
+
+        // The same holds for a font chosen after the load.
+        host.session.settings.font = .system(name: "Times New Roman")
+        try await host.waitUntil { !host.session.isLoading }
+        let later = try await host.js("""
+            const family = id => getComputedStyle(document.getElementById(id)).fontFamily;
+            return ["t-p", "t-code", "t-span"].map(family);
+            """) as? [String]
+        #expect(later?.first?.contains("Times New Roman") == true)
+        #expect(later?.dropFirst().allSatisfy { !$0.contains("Times") && $0.contains("monospace") } == true, "\(String(describing: later))")
+    }
+
+    /// `.systemUI` is the platform's standard text font, which has no family name a page could write.
+    @Test func systemUIFontOverridesThePublisherFont() async throws {
+        var settings = ReaderSettings()
+        settings.font = .systemUI
+        let host = try await SessionHost(url: Self.mobyDick, settings: settings)
+        await host.session.loadIfNeeded()
+        await host.session.go(toSpineIndex: 6)
+        let attr = try await host.js("return document.documentElement.getAttribute('data-reader-font')") as? String
+        #expect(attr == "override")
+        let family = try await host.js("return getComputedStyle(document.querySelector('p')).fontFamily") as? String
+        #expect(family?.hasPrefix("-apple-system") == true, "\(String(describing: family))")
+    }
+
     @Test func goForwardDoesNotCrossChaptersWhenThePageMoveFails() async throws {
         let host = try await SessionHost(url: Self.mobyDick)
         await host.session.loadIfNeeded()

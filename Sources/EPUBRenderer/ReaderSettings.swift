@@ -35,6 +35,9 @@ public struct ReaderSettings: Codable, Hashable, Sendable {
         case publisher
         /// A font installed on the system, referenced by family name.
         case system(name: String)
+        /// The platform's standard text font (San Francisco, with Hiragino Sans for Japanese). It has no family name
+        /// a page can write, so it is its own choice (CSS `-apple-system`).
+        case systemUI
         /// A font file supplied by the app, served through `epub://<id>/_reader/fonts/<name>`.
         case custom(FontResource)
     }

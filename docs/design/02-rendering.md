@@ -217,13 +217,20 @@ M5 で変更（右から左の言語）: `<html dir="rtl">`（アラビア語な
 | `--reader-line-height` | `ReaderSettings.lineHeight`。`body` と段落に適用 |
 | `--reader-margin-h` / `--reader-margin-v` | `ReaderSettings.pageMargins` |
 | `--reader-fg` / `--reader-bg` / `--reader-link` | `ReaderSettings.theme` |
-| `--reader-font-family` | `ReaderSettings.font`。`html[data-reader-font="override"] *` に `!important` で適用。`.publisher` のときは属性を付けない |
+| `--reader-font-family` | `ReaderSettings.font`。`html[data-reader-font="override"]` の `body` と、コード以外の子孫に `!important` で適用（§3.6）。`.publisher` のときは属性を付けない |
 
 ナイトテーマでは `img, svg { filter: brightness(0.85) }` と `color-scheme: dark` を付ける。
 
 ### 3.6 フォント
 
-- `.system(name)` は `font-family` に名前を書くだけ。
+- `.system(name)` は `font-family` に名前を書くだけ。名前は CSS の文字列として書き、文字列を終わらせる文字
+  （`"`、`\`、改行などの制御文字）は落とす（`ContentInjector.cssString`）。
+- `.systemUI` は OS の標準の本文フォント（San Francisco、和文はヒラギノ角ゴ）。ページから書けるファミリ名が無いので
+  `-apple-system, system-ui, sans-serif` をそのまま渡す。どの上書きも、指定のフォントの後ろにこの並びを続ける。
+- 上書きはコードに掛けない: `pre` / `code` / `kbd` / `samp` / `tt` とその中の要素は、出版社のフォント（指定が無ければ
+  ブラウザの `monospace`）のまま。コードは桁で揃えてあるので、プロポーショナルなフォントにすると崩れる。セレクタは
+  `body *:not(:is(pre, code, kbd, samp, tt), :is(pre, code, kbd, samp, tt) *)` で、`reader-after.css` と、最初の描画のための
+  `ContentInjector.fontOverrideSelector` の 2 か所に同じものがある（`fontOverrideLeavesCodeInItsOwnFont` が両方を通す）。
 - `.custom(FontResource)` はアプリから受け取ったフォントファイルを `epub://<id>/_reader/fonts/<name>` で配信し、
   `reader-after.css` に `@font-face` を生成する。
 - 出版社の `@font-face` は難読化解除済みで配信されるので WebKit がそのまま使う。

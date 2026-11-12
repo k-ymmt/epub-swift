@@ -103,4 +103,23 @@ import EPUBCore
         #expect(css.contains("color-scheme: dark"))
         #expect(css.contains(settings.theme.background.cssString))
     }
+
+    @Test func fontFamilyCSSNamesTheFamilyOrTheSystemFont() {
+        #expect(ContentInjector.fontFamilyCSS(.publisher) == nil)
+        #expect(ContentInjector.fontFamilyCSS(.systemUI) == "-apple-system, system-ui, sans-serif")
+        #expect(ContentInjector.fontFamilyCSS(.system(name: "Hiragino Mincho ProN")) == "\"Hiragino Mincho ProN\", -apple-system, system-ui, sans-serif")
+        // A quote or a backslash in a name cannot end the CSS string.
+        #expect(ContentInjector.fontFamilyCSS(.system(name: "A\"; } body { display: none } x\\")) == "\"A; } body { display: none } x\", -apple-system, system-ui, sans-serif")
+    }
+
+    @Test func rootStyleOverridesTheFontOnlyOutsideCode() {
+        var settings = ReaderSettings()
+        let publisher = ContentInjector.rootStyle(settings: settings, pageSize: .zero, publicationID: PublicationID())
+        #expect(!publisher.contains("font-family"))
+        for font in [ReaderSettings.FontChoice.systemUI, .system(name: "Avenir")] {
+            settings.font = font
+            let css = ContentInjector.rootStyle(settings: settings, pageSize: .zero, publicationID: PublicationID())
+            #expect(css.contains("html body, html body *:not(:is(pre, code, kbd, samp, tt), :is(pre, code, kbd, samp, tt) *) { font-family: var(--reader-font-family) !important; }"))
+        }
+    }
 }

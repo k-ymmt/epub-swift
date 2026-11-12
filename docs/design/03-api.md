@@ -154,6 +154,7 @@ public struct ReaderSettings: Codable, Hashable, Sendable {
     public enum FontChoice: Codable, Hashable, Sendable {
         case publisher
         case system(name: String)
+        case systemUI                  // OS の標準の本文フォント（-apple-system）
         case custom(FontResource)
     }
 }

@@ -140,14 +140,14 @@ enum ContentInjector {
         var css = ":root { " + declarations.joined(separator: "; ") + "; }"
         if case .custom(let resource) = settings.font {
             let url = "epub://\(publicationID)/_reader/fonts/\(ContainerPath.percentEncoded(resource.familyName))"
-            css += " @font-face { font-family: \"\(resource.familyName)\"; src: url(\"\(url)\"); }"
+            css += " @font-face { font-family: \(cssString(resource.familyName)); src: url(\"\(url)\"); }"
         }
         // The attributes reader.js sets after load, pre-applied through the selector-less fallback so that the
         // first paint already uses the theme/font flags.
         var rootAttrs: [String] = []
         if settings.theme.isDark { rootAttrs.append("html { color-scheme: dark; }") }
         if settings.font != .publisher {
-            rootAttrs.append("html body, html body * { font-family: var(--reader-font-family) !important; }")
+            rootAttrs.append("\(fontOverrideSelector) { font-family: var(--reader-font-family) !important; }")
         }
         if settings.theme.isDark {
             rootAttrs.append("html body *:not(a) { color: var(--reader-fg) !important; } html img, html svg { filter: brightness(0.85); }")
@@ -155,12 +155,28 @@ enum ContentInjector {
         return css + (rootAttrs.isEmpty ? "" : " " + rootAttrs.joined(separator: " "))
     }
 
+    /// What a font override applies to: everything in the body except code (`pre`, `code`, `kbd`, `samp`, `tt` and
+    /// what is inside them). Code keeps the publisher's font, or the browser's `monospace`, because it is aligned by
+    /// column. `reader-after.css` has the same selector behind `html[data-reader-font="override"]`.
+    static let fontOverrideSelector = "html body, html body *:not(:is(pre, code, kbd, samp, tt), :is(pre, code, kbd, samp, tt) *)"
+
+    /// The fonts behind every override: the platform's standard text font.
+    private static let systemFontFamilyCSS = "-apple-system, system-ui, sans-serif"
+
     static func fontFamilyCSS(_ font: ReaderSettings.FontChoice) -> String? {
         switch font {
         case .publisher: return nil
-        case .system(let name): return "\"\(name.replacingOccurrences(of: "\"", with: ""))\", -apple-system, system-ui, sans-serif"
-        case .custom(let resource): return "\"\(resource.familyName.replacingOccurrences(of: "\"", with: ""))\", -apple-system, system-ui, sans-serif"
+        case .systemUI: return systemFontFamilyCSS
+        case .system(let name): return "\(cssString(name)), \(systemFontFamilyCSS)"
+        case .custom(let resource): return "\(cssString(resource.familyName)), \(systemFontFamilyCSS)"
         }
+    }
+
+    /// A family name as a CSS string. The characters that could end the string (a quote, a backslash, a line break or
+    /// another control character) are dropped: no font family is named with them.
+    static func cssString(_ name: String) -> String {
+        let kept = name.unicodeScalars.filter { $0 != "\"" && $0 != "\\" && !CharacterSet.controlCharacters.contains($0) && !CharacterSet.newlines.contains($0) }
+        return "\"\(String(String.UnicodeScalarView(kept)))\""
     }
 
     /// Never traps: values outside `Int` (a fixed-layout viewport of `width=1e30`) are formatted without conversion.

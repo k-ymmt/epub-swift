@@ -30,4 +30,13 @@ import Testing
         let decoded = try JSONDecoder().decode(ReaderSettings.self, from: data)
         #expect(decoded == s)
     }
+
+    @Test func systemUIRoundTripsThroughCodableAndChangesTheLayoutKey() throws {
+        var s = ReaderSettings()
+        s.font = .systemUI
+        #expect(!s.respectsPublisherFonts)
+        #expect(s.layoutKey != ReaderSettings().layoutKey)
+        let decoded = try JSONDecoder().decode(ReaderSettings.self, from: JSONEncoder().encode(s))
+        #expect(decoded.font == .systemUI)
+    }
 }

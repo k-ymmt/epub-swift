@@ -24,9 +24,11 @@ a, a:link, a:visited {
   color: var(--reader-link) !important;
 }
 
-/* Font override (ReaderSettings.font != .publisher). reader.js sets the attribute. */
+/* Font override (ReaderSettings.font != .publisher). reader.js sets the attribute. Code (pre, code, kbd, samp, tt
+   and what is inside them) keeps its own font: it is aligned by column. The same selector, without the attribute,
+   is ContentInjector.fontOverrideSelector (the first paint). */
 html[data-reader-font="override"] body,
-html[data-reader-font="override"] body * {
+html[data-reader-font="override"] body *:not(:is(pre, code, kbd, samp, tt), :is(pre, code, kbd, samp, tt) *) {
   font-family: var(--reader-font-family) !important;
 }
 
