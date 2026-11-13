@@ -244,6 +244,24 @@ M5 で変更（右から左の言語）: `<html dir="rtl">`（アラビア語な
   `reader-after.css` に `@font-face` を生成する。
 - 出版社の `@font-face` は難読化解除済みで配信されるので WebKit がそのまま使う。
 
+### 3.7 URL が本文のリンクの折り返し
+
+参考文献の `（<a href="https://arxiv.org/abs/1508.06576">https://arxiv.org/abs/1508.06576</a>）` のように、本文が URL そのものの
+リンクは途中で折り返せるようにする。WebKit は URL の `/` や `.` で改行しないので、URL は 1 語として丸ごと次の行へ
+送られる。出版社の CSS が `text-align: justify` のとき（和書ではふつう）、送り出した側の行は残った数語で行幅まで
+引き伸ばされ、字間が大きく開く。
+
+- `reader.js` の `markURLLinks` が、`href` を持つ `a` のうち本文（前後の空白を除く）が `scheme://…` か `www.…` で始まり
+  空白を含まないものに `data-reader-url` 属性を付ける。`reader-after.css` の `a[data-reader-url] { word-break: break-all
+  !important }` が、その中だけ任意の 2 文字の間で折り返せるようにする。属性を足すだけで DOM は変えないので CFI は変わらない。
+- 印は `ready` の前に付ける。表示用の文書も `PaginationService` の文書も、折り返した後の組みでページ数を数える。
+- 普通の語が本文のリンク（`<a>see the original paper</a>`）や、URL で始まるだけの文には付けない。`break-all` は語の途中でも
+  切るので、リンク全部に掛けると欧文の本が崩れる。
+- `overflow-wrap: anywhere` では直らない。効くのは語が 1 行に収まらないときだけで、ここの URL は次の行には収まる。
+- リンクになっていない地の文の URL（`a` の外のテキスト）はそのまま。文字の範囲だけに CSS を掛けるには要素で包む必要があり、
+  DOM を変えると CFI がずれる。
+- テストは `URLLinkWrappingTests`（`Tests/Fixtures/url-sample.epub`）。
+
 ## 4. ブリッジ JS（`reader.js`）
 
 ライブラリ同梱の 1 ファイル。専用 `WKContentWorld`（`reader`）で動き、`window.__epubReader` に API を置く。

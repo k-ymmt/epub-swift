@@ -1,0 +1,2 @@
+/* What publishers of Japanese books usually ship: justified paragraphs. */
+p { margin: 0 0 1em; font-size: 17px; text-align: justify; }

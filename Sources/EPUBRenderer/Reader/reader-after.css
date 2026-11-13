@@ -24,6 +24,13 @@ a, a:link, a:visited {
   color: var(--reader-link) !important;
 }
 
+/* A link whose text is its URL (reader.js markURLLinks, 02-rendering §3.7) wraps between any two characters.
+   Otherwise the whole URL moves to the next line and a justified paragraph stretches the line it left.
+   `word-break` is inherited, so a `span` or `code` inside the link wraps too. */
+a[data-reader-url] {
+  word-break: break-all !important;
+}
+
 /* Font override (ReaderSettings.font != .publisher). reader.js sets the attribute. Code (pre, code, kbd, samp, tt),
    MathML and SVG, and what is inside them, keep their own font: code is aligned by column, math needs its math
    font, a figure's text the font it was laid out with. The same selector, without the attribute, is

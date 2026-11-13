@@ -1471,6 +1471,21 @@
   }
   try { hideReferencedNotes(); } catch (e) { /* never block the document on this */ }
 
+  // --- links whose text is their URL (02-rendering §3.7) -------------------------------------------------
+  // WebKit has no place to wrap inside "https://arxiv.org/abs/1508.06576" (no break at "/" or "."), so the whole
+  // URL moves to the next line, and in a justified paragraph the line it left is stretched character by character.
+  // Such a link is marked and may wrap between any two characters (`data-reader-url`, reader-after.css). A link of
+  // ordinary words is left alone: its words must stay whole. Only an attribute is set, so CFIs are not affected.
+  // This runs before `ready`, so every page count is measured with the wrapped layout.
+  const URL_TEXT = /^(?:[a-z][a-z0-9+.-]*:\/\/|www\.)\S+$/i;
+  function markURLLinks() {
+    const anchors = document.querySelectorAll("a[href], a[*|href]");
+    for (let k = 0; k < anchors.length; k++) {
+      if (URL_TEXT.test((anchors[k].textContent || "").trim())) { anchors[k].setAttribute("data-reader-url", ""); }
+    }
+  }
+  try { markURLLinks(); } catch (e) { /* never block the document on this */ }
+
   // --- selection ----------------------------------------------------------------------------------
 
   function selectionPayload() {

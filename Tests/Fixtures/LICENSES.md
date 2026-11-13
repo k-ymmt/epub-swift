@@ -28,3 +28,4 @@ Hand-written XHTML documents that are not well-formed XML, copied from `Spikes/S
 |---|---|---|
 | `cfi-sample.epub` | `cfi-sample/` (see its README) | CFI test vectors and search (M3). Written for this project. |
 | `links-sample.epub` | `links-sample/` (see its README) | Links, noterefs, hidden notes and image taps, including a fixed-layout page (M5). Written for this project; `picture.png` is a generated gradient. |
+| `url-sample.epub` | `url-sample/` (see its README) | Links whose text is their URL inside justified paragraphs (02-rendering §3.7). Written for this project. |
