@@ -1,0 +1,30 @@
+mode=runway known heights=False margin=2000 viewport=[402, 874]
+samples=6404 span=60.0s
+  event   -3901.3 ms  add      {'index': 60, 'preset': 0, 'where': 'append'}
+  event   -1669.3 ms  loaded   {'h': 5035, 'index': 60, 'loadMs': 2226, 'measureMs': 3, 'preset': 0, 'where': 'append'}
+  event   -1665.3 ms  add      {'index': 61, 'preset': 0, 'where': 'append'}
+  event   -1659.3 ms  loaded   {'h': 3805, 'index': 61, 'loadMs': 2, 'measureMs': 1, 'preset': 0, 'where': 'append'}
+  event   -1551.3 ms  add      {'index': 59, 'preset': 0, 'where': 'prepend'}
+  event   -1545.3 ms  shift    {'by': 7068, 'reason': 'load', 'runway': 392932}
+  event   -1545.3 ms  loaded   {'h': 7068, 'index': 59, 'loadMs': 2, 'measureMs': 2, 'preset': 0, 'where': 'prepend'}
+  event   -1535.3 ms  shift    {'by': -626, 'reason': 'resize', 'runway': 393558}
+  event   25032.7 ms  add      {'index': 58, 'preset': 0, 'where': 'prepend'}
+  event   25063.7 ms  shift    {'by': 28974, 'reason': 'load', 'runway': 364584}
+  event   25063.7 ms  loaded   {'h': 28974, 'index': 58, 'loadMs': 10, 'measureMs': 9, 'preset': 0, 'where': 'prepend'}
+  event   25063.7 ms  shift    {'by': -2528, 'reason': 'resize', 'runway': 367112}
+samples moving (finger or momentum): 1307
+corrections taken out of the runway (no scroll position written): 4 (sum 32888 px)
+corrections logged by the page: 0 (sum 0 px); offset jumps seen by the scroll view: 0 (sum 0 px)
+late samples (picture one sample behind the offset): 70
+SLIPPED samples (text jumped): 1
+UNMATCHED samples (blank band or a far jump): 0
+longest run of rows without ink in any sample: 120 pt (viewport 874)
+blank-screen episodes (more than half of the viewport without ink): 0
+  SLIPPED at sample 3412
+      31106.4 ms -DM offset   391181.3 (d     -27.7)  picture   +28 (r 0.207)  expected   +28 (r 0.207)  blank 15
+      31112.6 ms -DM offset   391181.3 (d      +0.0)  picture    +0 (r 0.000)  expected    +0 (r 0.000)  blank 15
+      31118.7 ms -DM offset   391154.7 (d     -26.7)  picture    +0 (r 0.000)  expected   +27 (r 0.379)  blank 15
+      31124.9 ms -DM offset   391154.7 (d      +0.0)  picture   +27 (r 0.254)  expected    +0 (r 0.477)  blank 15   <==
+      31131.3 ms -DM offset   391154.7 (d      +0.0)  picture    +0 (r 0.000)  expected    +0 (r 0.000)  blank 15
+      31138.2 ms -DM offset   391128.7 (d     -26.0)  picture   +26 (r 0.032)  expected   +26 (r 0.032)  blank 15
+      31144.7 ms -DM offset   391128.7 (d      +0.0)  picture    +0 (r 0.000)  expected    +0 (r 0.000)  blank 15

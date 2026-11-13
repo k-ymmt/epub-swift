@@ -17,7 +17,7 @@ fi
 # SwiftPM cannot cross-build an iOS executable here, so compile SpikeKit + the app main as one module with swiftc.
 APP=.build/ios/SpikeApp.app
 rm -rf "$APP"; mkdir -p "$APP"
-xcrun -sdk iphonesimulator swiftc -target arm64-apple-ios27.0-simulator -swift-version 6 \
+xcrun -sdk iphonesimulator swiftc -target arm64-apple-ios27.0-simulator -O -swift-version 6 \
   -enable-upcoming-feature ApproachableConcurrency -module-name SpikeApp -DSPIKE_SINGLE_MODULE \
   Sources/SpikeKit/*.swift Sources/spike-ios-app/main.swift -o "$APP/SpikeApp"
 cat > "$APP/Info.plist" <<PLIST
@@ -50,6 +50,12 @@ PLIST
 xcrun simctl boot "$UDID" 2>/dev/null || true
 xcrun simctl bootstatus "$UDID" -b
 xcrun simctl install "$UDID" "$APP"
-mkdir -p output/ios
-SIMCTL_CHILD_SPIKE_OUT="$PWD/output/ios" SIMCTL_CHILD_SPIKE_IDS="$IDS" \
+# Spikes 8 and 9 read a real book: the root package's Moby-Dick fixture, extracted on the host (the Simulator reads
+# host paths). OUT=<dir> keeps their results apart from output/ios; SPIKE8_* / SPIKE9_* pass through to the app.
+BOOK=.build/book/moby-dick
+[ -f "$BOOK/META-INF/container.xml" ] || { mkdir -p "$BOOK"; unzip -q -o ../Tests/Fixtures/moby-dick.epub -d "$BOOK"; }
+OUT="${OUT:-$PWD/output/ios}"
+mkdir -p "$OUT"
+for v in $(env | grep -E '^SPIKE[89]_' | cut -d= -f1); do eval "export SIMCTL_CHILD_$v=\"\$$v\""; done
+SIMCTL_CHILD_SPIKE_OUT="$OUT" SIMCTL_CHILD_SPIKE_IDS="$IDS" SIMCTL_CHILD_SPIKE_BOOK_DIR="$PWD/$BOOK" \
   xcrun simctl launch --console --terminate-running-process "$UDID" net.kymmt.epub.spikes

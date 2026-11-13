@@ -1,0 +1,61 @@
+mode=manual known heights=False margin=2000 viewport=[402, 874]
+samples=6413 span=60.0s
+  event   -3863.4 ms  add      {'index': 60, 'preset': 0, 'where': 'append'}
+  event   -1596.4 ms  loaded   {'h': 5035, 'index': 60, 'loadMs': 2261, 'measureMs': 4, 'preset': 0, 'where': 'append'}
+  event   -1591.4 ms  add      {'index': 61, 'preset': 0, 'where': 'append'}
+  event   -1585.4 ms  loaded   {'h': 3805, 'index': 61, 'loadMs': 3, 'measureMs': 1, 'preset': 0, 'where': 'append'}
+  event   -1537.4 ms  add      {'index': 59, 'preset': 0, 'where': 'prepend'}
+  event   -1530.4 ms  correct  {'by': 7068, 'reason': 'load'}
+  event   -1530.4 ms  loaded   {'h': 7068, 'index': 59, 'loadMs': 2, 'measureMs': 2, 'preset': 0, 'where': 'prepend'}
+  event   -1521.4 ms  correct  {'by': -626, 'reason': 'resize'}
+  event   25382.6 ms  add      {'index': 58, 'preset': 0, 'where': 'prepend'}
+  event   25417.6 ms  correct  {'by': 28974, 'reason': 'load'}
+  event   25417.6 ms  loaded   {'h': 28974, 'index': 58, 'loadMs': 11, 'measureMs': 11, 'preset': 0, 'where': 'prepend'}
+  event   25417.6 ms  add      {'index': 57, 'preset': 0, 'where': 'prepend'}
+  event   25428.6 ms  correct  {'by': 6021, 'reason': 'load'}
+  event   25428.6 ms  loaded   {'h': 6021, 'index': 57, 'loadMs': 5, 'measureMs': 2, 'preset': 0, 'where': 'prepend'}
+  event   25428.6 ms  correct  {'by': -489, 'reason': 'resize'}
+samples moving (finger or momentum): 1265
+corrections taken out of the runway (no scroll position written): 0 (sum 0 px)
+corrections logged by the page: 5 (sum 40948 px); offset jumps seen by the scroll view: 2 (sum 34506 px)
+late samples (picture one sample behind the offset): 55
+SLIPPED samples (text jumped): 0
+UNMATCHED samples (blank band or a far jump): 2
+longest run of rows without ink in any sample: 812 pt (viewport 874)
+blank-screen episodes (more than half of the viewport without ink): 1
+    from 25454 ms for 6 ms (2 samples)
+  NOT CORRECTED: chapter 58 went from 28974 to 26446 px at 25419 ms
+  correction at sample 2755
+      25412.3 ms TDM offset     1924.0 (d      +0.0)  picture    +0 (r 0.000)  expected    +0 (r 0.000)  blank 15
+      25419.7 ms TDM offset     1854.0 (d     -70.0)  picture   +70 (r 0.065)  expected   +70 (r 0.065)  blank 15
+      25427.3 ms TDM offset     1854.0 (d      +0.0)  picture    +0 (r 0.000)  expected    +0 (r 0.000)  blank 15
+      25438.9 ms TDM offset    30778.0 (d  +28924.0 jump +28974)  picture  +132 (r 0.244)  expected   +50 (r 0.397)  blank 15   <==
+      25446.2 ms TDM offset    36310.0 (d   +5532.0 jump +5532)  picture    +0 (r 0.000)  expected    +0 (r 0.000)  blank 15
+      25453.9 ms -DM offset    36251.3 (d     -58.7)  picture  +567 (r 0.895)  expected   +59 (r 1.001)  blank 812
+      25459.7 ms -DM offset    36251.3 (d      +0.0)  picture    +0 (r 0.000)  expected    +0 (r 0.000)  blank 812
+    still decelerating three samples later: True
+  correction at sample 2756
+      25419.7 ms TDM offset     1854.0 (d     -70.0)  picture   +70 (r 0.065)  expected   +70 (r 0.065)  blank 15
+      25427.3 ms TDM offset     1854.0 (d      +0.0)  picture    +0 (r 0.000)  expected    +0 (r 0.000)  blank 15
+      25438.9 ms TDM offset    30778.0 (d  +28924.0 jump +28974)  picture  +132 (r 0.244)  expected   +50 (r 0.397)  blank 15
+      25446.2 ms TDM offset    36310.0 (d   +5532.0 jump +5532)  picture    +0 (r 0.000)  expected    +0 (r 0.000)  blank 15   <==
+      25453.9 ms -DM offset    36251.3 (d     -58.7)  picture  +567 (r 0.895)  expected   +59 (r 1.001)  blank 812
+      25459.7 ms -DM offset    36251.3 (d      +0.0)  picture    +0 (r 0.000)  expected    +0 (r 0.000)  blank 812
+      25470.9 ms -DM offset    36194.7 (d     -56.7)  picture  -560 (r 468.508)  expected    +0 (r 9.000)  blank 15
+    still decelerating three samples later: True
+  UNMATCHED at sample 2757
+      25427.3 ms TDM offset     1854.0 (d      +0.0)  picture    +0 (r 0.000)  expected    +0 (r 0.000)  blank 15
+      25438.9 ms TDM offset    30778.0 (d  +28924.0 jump +28974)  picture  +132 (r 0.244)  expected   +50 (r 0.397)  blank 15
+      25446.2 ms TDM offset    36310.0 (d   +5532.0 jump +5532)  picture    +0 (r 0.000)  expected    +0 (r 0.000)  blank 15
+      25453.9 ms -DM offset    36251.3 (d     -58.7)  picture  +567 (r 0.895)  expected   +59 (r 1.001)  blank 812   <==
+      25459.7 ms -DM offset    36251.3 (d      +0.0)  picture    +0 (r 0.000)  expected    +0 (r 0.000)  blank 812
+      25470.9 ms -DM offset    36194.7 (d     -56.7)  picture  -560 (r 468.508)  expected    +0 (r 9.000)  blank 15
+      25476.7 ms -DM offset    36194.7 (d      +0.0)  picture    +0 (r 0.000)  expected    +0 (r 0.000)  blank 15
+  UNMATCHED at sample 2759
+      25446.2 ms TDM offset    36310.0 (d   +5532.0 jump +5532)  picture    +0 (r 0.000)  expected    +0 (r 0.000)  blank 15
+      25453.9 ms -DM offset    36251.3 (d     -58.7)  picture  +567 (r 0.895)  expected   +59 (r 1.001)  blank 812
+      25459.7 ms -DM offset    36251.3 (d      +0.0)  picture    +0 (r 0.000)  expected    +0 (r 0.000)  blank 812
+      25470.9 ms -DM offset    36194.7 (d     -56.7)  picture  -560 (r 468.508)  expected    +0 (r 9.000)  blank 15   <==
+      25476.7 ms -DM offset    36194.7 (d      +0.0)  picture    +0 (r 0.000)  expected    +0 (r 0.000)  blank 15
+      25484.3 ms -DM offset    36140.0 (d     -54.7)  picture  +245 (r 0.218)  expected   +55 (r 0.227)  blank 15
+      25489.9 ms -DM offset    36140.0 (d      +0.0)  picture    +0 (r 0.000)  expected    +0 (r 0.000)  blank 15

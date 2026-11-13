@@ -15,25 +15,31 @@ public struct ServedResource: Sendable {
         self.mimeType = mimeType
         self.data = Data(text.utf8)
     }
+    public init(mimeType: String, data: Data) {
+        self.mimeType = mimeType
+        self.data = data
+    }
 }
 
 /// Minimal `epub://spike/<path>` scheme handler serving in-memory resources, like the planned EPUBSchemeHandler.
 @MainActor
 public final class SpikeSchemeHandler: NSObject, @preconcurrency WKURLSchemeHandler {
     public var resources: [String: ServedResource] = [:]
+    /// Fallback for paths not in `resources` (spike 8: the files of an extracted EPUB, read from disk on demand).
+    public var provider: (@MainActor (String) -> ServedResource?)?
     public private(set) var requestLog: [String] = []
 
     public func webView(_ webView: WKWebView, start task: any WKURLSchemeTask) {
         let url = task.request.url!
         requestLog.append(url.absoluteString)
-        guard let res = resources[url.path] else {
+        guard let res = resources[url.path] ?? provider?(url.path) else {
             task.didReceive(HTTPURLResponse(url: url, statusCode: 404, httpVersion: "HTTP/1.1", headerFields: nil)!)
             task.didFinish()
             return
         }
         let response = HTTPURLResponse(
             url: url, statusCode: 200, httpVersion: "HTTP/1.1",
-            headerFields: ["Content-Type": "\(res.mimeType); charset=utf-8", "Content-Length": "\(res.data.count)"]
+            headerFields: ["Content-Type": Self.isText(res.mimeType) ? "\(res.mimeType); charset=utf-8" : res.mimeType, "Content-Length": "\(res.data.count)"]
         )!
         task.didReceive(response)
         task.didReceive(res.data)
@@ -41,6 +47,10 @@ public final class SpikeSchemeHandler: NSObject, @preconcurrency WKURLSchemeHand
     }
 
     public func webView(_ webView: WKWebView, stop task: any WKURLSchemeTask) {}
+
+    static func isText(_ mime: String) -> Bool {
+        mime.hasPrefix("text/") || mime.contains("xml") || mime.contains("json") || mime.contains("javascript")
+    }
 }
 
 public struct UserScriptSpec: Sendable {
@@ -76,7 +86,8 @@ public final class WebHost: NSObject, @preconcurrency WKNavigationDelegate, @pre
         webViewFrame: CGRect? = nil,
         allowsContentJavaScript: Bool = false,
         userScripts: [UserScriptSpec] = [],
-        messageHandlerName: String = "reader"
+        messageHandlerName: String = "reader",
+        scrollable: Bool = false
     ) {
         self.visibleSize = visibleSize
         let config = WKWebViewConfiguration()
@@ -111,8 +122,10 @@ public final class WebHost: NSObject, @preconcurrency WKNavigationDelegate, @pre
         window.rootViewController = vc
         clipView.addSubview(webView)
         window.makeKeyAndVisible()
-        webView.scrollView.isScrollEnabled = false
-        webView.scrollView.bounces = false
+        // Spike 8 / 9 let the web view scroll its main frame (continuous scroll); the other spikes page by script.
+        webView.scrollView.isScrollEnabled = scrollable
+        webView.scrollView.bounces = scrollable
+        webView.scrollView.showsVerticalScrollIndicator = !scrollable
         webView.scrollView.contentInsetAdjustmentBehavior = .never
         #endif
         super.init()
@@ -187,7 +200,7 @@ public final class WebHost: NSObject, @preconcurrency WKNavigationDelegate, @pre
 
     /// takeSnapshot(with:) for a rect in view coordinates (points, top-left origin).
     /// `snapshotWidth` is given in points; on Retina macOS the returned image is still backing-scale pixels.
-    public func snapshot(rect: CGRect? = nil, scale: Double = 1) async throws -> Snapshot {
+    public func snapshot(rect: CGRect? = nil, scale: Double = 1, afterScreenUpdates: Bool = true) async throws -> Snapshot {
         let config = WKSnapshotConfiguration()
         if let rect {
             config.rect = rect
@@ -195,7 +208,7 @@ public final class WebHost: NSObject, @preconcurrency WKNavigationDelegate, @pre
         } else {
             config.snapshotWidth = NSNumber(value: Double(webView.bounds.width) * scale)
         }
-        config.afterScreenUpdates = true
+        config.afterScreenUpdates = afterScreenUpdates
         let clock = ContinuousClock()
         let start = clock.now
         let img = try await webView.takeSnapshot(configuration: config)
@@ -226,6 +239,24 @@ public final class WebHost: NSObject, @preconcurrency WKNavigationDelegate, @pre
         return new.count == 1 ? new.first : nil
     }
     private var pidsBeforeCreation: Set<Int32> = []
+
+    /// pid of the GPU process (private `_gpuProcessIdentifier`, spike only). The process is shared by every web view.
+    public var gpuPID: Int32? {
+        let sel = Selector(("_gpuProcessIdentifier"))
+        guard webView.responds(to: sel), let n = webView.value(forKey: "_gpuProcessIdentifier") as? NSNumber, n.int32Value > 0 else { return nil }
+        return n.int32Value
+    }
+
+    /// Takes the window off screen so the next host starts from a clean slate.
+    public func close() {
+        webView.navigationDelegate = nil
+        webView.removeFromSuperview()
+        #if canImport(AppKit)
+        window.orderOut(nil)
+        #else
+        window.isHidden = true
+        #endif
+    }
     public func rememberExistingWebContentProcesses() { pidsBeforeCreation = Set(webContentPIDs()) }
 }
 
@@ -262,4 +293,15 @@ public func residentMemoryMB(pid: Int32) -> Double? {
     #else
     return nil
     #endif
+}
+
+@_silgen_name("proc_pid_rusage")
+private func spike_proc_pid_rusage(_ pid: Int32, _ flavor: Int32, _ buffer: UnsafeMutablePointer<rusage_info_v2>) -> Int32
+
+/// Physical footprint of a process in MB (`proc_pid_rusage`, what Activity Monitor and jetsam count). Works for the
+/// WebContent / GPU processes of the same user, on macOS and in the iOS Simulator (where they are host processes).
+public func footprintMB(pid: Int32) -> Double? {
+    var info = rusage_info_v2()
+    guard spike_proc_pid_rusage(pid, 2 /* RUSAGE_INFO_V2 */, &info) == 0 else { return nil }
+    return Double(info.ri_phys_footprint) / 1_048_576
 }

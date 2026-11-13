@@ -1,0 +1,22 @@
+mode=runway known heights=True margin=2000 viewport=[402, 874]
+samples=6445 span=60.0s
+  event   -1675.8 ms  add      {'index': 60, 'preset': 0, 'where': 'append'}
+  event   -1667.8 ms  loaded   {'h': 5035, 'index': 60, 'loadMs': 2, 'measureMs': 3, 'preset': 0, 'where': 'append'}
+  event   -1667.8 ms  add      {'index': 61, 'preset': 0, 'where': 'append'}
+  event   -1661.8 ms  loaded   {'h': 3805, 'index': 61, 'loadMs': 1, 'measureMs': 2, 'preset': 0, 'where': 'append'}
+  event   -1576.8 ms  add      {'index': 59, 'preset': 7068, 'where': 'prepend'}
+  event   -1575.8 ms  shift    {'by': 7068, 'reason': 'preset', 'runway': 392932}
+  event   -1567.8 ms  shift    {'by': -626, 'reason': 'load', 'runway': 393558}
+  event   -1567.8 ms  loaded   {'h': 6442, 'index': 59, 'loadMs': 2, 'measureMs': 6, 'preset': 7068, 'where': 'prepend'}
+  event   20190.2 ms  add      {'index': 58, 'preset': 28974, 'where': 'prepend'}
+  event   20191.2 ms  shift    {'by': 28974, 'reason': 'preset', 'runway': 364584}
+  event   20212.2 ms  shift    {'by': -2528, 'reason': 'load', 'runway': 367112}
+  event   20212.2 ms  loaded   {'h': 26446, 'index': 58, 'loadMs': 9, 'measureMs': 11, 'preset': 28974, 'where': 'prepend'}
+samples moving (finger or momentum): 837
+corrections taken out of the runway (no scroll position written): 4 (sum 32888 px)
+corrections logged by the page: 0 (sum 0 px); offset jumps seen by the scroll view: 0 (sum 0 px)
+late samples (picture one sample behind the offset): 39
+SLIPPED samples (text jumped): 0
+UNMATCHED samples (blank band or a far jump): 0
+longest run of rows without ink in any sample: 119 pt (viewport 874)
+blank-screen episodes (more than half of the viewport without ink): 0
