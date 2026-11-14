@@ -125,6 +125,25 @@
     return out;
   }
 
+  // Whether a chapter may join at `where` ("prepend" / "append") a window that is full (§5.1). With chapters much
+  // shorter than a page the two-page lookahead wants more chapters than the limit allows: the chapter that joins at
+  // one end would be the furthest one and leave again at once, be wanted again, and so on without the reader doing
+  // anything. So at the limit a chapter joins only when the limit then takes the chapter at the other end.
+  // `views` / `viewportHeight` / `pageHeight` / `limit` as for `removals`.
+  function admits(input) {
+    const views = input.views || [];
+    const limit = input.limit || WINDOW_LIMIT;
+    if (views.length < limit) { return true; }
+    const first = views[0], last = views[views.length - 1];
+    // Only the edge next to the window matters for how far the new chapter is: its height is not known yet.
+    const added = input.where === "prepend"
+      ? { pos: first.pos - 1, top: first.top - 1, bottom: first.top, keep: false }
+      : { pos: last.pos + 1, top: last.bottom, bottom: last.bottom + 1, keep: false };
+    const next = input.where === "prepend" ? [added].concat(views) : views.concat([added]);
+    const out = removals({ views: next, viewportHeight: input.viewportHeight, pageHeight: input.pageHeight, atRest: false, limit: limit });
+    return out.indexOf(added.pos) < 0;
+  }
+
   // Makes a chapter's frame as tall as its content (§4.2). `measure()` is the content's height with the frame as
   // it is now; `apply(h)` sets the frame's height. Content sized in viewport units grows every time its frame is
   // fitted: after three such steps in a row the frame is pinned to `first` (the content's height when the frame was
@@ -180,6 +199,7 @@
     settledScrollTop: settledScrollTop,
     windowAction: windowAction,
     removals: removals,
+    admits: admits,
     fit: fit,
     scrollTarget: scrollTarget,
   };

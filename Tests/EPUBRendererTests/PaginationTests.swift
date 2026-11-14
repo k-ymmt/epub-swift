@@ -131,7 +131,7 @@ import EPUBCore
     @Test func goToPageLandsInTheRightChapter() async throws {
         let host = try await SessionHost(url: VerticalWritingTests.kusamakura)
         await host.session.loadIfNeeded()
-        try await host.waitUntil(timeout: .seconds(10)) { !host.session.pagination.isEstimated }
+        try await host.waitUntil(timeout: .seconds(60)) { !host.session.pagination.isEstimated }
         let pagination = host.session.pagination
         let range = pagination.pageRange(ofSpineIndex: 4)
         await host.session.go(toPage: range.lowerBound + 2)

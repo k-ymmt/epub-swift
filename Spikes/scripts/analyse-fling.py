@@ -92,7 +92,18 @@ def main():
             j += 1
         moved = sum(samples[k].get("shift", 0) for k in run)
         owed = sum(samples[k].get("expected", 0) for k in run)
-        (caught_up if len(run) > 1 and abs(moved - owed) <= 2 else left).extend(run)
+        # Behind, not somewhere else: at every sample of the run the picture shows a place the offset has been at
+        # since the run began. A picture that leaves that range (text that jumps out and back while the offset
+        # stands still) is a jump, however the sums come out.
+        seen_lo = seen_hi = at = picture = 0
+        behind = True
+        for k in run:
+            at += samples[k].get("expected", 0)
+            picture += samples[k].get("shift", 0)
+            seen_lo, seen_hi = min(seen_lo, at), max(seen_hi, at)
+            if not (seen_lo - 2 <= picture <= seen_hi + 2):
+                behind = False
+        (caught_up if len(run) > 1 and behind and abs(moved - owed) <= 2 else left).extend(run)
         i = j
     slipped = left
     written = []

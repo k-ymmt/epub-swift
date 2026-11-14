@@ -224,6 +224,62 @@
     }
   }
 
+  // --- viewport units in the scrolled layout (08-continuous-scroll §4.2) ---
+  // In a chapter of the scrolled layout `vh` is the height of the chapter's frame, and the frame is as tall as the
+  // chapter: a block `100vh` tall grows every time the frame is fitted to it, and what follows it never fits. A page
+  // is what the publisher meant, so every length in `vh` (`svh`, `lvh`, `dvh`, `vb`, `vmin`, `vmax`) in the
+  // chapter's style sheets and `style` attributes is written as pixels of the page height P. The original values
+  // are kept: another page height writes them again, and the paged layout puts them back.
+  const VIEWPORT_LENGTH = /(?<![\w-])(-?(?:\d+\.?\d*|\.\d+)(?:e[-+]?\d+)?)[dsl]?(vh|vb|vmin|vmax)\b/gi;
+  let viewportLengths = null;
+  function collectViewportLengths() {
+    const uses = [];
+    function take(style) {
+      if (!style) { return; }
+      for (let i = 0; i < style.length; i++) {
+        const name = style[i];
+        const value = style.getPropertyValue(name);
+        // A length inside a URL is a file name.
+        if (!value || value.indexOf("url(") >= 0) { continue; }
+        VIEWPORT_LENGTH.lastIndex = 0;
+        if (VIEWPORT_LENGTH.test(value)) { uses.push({ style: style, name: name, value: value, priority: style.getPropertyPriority(name) }); }
+      }
+    }
+    function walk(rules) {
+      for (const rule of rules) {
+        if (rule.style) { take(rule.style); }
+        if (rule.styleSheet) { try { walk(rule.styleSheet.cssRules); } catch (e) { /* a sheet that cannot be read */ } }
+        if (rule.cssRules) { walk(rule.cssRules); }
+      }
+    }
+    for (const sheet of document.styleSheets) {
+      try { walk(sheet.cssRules); } catch (e) { /* a sheet that cannot be read */ }
+    }
+    for (const el of document.querySelectorAll("[style]")) { take(el.style); }
+    return uses;
+  }
+  function applyViewportLengths(pageWidth, pageHeight) {
+    if (!state.scrolled) {
+      if (viewportLengths) {
+        for (const use of viewportLengths) { use.style.setProperty(use.name, use.value, use.priority); }
+        viewportLengths = null;
+      }
+      return;
+    }
+    if (!viewportLengths) { viewportLengths = collectViewportLengths(); }
+    const height = Math.max(1, pageHeight || window.innerHeight);
+    const width = Math.max(1, pageWidth || window.innerWidth);
+    for (const use of viewportLengths) {
+      VIEWPORT_LENGTH.lastIndex = 0;
+      const value = use.value.replace(VIEWPORT_LENGTH, function (_, number, unit) {
+        const u = unit.toLowerCase();
+        const base = u === "vmin" ? Math.min(width, height) : (u === "vmax" ? Math.max(width, height) : height);
+        return (parseFloat(number) * base / 100).toFixed(3) + "px";
+      });
+      use.style.setProperty(use.name, value, use.priority);
+    }
+  }
+
   // Apply layout parameters and measure. Returns {pageCount, writingMode}.
   function layout(params) {
     applyParams(params);
@@ -235,6 +291,7 @@
     state.scrolled = !!(params && params.scrolled);
     if (state.scrolled) { root().setAttribute("data-reader-layout", "scrolled"); }
     else { root().removeAttribute("data-reader-layout"); }
+    applyViewportLengths(params && params.pageWidth, params && params.pageHeight);
     state.writingMode = detectWritingMode();
     if (state.scrolled) {
       // No columns and no page count: the controller makes the frame as tall as the content (`scroll.contentHeight`).
@@ -1856,10 +1913,14 @@
         view.fitting = false;
       }
       if (result.fixed) { view.fixed = true; }
+      const changed = view.reported !== view.height;
       recordHeight(view, reason);
       correct(reason || "height");
       if (held) { dom.stage.style.paddingBottom = "0px"; }
       syncTail();
+      // The page of the reading line, the chapters on screen and the ends of the book depend on the heights, also
+      // when nothing above the line moved (a chapter that grows under the last line: the book's end is further).
+      if (changed && view.loaded && !sc.showing) { schedulePost(); }
     }
     function childParams(view) {
       const p = Object.assign({}, sc.params || {});
@@ -1889,9 +1950,12 @@
       };
       view.ready = new Promise(function (resolve) {
         let done = false;
+        let timer = null;
         function finish() {
           if (done) { return; }
           done = true;
+          clearTimeout(timer);
+          view.finish = null;
           viewDidLoad(view);
           resolve(view);
         }
@@ -1900,7 +1964,9 @@
           if (bridge && bridge.whenReady) { bridge.whenReady().then(finish, finish); } else { finish(); }
         }, { once: true });
         // A chapter that never answers still gets out of the way (Swift has its own load timeout).
-        setTimeout(finish, 8000);
+        timer = setTimeout(finish, 8000);
+        // A chapter that leaves the window before it has loaded is done too: nothing keeps its frame.
+        view.finish = finish;
       });
       el.src = item.u;
       return view;
@@ -1971,6 +2037,7 @@
       view.el.remove();
       sc.views.splice(k, 1);
       if (sc.loading === view) { sc.loading = null; }
+      if (view.finish) { view.finish(); }
       if (anchorView === view) { refreshAnchor(); }
       if (above) { correct("remove"); } else { syncTail(); }
       log("remove", { index: view.spineIndex, above: above, height: view.height, reason: reason || "" });
@@ -2007,17 +2074,27 @@
         firstVisible: fr.bottom > 0 && fr.top < height,
         lastVisible: lr.bottom > 0 && lr.top < height,
       });
+      if (!action) { return; }
+      // A full window takes a chapter only when it then gives up the one at its other end (short chapters: the
+      // lookahead asks for more than the limit holds, and the new chapter would leave again at once).
+      const current = sc.views.map(function (view) {
+        const rect = rectOf(view);
+        return { pos: view.pos, top: rect.top, bottom: rect.bottom, keep: hasSelection(view) };
+      });
+      if (!core.admits({ views: current, viewportHeight: height, pageHeight: sc.page, where: action })) { return; }
       if (action === "prepend") { addView(first.pos - 1, "prepend"); }
-      else if (action === "append") { addView(last.pos + 1, "append"); }
+      else { addView(last.pos + 1, "append"); }
     }
     // A new window that starts with the chapter at `pos`, its top at the reading line.
     function rebuildWindow(pos) {
       sc.epoch += 1;
-      for (const view of sc.views) {
+      const old = sc.views;
+      sc.views = [];
+      for (const view of old) {
         if (view.observer) { view.observer.disconnect(); }
         view.el.remove();
+        if (view.finish) { view.finish(); }
       }
-      sc.views = [];
       sc.anchor = null;
       applyUpper(core.runwayTarget(sc.heights, pos), 0);
       const view = makeView(pos);
@@ -2265,6 +2342,8 @@
       return frames(2).then(function () {
         if (view.epoch !== sc.epoch || !view.el.isConnected) { return; }
         correct("place");
+        // The reader started to scroll again while the jump was under way: the position is theirs from here.
+        if (sc.interacting) { return; }
         const want = topFor(view, locate(view, target));
         if (Math.abs(window.scrollY - want) > 1 && attempt < 5) { return place(view, target, attempt + 1); }
       });
@@ -2284,7 +2363,7 @@
         if (view.vertical) { return { vertical: true, spineIndex: view.spineIndex }; }
         return place(view, target, 0).then(function () {
           sc.showing -= 1;
-          settle();
+          if (!sc.interacting) { settle(); }
           autoWindow();
           refreshAnchor();
           const location = currentLocation();
@@ -2341,7 +2420,14 @@
         view.reported = null;
         setFrameHeight(view, sc.page);
         if (!chapter(view)) { continue; }
-        try { view.bridge.layout(childParams(view)); } catch (e) { continue; }
+        let mode = null;
+        try { mode = view.bridge.layout(childParams(view)).writingMode || null; } catch (e) { continue; }
+        const vertical = !!mode && (mode.indexOf("vertical") === 0 || mode.indexOf("sideways") === 0);
+        if (vertical !== view.vertical) {
+          // A style that depends on the width changed the chapter's writing mode: the session switches to pages (§1).
+          view.vertical = vertical;
+          post("chapterWritingMode", { spineIndex: view.spineIndex, writingMode: mode });
+        }
         view.first = measure(view);
         const result = core.fit(view.height, view.first, function () { return measure(view); }, function (h) { setFrameHeight(view, h); });
         if (result.fixed) { view.fixed = true; }

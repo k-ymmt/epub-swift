@@ -58,7 +58,15 @@ import EPUBCore
             return Double(different) / Double(max(1, total))
         }
 
-        var summary: String { "\(width)x\(height) px, ink \((ink * 1000).rounded() / 1000)" }
+        var summary: String { "\(width)x\(height) px, ink \((ink * 1000).rounded() / 1000)\(hasNoPicture ? ", no picture" : "")" }
+
+        /// Nothing was drawn into it: every pixel is transparent. The window server sometimes answers with such a
+        /// picture when the machine is busy (seen in the reference of a trial, with ink 1.0). The page cannot show
+        /// this: its background is opaque.
+        var hasNoPicture: Bool {
+            for i in stride(from: 3, to: data.count, by: 4) where data[i] != 0 { return false }
+            return true
+        }
 
         /// Fraction of pixels that are not near white: text.
         var ink: Double {
@@ -150,8 +158,12 @@ import EPUBCore
         // A snapshot after screen updates returns once the page has presented a frame; the window server composites
         // it a moment later.
         _ = try await snapshot(host, rect: rect, afterScreenUpdates: true)
-        try await Task.sleep(for: .milliseconds(50))
-        return try windowBand(host, rect: rect)
+        for _ in 0..<20 {
+            try await Task.sleep(for: .milliseconds(50))
+            let band = try windowBand(host, rect: rect)
+            if !band.hasNoPicture { return band }
+        }
+        throw Failure("the window server has no picture of the test window")
     }
 
     /// Opens `url` scrolled and makes sure the page is visible and gets frames.
@@ -290,11 +302,19 @@ import EPUBCore
         let clock = ContinuousClock()
         let deadline = clock.now + timeout
         var snapshots = 0, changed = 0
+        var different: [String] = []
         while box.result == nil {
             if clock.now > deadline { throw Failure("the change did not finish within \(timeout)") }
             let s = try windowBand(host, rect: band)
-            snapshots += 1
-            if s.difference(from: reference) > 0.004 { changed += 1 }
+            // A picture with nothing in it is not a picture of the page (`Band.hasNoPicture`).
+            if !s.hasNoPicture {
+                snapshots += 1
+                let difference = s.difference(from: reference)
+                if difference > 0.004 {
+                    changed += 1
+                    if different.count < 4 { different.append("#\(snapshots): \(s.summary), differs by \((difference * 1000).rounded() / 1000)") }
+                }
+            }
             try await Task.sleep(for: .milliseconds(2))
         }
         let result = try #require(box.result).get()
@@ -308,7 +328,7 @@ import EPUBCore
         try await Task.sleep(for: .milliseconds(100))
         let end = try await presentedBand(host, rect: band)
         return Outcome(settled: y1 - y0, transient: max(abs(lo - y0), abs(hi - y0)), frames: frames, snapshots: snapshots, changed: changed,
-                       finalDifference: end.difference(from: reference), bands: "before \(reference.summary), after \(end.summary), \(frames) frames", state: try await host.scrollState(), value: result["value"] is NSNull ? nil : result["value"])
+                       finalDifference: end.difference(from: reference), bands: (["before \(reference.summary)", "after \(end.summary)", "\(frames) frames"] + different).joined(separator: "; "), state: try await host.scrollState(), value: result["value"] is NSNull ? nil : result["value"])
     }
 
     /// The text did not move: not at the end, not at any frame, not in any snapshot.

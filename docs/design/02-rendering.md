@@ -25,7 +25,8 @@ SwiftUI は import せず、UIKit / AppKit の WKWebView を扱う。
   `reader.js` をこの順に注入する。`reader.js` は `html[data-reader-scroll]` で「スクロールコントローラ」として動く。
   `scroll-core.js` は JavaScriptCore だけでテストする（`ScrollCoreTests`）。
 - 章の文書には `layout({scrolled: true, …})` を渡す。`reader.js` が `<html data-reader-layout="scrolled">` を付け、
-  `reader-before.css` が多段組（§3.4）を外して本文の箱を作る（08 §4.2）。
+  `reader-before.css` が多段組（§3.4）を外して本文の箱を作る（08 §4.2）。章の CSS にある `vh` などビューポートの高さに
+  よる長さは、1 ページの高さ P の px に書き換える（iframe は章と同じ高さなので、そのままだと `100vh` が章の高さになる）。
 - ページめくりの演出（§7）、隣接章のスナップショット（§8.3）、3 ページ幅のフレーム（§1.2）は使わない。`relayoutSnapshot` は
   再レイアウトと窓の作り直しの間に使う。
 - 読者のスクロールが進んでいるかは Swift が調べてコントローラに伝える（iOS: スクロールビューの状態を 0.05 秒ごとに読む。

@@ -414,6 +414,7 @@ final class WebViewSpineRenderer: NSObject, SpineRenderer {
             panTargetInstalled = true
         }
         if !enabled { scrollView.setContentOffset(.zero, animated: false) }
+        setInteractionPolling(enabled)
         #else
         if enabled {
             webView.onScrollWheel = { [weak self] (event: NSEvent) -> Bool in
@@ -445,22 +446,28 @@ final class WebViewSpineRenderer: NSObject, SpineRenderer {
     }
 
     #if canImport(UIKit)
-    /// Reads the scroll view's flags; while they say "active" a timer keeps reading them, because no delegate call
-    /// marks every way an interaction ends (a touch that stops the momentum and lifts without dragging).
+    /// Reads the scroll view's flags. A timer reads them every 0.05 s for as long as the scrolled layout is shown
+    /// (08-continuous-scroll §5.6): no delegate call or gesture action marks every way an interaction begins and
+    /// ends (a finger that rests on the screen without moving is tracked before any drag begins; a touch that stops
+    /// the momentum lifts without dragging). The pan recognizer's action only makes the common case immediate.
     private func evaluateInteraction() {
         let scrollView = webView.scrollView
         let active = isScrollMode && ScrollViewInteraction.isActive(isTracking: scrollView.isTracking, isDragging: scrollView.isDragging, isDecelerating: scrollView.isDecelerating)
         setInteractionActive(active)
-        if active, interactionPoll == nil {
-            let timer = Timer(timeInterval: 0.05, repeats: true) { [weak self] _ in
-                MainActor.assumeIsolated { self?.evaluateInteraction() }
-            }
-            RunLoop.main.add(timer, forMode: .common)
-            interactionPoll = timer
-        } else if !active {
-            interactionPoll?.invalidate()
-            interactionPoll = nil
+    }
+
+    private func setInteractionPolling(_ enabled: Bool) {
+        interactionPoll?.invalidate()
+        interactionPoll = nil
+        guard enabled else { return }
+        let timer = Timer(timeInterval: 0.05, repeats: true) { [weak self] timer in
+            // The renderer went away while the scrolled layout was shown: the timer goes with it.
+            guard self != nil else { timer.invalidate(); return }
+            MainActor.assumeIsolated { self?.evaluateInteraction() }
         }
+        timer.tolerance = 0.01
+        RunLoop.main.add(timer, forMode: .common)
+        interactionPoll = timer
     }
 
     @objc private func panDidChange(_ recognizer: UIPanGestureRecognizer) {

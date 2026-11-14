@@ -146,6 +146,64 @@ extension SessionHost {
         #expect(host.session.layout == .paged)
     }
 
+    @Test func aChapterThatTurnsVerticalInARelayoutSendsTheBookBackToPages() async throws {
+        let host = try await SessionHost.scrolled()
+        await host.session.loadIfNeeded()
+        await host.session.go(toSpineIndex: 8)
+        try await host.waitForScrollRest()
+        #expect(host.session.layout == .scrolled)
+        // A style sheet that turns the chapter vertical under a condition a relayout brings about (a media query
+        // on the width, in a real book).
+        _ = try await host.js("""
+            const d = document.querySelector('#__reader_stage > iframe[data-spine-index="8"]').contentDocument;
+            const style = d.createElement("style");
+            style.textContent = "html { writing-mode: vertical-rl !important; }";
+            d.head.appendChild(style);
+            return true;
+            """)
+        host.session.settings.fontScale = 1.2
+        try await host.waitUntil { host.session.layout == .paged && host.session.hasLoaded && !host.session.isLoading }
+        #expect(host.session.currentSpineIndex == 8)
+    }
+
+    @Test func aLayoutChosenWhileTheBookOpensIsTheOneShown() async throws {
+        // The app restores its settings a moment after it has made the session: the first load has already begun.
+        let host = try await SessionHost(url: Self.mobyDick)
+        let load = Task { @MainActor in await host.session.loadIfNeeded() }
+        try await host.waitUntil { host.session.isLoading }
+        host.session.settings.layout = .scrolled
+        await load.value
+        try await host.waitUntil { host.session.hasLoaded && !host.session.isLoading }
+        #expect(host.session.layout == .scrolled)
+        #expect(try await host.scrollState().views.isEmpty == false)
+    }
+
+    @Test func aFontSizeChosenWhileAScrolledBookOpensIsTheOneShown() async throws {
+        let host = try await SessionHost.scrolled()
+        let load = Task { @MainActor in await host.session.loadIfNeeded() }
+        try await host.waitUntil { host.session.isLoading }
+        host.session.settings.fontScale = 2
+        await load.value
+        try await host.waitUntil { host.session.hasLoaded && !host.session.isLoading }
+        try await host.waitForScrollRest()
+        let size = try #require(try await host.js("""
+            const f = document.querySelector('#__reader_stage > iframe');
+            return parseFloat(f.contentWindow.getComputedStyle(f.contentDocument.body).fontSize);
+            """) as? Double)
+        #expect(size >= 30, "the text is laid out at the font size chosen during the load: \(size) px")
+    }
+
+    @Test func switchingFromASpreadToTheScrolledLayoutLeavesNoSpread() async throws {
+        let host = try await SessionHost(url: Self.mobyDick, size: CGSize(width: 800, height: 600))
+        await host.session.loadIfNeeded()
+        await host.session.go(toSpineIndex: 8)
+        #expect(host.session.isShowingSpread)
+        host.session.settings.layout = .scrolled
+        try await host.waitUntil { host.session.layout == .scrolled && !host.session.isLoading }
+        #expect(host.session.currentSpineIndex == 8)
+        #expect(!host.session.isShowingSpread)
+    }
+
     @Test func thePagedLayoutIsUntouchedByTheScrolledSettings() async throws {
         // The default is paged, and a text width for the scrolled layout changes nothing in it.
         let host = try await SessionHost(url: Self.mobyDick)
@@ -266,15 +324,23 @@ extension SessionHost {
         let state = try await host.scrollState()
         let cover = try #require(state.view(0))
         let steps = 12
+        let clock = ContinuousClock()
+        let started = clock.now
+        // The hand stays on the document for the whole move: no step is a rest, however slow the machine is.
+        _ = try await host.js("return window.__epubReader.setInteraction({active: true})")
         for k in 1...steps {
             try await host.scrollDocument(to: (cover.height - 200) * Double(k) / Double(steps))
             try await Task.sleep(for: .milliseconds(30))
         }
+        let whileScrolling = recorder.positions.count
+        let seconds = Int((clock.now - started) / .seconds(1))
+        _ = try await host.js("return window.__epubReader.setInteraction({active: false})")
         try await host.waitForScrollRest()
         #expect(host.session.currentSpineIndex == 0)
         #expect(host.session.visibleSpineIndices == [0, 1], "both chapters at the boundary are visible")
         // While it scrolled the position came at most once a second; at rest it always comes.
-        #expect(recorder.positions.count >= 1 && recorder.positions.count <= 2)
+        #expect(whileScrolling <= seconds + 1, "\(whileScrolling) positions in \(seconds) s of scrolling")
+        #expect(recorder.positions.count >= 1 && recorder.positions.count <= whileScrolling + 1)
         #expect(recorder.positions.last == host.session.position)
         #expect(recorder.navigations.isEmpty, "scrolling by hand is not reported as a jump or a page turn")
 
@@ -284,6 +350,48 @@ extension SessionHost {
         #expect(host.session.position?.spineIndex == 1)
         #expect(host.session.currentPageIndex == 0)
         #expect(!host.session.isAtStart)
+    }
+
+    @Test func aChapterThatGrowsUnderTheLastLineMovesTheEndOfTheBook() async throws {
+        let host = try await SessionHost.scrolled(url: Self.sample)
+        await host.session.loadIfNeeded()
+        await host.session.go(toSpineIndex: 4)
+        try await host.waitForScrollRest()
+        try await host.waitUntil { host.session.isAtEnd }
+        #expect(host.session.totalProgression == 1)
+        let scrollY = try await host.scrollState().scrollY
+        // Something arrives late at the end of the last chapter (a picture that loads): the reader is not at the
+        // end of the book any more, though nothing moved on screen.
+        _ = try await host.js("""
+            const d = document.querySelector('#__reader_stage > iframe[data-spine-index="4"]').contentDocument;
+            const el = d.createElement("div");
+            el.style.height = "1500px";
+            d.body.appendChild(el);
+            return true;
+            """)
+        try await host.waitUntil { !host.session.isAtEnd }
+        #expect(host.session.totalProgression < 1)
+        #expect(try await host.scrollState().scrollY == scrollY, "the text stayed where it was")
+    }
+
+    @Test func visiblePagesTellsItsObserversWhenTheBandMovesWithinAPage() async throws {
+        let host = try await SessionHost.scrolled()
+        await host.session.loadIfNeeded()
+        await host.session.go(toSpineIndex: 8)
+        try await host.waitForScrollRest()
+        // The reading line is at a page top: the band below it is exactly that page.
+        let page = try #require(host.session.currentPage)
+        #expect(host.session.visiblePages == [page])
+        final class Flag: @unchecked Sendable { var changed = false }   // only touched on the main actor
+        let flag = Flag()
+        withObservationTracking { _ = host.session.visiblePages } onChange: { flag.changed = true }
+        // 100 px further the line is on the same page, and the band reaches into the next one.
+        try await host.scrollDocument(by: 100)
+        try await host.waitForScrollRest()
+        try await host.waitUntil { host.session.visiblePages.count == 2 }
+        #expect(host.session.currentPage == page)
+        #expect(host.session.visiblePages == [page, page + 1])
+        #expect(flag.changed, "a view that shows `visiblePages` was not told")
     }
 
     // MARK: Jumps (§8.1)
@@ -541,12 +649,13 @@ extension SessionHost {
         let host = try await SessionHost.scrolled()
         await host.session.loadIfNeeded()
         await host.session.go(toSpineIndex: 20)
+        // The reader's hand is on the screen for the whole move: nothing is at rest (however slow the machine is),
+        // so the chapters the scrolling passes stay in the window.
+        _ = try await host.js("return window.__epubReader.setInteraction({active: true})")
         for _ in 0..<6 {
             try await host.scrollDocument(by: 1200)
             try await Task.sleep(for: .milliseconds(40))
         }
-        // Hold the window as it is: the reader's hand is on the screen, so nothing is at rest.
-        _ = try await host.js("return window.__epubReader.setInteraction({active: true})")
         // The chapters the scrolling passed are still in the window, and the ones ahead have arrived (on a busy
         // machine the page handles the last scroll events after this point).
         try await host.waitUntil {
@@ -709,28 +818,42 @@ extension SessionHost {
         #expect(host.session.currentPageIndex == page)
     }
 
-    @Test func aCoverSizedInViewportUnitsIsOnePageTallAndStopsGrowing() async throws {
+    @Test func aCoverSizedInViewportUnitsIsOnePageTallAndWhatFollowsItIsNotCutOff() async throws {
         let host = try await SessionHost.scrolled(url: Self.sample, insets: ReaderInsets(top: 40, bottom: 20))
         await host.session.loadIfNeeded()
         try await host.waitForScrollRest()
         var state = try await host.scrollState()
         let cover = try #require(state.view(0))
-        #expect(cover.fixed, "the chapter's height depends on its frame: it is pinned")
-        // `100vh` was resolved against a frame one page (540) tall; the caption follows it.
+        // `100vh` means one page (540): the frame that holds the chapter is taller than that (the caption follows
+        // the cover), and a `vh` that followed the frame's height would grow with every fit.
         let box = try #require(try await host.js("""
             const f = document.querySelector('#__reader_stage > iframe[data-spine-index="0"]');
             const d = f.contentDocument;
-            return { cover: d.getElementById("cover").getBoundingClientRect().height, caption: d.getElementById("caption").getBoundingClientRect().bottom };
+            return { cover: d.getElementById("cover").getBoundingClientRect().height, caption: d.getElementById("caption").getBoundingClientRect().bottom,
+                     title: parseFloat(f.contentWindow.getComputedStyle(d.querySelector(".cover-title")).paddingTop) };
             """) as? [String: Double])
+        #expect(abs((box["cover"] ?? 0) - 540) < 0.5, "the cover is one page tall: \(box["cover"] ?? 0)")
+        #expect(abs((box["title"] ?? 0) - 162) < 0.5, "30vh is 30 % of a page: \(box["title"] ?? 0)")
         #expect(cover.height > 540 && cover.height < 540 + 200, "one page and a caption: \(cover.height)")
-        // Pinned means stable: the same height a second later, and the session heard it once.
+        #expect((box["caption"] ?? .infinity) <= cover.height, "the caption ends at \(box["caption"] ?? 0) in a frame \(cover.height) tall")
+        #expect(!cover.fixed, "nothing in the chapter depends on the frame's height any more")
+        // Stable: the same height a second later, and the session heard it.
         try await Task.sleep(for: .milliseconds(600))
         state = try await host.scrollState()
         #expect((try #require(state.view(0))).height == cover.height)
         #expect(host.session.scrollHeights[0] == cover.height)
-        #expect((box["cover"] ?? 0) >= 540, "the cover fills at least a page (\(box["cover"] ?? 0))")
         #expect(host.session.chapterPageCount == 2)
-        // The chapters after it are where its pinned height puts them.
+        // The chapters after it are where its height puts them.
         #expect(abs((try #require(state.view(1))).top - (40 + cover.height)) < 1)
+
+        // Other insets, another page height: the cover follows.
+        host.session.contentInsets = ReaderInsets(top: 100, bottom: 60)
+        try await host.waitUntil { !host.session.isLoading }
+        try await host.waitForScrollRest()
+        let again = try #require(try await host.js("""
+            const d = document.querySelector('#__reader_stage > iframe[data-spine-index="0"]').contentDocument;
+            return d.getElementById("cover").getBoundingClientRect().height;
+            """) as? Double)
+        #expect(abs(again - 440) < 0.5, "the cover is one page of the new height: \(again)")
     }
 }

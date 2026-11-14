@@ -82,6 +82,26 @@ enum ScrollPaging {
         return isAtEnd ? 1 : progression
     }
 
+    /// How far the page-high band below the reading line reaches in its chapter: `visiblePages` changes when this
+    /// does (or the chapter, or the pagination), not with every pixel of the offset.
+    struct Band: Equatable {
+        /// First and last page of the chapter with a part in the band.
+        var firstPage = 0
+        var lastPage = 0
+        /// The band reaches past the chapter's end, into the chapters after it.
+        var reachesNextChapter = false
+        var isAtEnd = false
+    }
+
+    static func band(offset: Double, chapterHeight: Double, pageHeight: Double, isAtEnd: Bool) -> Band {
+        let place = place(offset: offset, chapterHeight: chapterHeight, pageHeight: pageHeight, isAtEnd: isAtEnd)
+        let bandEnd = offset + pageHeight
+        let first = pageIndex(offset: offset, height: chapterHeight, pageHeight: pageHeight)
+        var last = first
+        while last + 1 < place.chapterPageCount, Double(last + 1) * pageHeight < bandEnd - 0.5 { last += 1 }
+        return Band(firstPage: first, lastPage: last, reachesNextChapter: chapterHeight < bandEnd - 0.5, isAtEnd: isAtEnd)
+    }
+
     /// Book pages with a part inside the page-high band that starts at the reading line: the page of the line and,
     /// unless the line is exactly at a page top, the next one (in this chapter or the first page of the next visible
     /// one). Ascending.

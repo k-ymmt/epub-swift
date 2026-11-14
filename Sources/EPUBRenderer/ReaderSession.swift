@@ -117,6 +117,9 @@ public final class ReaderSession {
     public var visiblePages: [Int] {
         if layout == .scrolled {
             guard hasLoaded else { return [] }
+            // The offset itself is not observed (it changes with every scroll message); the band is, and it changes
+            // exactly when the pages below do.
+            _ = scrollBand
             return ScrollPaging.visiblePages(
                 pagination: pagination, spineIndex: currentSpineIndex, offset: scrollOffset, chapterHeight: scrollChapterHeight,
                 pageHeight: scrollPageHeight, visibleSpineIndices: scrollVisible, isAtEnd: scrollAtEnd
@@ -269,6 +272,9 @@ public final class ReaderSession {
     /// Distance from the top of the chapter at the reading line to the line, and that chapter's height.
     @ObservationIgnored private var scrollOffset: Double = 0
     @ObservationIgnored private var scrollChapterHeight: Double = 0
+    /// How far the page-high band below the reading line reaches: what `visiblePages` depends on besides the
+    /// pagination and the chapter.
+    private var scrollBand = ScrollPaging.Band()
     private var scrollVisible: [Int] = []
     private var scrollAtEnd = false
     private var scrollAtStart = false
@@ -629,6 +635,7 @@ public final class ReaderSession {
         // The size the layout key and the spread plan were chosen for. Before the first load completes a resize only
         // updates the page size (`viewportSizeDidChange`), so a mismatch at the end re-selects the layout.
         let layoutSize = viewportSize
+        let layoutSettings = settings.layoutKey
         // The face that holds the item: a fixed-layout page loads through the spread wrapper, with its partner (M4).
         let unit = spreadPlan.unit(containing: spineIndex) ?? .reflowable(spineIndex: spineIndex, twoPages: false)
         let leading = unit.leadingSpineIndex
@@ -670,7 +677,9 @@ public final class ReaderSession {
             currentPageIndex = result.pageIndex
             // A resize waiting for its debounce re-lays out right after this load: stay "loading" until then. So does a
             // resize that arrived during the first load, before there was anything to re-lay out.
-            let sizeChangedDuringLoad = viewportSize != layoutSize && pendingResize == nil
+            // So do settings that changed during the first load (`settingsDidChange` has nothing to re-lay out before
+            // it completes): another font size, or the scrolled layout.
+            let sizeChangedDuringLoad = (viewportSize != layoutSize || settings.layoutKey != layoutSettings || resolvedLayout != .paged) && pendingResize == nil
             isLoading = pendingResize != nil || sizeChangedDuringLoad
             hasLoaded = true
             hasEverLoaded = true
@@ -1030,6 +1039,7 @@ public final class ReaderSession {
         scrollDocumentIndices = []
         scrollOffset = 0
         scrollChapterHeight = 0
+        if scrollBand != ScrollPaging.Band() { scrollBand = ScrollPaging.Band() }
         if !scrollVisible.isEmpty { scrollVisible = [] }
         if scrollAtEnd { scrollAtEnd = false }
         if scrollAtStart { scrollAtStart = false }
@@ -1097,6 +1107,7 @@ public final class ReaderSession {
         updateRootStyle()
         let layoutSize = viewportSize
         let layoutInsets = contentInsets
+        let layoutSettings = settings.layoutKey
         let single = ScrollDocument.isSingle(publication: publication, spineIndex: spineIndex)
         scrollDocumentIndices = ScrollDocument.spineIndices(publication: publication, start: spineIndex, single: single)
         selectScrolledLayout()
@@ -1124,7 +1135,7 @@ public final class ReaderSession {
             await applyHighlights(isLoadingScrollDocument: true)
             guard generation == loadGeneration else { return }
             applyScrollLocation(location)
-            let changedDuringLoad = (viewportSize != layoutSize || contentInsets != layoutInsets || resolvedLayout != .scrolled) && pendingResize == nil
+            let changedDuringLoad = (viewportSize != layoutSize || contentInsets != layoutInsets || settings.layoutKey != layoutSettings || resolvedLayout != .scrolled) && pendingResize == nil
             isLoading = pendingResize != nil || changedDuringLoad
             hasLoaded = true
             hasEverLoaded = true
@@ -1132,7 +1143,7 @@ public final class ReaderSession {
             renderer.setContentHidden(false)
             publishScrollPosition(cfi: location.cfi, force: true)
             if changedDuringLoad {
-                // A new size or new insets, or a neighbour chapter turned out to be in vertical writing.
+                // A new size, new insets or new settings, or a neighbour chapter turned out to be in vertical writing.
                 enqueue { [weak self] in await self?.relayoutPreservingPosition() }
             }
         } catch {
@@ -1154,6 +1165,9 @@ public final class ReaderSession {
     private func scrollTo(spineIndex: Int, target: LoadTarget) async {
         guard publication.readingOrder.indices.contains(spineIndex) else { return }
         guard layout == .scrolled, hasLoaded, scrollDocumentIndices.contains(spineIndex) else {
+            // Another document takes the place of this one (a non-linear item, or the way back from it): the rest
+            // of a gesture or of its momentum must not scroll it.
+            if layout == .scrolled, hasLoaded { await renderer.stopScrolling() }
             await loadChapter(spineIndex, target: target)
             return
         }
@@ -1222,7 +1236,10 @@ public final class ReaderSession {
     @_spi(EPUBUI) public func scrollByLines(_ lines: Int) {
         guard layout == .scrolled, hasLoaded, !isLoading, lines != 0 else { return }
         Task { @MainActor [weak self] in
-            do { _ = try await self?.renderer.scrollBy(pages: 0, lines: lines, animated: true) } catch { self?.logger.debug("scrollBy failed: \(error.localizedDescription)") }
+            guard let self else { return }
+            // A key during a trackpad gesture or its momentum: the scroll position is written, so the gesture ends.
+            await renderer.stopScrolling()
+            do { _ = try await renderer.scrollBy(pages: 0, lines: lines, animated: true) } catch { logger.debug("scrollBy failed: \(error.localizedDescription)") }
         }
     }
 
@@ -1243,10 +1260,12 @@ public final class ReaderSession {
         let place = ScrollPaging.place(offset: location.offset, chapterHeight: height, pageHeight: pageHeight, isAtEnd: location.isAtEnd)
         scrollOffset = location.offset
         scrollChapterHeight = height
-        if currentSpineIndex != location.spineIndex || currentUnit == nil {
-            currentSpineIndex = location.spineIndex
-            currentUnit = .reflowable(spineIndex: location.spineIndex, twoPages: false)
-        }
+        if currentSpineIndex != location.spineIndex { currentSpineIndex = location.spineIndex }
+        // Also when the chapter is the one a paged spread showed: the scrolled layout has no spread (§3.2).
+        let unit = SpreadPlan.Unit.reflowable(spineIndex: location.spineIndex, twoPages: false)
+        if currentUnit != unit { currentUnit = unit }
+        let band = ScrollPaging.band(offset: location.offset, chapterHeight: height, pageHeight: pageHeight, isAtEnd: location.isAtEnd)
+        if scrollBand != band { scrollBand = band }
         if currentPageIndex != place.pageIndex { currentPageIndex = place.pageIndex }
         if chapterPageCount != place.chapterPageCount { chapterPageCount = place.chapterPageCount }
         if scrollVisible != location.visible { scrollVisible = location.visible }

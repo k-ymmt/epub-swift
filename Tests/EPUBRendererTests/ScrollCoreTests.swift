@@ -131,6 +131,51 @@ import Testing
         #expect(try eval("core.removals({views: \(middle), viewportHeight: 600, pageHeight: 600, atRest: false, limit: 5})", as: [Int].self) == [8, 0, 7, 1])
     }
 
+    /// Chapters `lo...hi`, each `h` px tall, with chapter `origin` starting at the top of the viewport.
+    static func shortChapters(_ lo: Int, _ hi: Int, h: Int = 106, origin: Int = 20) -> String {
+        "(function () { const v = []; for (let k = \(lo); k <= \(hi); k++) { v.push({pos: k, top: (k - \(origin)) * \(h), bottom: (k - \(origin) + 1) * \(h), keep: false}); } return v; })()"
+    }
+
+    @Test func aFullWindowTakesAChapterOnlyWhenTheOneAtItsOtherEndThenLeaves() throws {
+        // Not full: anything the lookahead asks for joins.
+        #expect(try eval("core.admits({views: \(Self.shortChapters(15, 30)), viewportHeight: 600, pageHeight: 600, where: 'append'})", as: Bool.self))
+        // 24 chapters around the viewport, about as far above as below: the one that joins would be the furthest
+        // and the limit would take it out again.
+        #expect(try eval("core.admits({views: \(Self.shortChapters(11, 34)), viewportHeight: 600, pageHeight: 600, where: 'append'})", as: Bool.self) == false)
+        #expect(try eval("core.admits({views: \(Self.shortChapters(11, 34)), viewportHeight: 600, pageHeight: 600, where: 'prepend'})", as: Bool.self) == false)
+        // The window lags behind the viewport (the reader scrolled down): the chapter joins below, the first one leaves.
+        #expect(try eval("core.admits({views: \(Self.shortChapters(4, 27)), viewportHeight: 600, pageHeight: 600, where: 'append'})", as: Bool.self))
+        #expect(try eval("core.admits({views: \(Self.shortChapters(4, 27)), viewportHeight: 600, pageHeight: 600, where: 'prepend'})", as: Bool.self) == false)
+        // A visible chapter at the end of the window always gets its neighbour.
+        #expect(try eval("core.admits({views: \(Self.shortChapters(0, 23)), viewportHeight: 600, pageHeight: 600, where: 'append'})", as: Bool.self))
+    }
+
+    @Test func aWindowOfShortChaptersComesToRestInsteadOfReloadingItsEnds() throws {
+        // 60 chapters of 106 px in a viewport of 600: the lookahead of two pages each way wants 29 of them, the
+        // limit is 24. The controller's loop (remove, then add one) must stop by itself.
+        struct Run: Decodable { var adds: Int; var count: Int; var stopped: Bool }
+        let run: Run = try eval("""
+            (function () {
+              const H = 106, N = 60, height = 600, page = 600, origin = 20;
+              let lo = origin, hi = origin, adds = 0, stopped = false;
+              function views() { const v = []; for (let k = lo; k <= hi; k++) { v.push({pos: k, top: (k - origin) * H, bottom: (k - origin + 1) * H, keep: false}); } return v; }
+              for (let i = 0; i < 400; i++) {
+                for (const p of core.removals({views: views(), viewportHeight: height, pageHeight: page, atRest: true})) { if (p === lo) { lo++; } else if (p === hi) { hi--; } }
+                const top = (lo - origin) * H, bottom = (hi - origin + 1) * H;
+                const action = core.windowAction({busy: false, pageHeight: page, above: -top, below: bottom - height, hasPrevious: lo > 0, hasNext: hi < N - 1,
+                  firstVisible: top + H > 0 && top < height, lastVisible: bottom > 0 && bottom - H < height});
+                if (!action || !core.admits({views: views(), viewportHeight: height, pageHeight: page, where: action})) { stopped = true; break; }
+                if (action === "prepend") { lo--; } else { hi++; }
+                adds++;
+              }
+              return {adds: adds, count: hi - lo + 1, stopped: stopped};
+            })()
+            """)
+        #expect(run.stopped, "the window never came to rest: \(run.adds) chapters added")
+        #expect(run.adds < 40)
+        #expect(run.count == 24)
+    }
+
     @Test func visibleChaptersTheirNeighboursAndKeptChaptersStay() throws {
         // The viewport shows chapters 3 and 4 (the boundary is on screen).
         let window = views(count: 8, top: -3_700)

@@ -214,5 +214,65 @@ struct TrackpadEvents {
         #expect((try #require(state.view(9))).top < -50)
         try trackpad.send(dy: 0, phase: .ended)
     }
+
+    @Test func anArrowKeyDuringTheMomentumStopsItAndScrollsItsLines() async throws {
+        let host = try await ScrollStabilityTests().hostInsideChapter8()
+        let trackpad = TrackpadEvents(view: host.renderer.webView)
+        try await trackpad.drag(dy: 30, frames: 6)
+        try trackpad.release(dy: 30)
+        for _ in 0..<4 {
+            try await Task.sleep(for: .milliseconds(16))
+            try trackpad.send(dy: 28, momentum: .changed)
+        }
+        #expect(try await host.scrollState().interacting)
+
+        // ↓ while the document is coasting: the key writes the scroll position, so the momentum ends there.
+        host.session.scrollByLines(3)
+        try await host.waitUntil { try await !host.scrollState().interacting }
+        let from = try await host.scrollState().scrollY
+        for _ in 0..<30 {
+            try await Task.sleep(for: .milliseconds(16))
+            try trackpad.send(dy: 24, momentum: .changed)
+        }
+        try trackpad.send(dy: 0, momentum: .ended)
+        try await host.waitForScrollRest()
+        let moved = try await host.scrollState().scrollY - from
+        // 30 events of 24 px would be 720 px; three lines of text are well under 150.
+        #expect(moved >= 0 && moved < 150, "the lines of the key, and nothing of the stopped momentum: \(moved) px")
+    }
+
+    @Test func aJumpToAChapterOutsideTheFlowStopsTheMomentumToo() async throws {
+        let host = try await ScrollStabilityTests().visibleHost(url: ScrollLayoutTests.sample)
+        await host.session.go(toSpineIndex: 1)
+        try await host.scrollDocument(by: 900)
+        try await host.waitForScrollRest()
+        let trackpad = TrackpadEvents(view: host.renderer.webView)
+        try await trackpad.drag(dy: 30, frames: 6)
+        try trackpad.release(dy: 30)
+        for _ in 0..<4 {
+            try await Task.sleep(for: .milliseconds(16))
+            try trackpad.send(dy: 28, momentum: .changed)
+        }
+        #expect(try await host.scrollState().interacting)
+
+        // The reader follows a link to the item that is not part of the flow: another document is loaded. The
+        // momentum's events keep coming while it loads and after it.
+        let jump = Task { @MainActor in await host.session.go(toSpineIndex: 5) }
+        for _ in 0..<40 {
+            try await Task.sleep(for: .milliseconds(16))
+            try trackpad.send(dy: 24, momentum: .changed)
+        }
+        await jump.value
+        try await host.waitUntil { host.session.currentSpineIndex == 5 && !host.session.isLoading }
+        for _ in 0..<10 {
+            try await Task.sleep(for: .milliseconds(16))
+            try trackpad.send(dy: 24, momentum: .changed)
+        }
+        try trackpad.send(dy: 0, momentum: .ended)
+        try await host.waitForScrollRest()
+        let state = try await host.scrollState()
+        #expect(state.spineIndices == [5])
+        #expect(abs(try #require(state.view(5)).top) < 0.5, "the new document was scrolled by the old momentum: \(state.scrollY) px")
+    }
 }
 #endif
