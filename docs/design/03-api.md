@@ -514,7 +514,7 @@ public struct ReaderInsets: Hashable, Sendable {
 - スクロール表示での `ReaderSession` の各プロパティの意味（`position` は読む行の最初の文字、`currentPage` は高さ P ごとの
   仮想ページ、`isShowingSpread` / `isZoomed` は常に false、`pageSnapshot(_:)` は常に nil）と、`go(to:)` 系・`goForward()` /
   `goBackward()` の動作は 08 §3.2。読者のスクロールでは、`scrolling(true)`、スクロール中の `positionChanged`（1 秒に 1 回まで）、
-  止まったときの `positionChanged`、可視ページが変わっていれば `navigated(cause: .scroll)`、`scrolling(false)` の順に出る
+  止まったときの `positionChanged`、可視ページ（章とその中のページで比べる）が変わっていれば `navigated(cause: .scroll)`、`scrolling(false)` の順に出る
   （S2。08 §3.3）。ページ表示では `isScrolling` は常に false で、`scrolling` は出ない。
 - スクロール表示での矩形（`SelectedText.rects`、`annotationTapped` の `rects`、`NoteContent.sourceRect`、`TappedImage.rect`、
   `rects(for:)`）は `EPUBReaderView` の枠の座標で、その時点のもの。スクロールすると古くなるので、アプリは `scrolling(true)` で

@@ -512,6 +512,14 @@ final class WebViewSpineRenderer: NSObject, SpineRenderer {
 
     func stopScrolling(endingReaderScrolling: Bool) async {
         guard isScrollMode else { return }
+        if !endingReaderScrolling {
+            // The keys take over (§3.3). The document hears it before it hears that the hands are off the text
+            // (below, or from the timer that reads the scroll view's flags): that end is then not a rest.
+            webView.callAsyncJavaScript(
+                "if (window.__epubReader && window.__epubReader.setInteraction) { window.__epubReader.setInteraction({active: active, keep: true}); }",
+                arguments: ["active": isScrollInteractionActive], in: nil, in: Self.readerWorld, completionHandler: nil
+            )
+        }
         #if canImport(UIKit)
         let scrollView = webView.scrollView
         if ScrollViewInteraction.isActive(isTracking: scrollView.isTracking, isDragging: scrollView.isDragging, isDecelerating: scrollView.isDecelerating) {
@@ -536,7 +544,8 @@ final class WebViewSpineRenderer: NSObject, SpineRenderer {
         _ = try? await call("""
             const reader = window.__epubReader;
             if (!reader || !reader.setInteraction) { return false; }
-            reader.setInteraction({active: active});
+            // Not ending the reader's scrolling: the keys take it over, so the hands' end is not a rest (§3.3).
+            reader.setInteraction({active: active, keep: !end});
             if (end && reader.endScrolling) { reader.endScrolling(); }
             return true;
             """, arguments: ["active": isScrollInteractionActive, "end": endingReaderScrolling])

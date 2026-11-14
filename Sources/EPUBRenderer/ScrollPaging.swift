@@ -126,6 +126,31 @@ enum ScrollPaging {
         return pages.sorted()
     }
 
+    /// A virtual page by its chapter: what `visiblePages` numbers through the book. Unlike those numbers it stays
+    /// the same when chapters before it are measured.
+    struct ChapterPage: Hashable {
+        var spineIndex: Int
+        var pageIndex: Int
+    }
+
+    /// The pages of `visiblePages`, each by its chapter: what the reader's scrolling is compared by (did it end on
+    /// other pages than it began on?), since the book-wide numbers change under a reader who does not move.
+    static func visibleChapterPages(spineIndex: Int, offset: Double, chapterHeight: Double, pageHeight: Double, visibleSpineIndices: [Int], isAtEnd: Bool) -> [ChapterPage] {
+        let place = place(offset: offset, chapterHeight: chapterHeight, pageHeight: pageHeight, isAtEnd: isAtEnd)
+        var pages = [ChapterPage(spineIndex: spineIndex, pageIndex: place.pageIndex)]
+        guard !isAtEnd else { return pages }
+        let bandEnd = offset + pageHeight
+        var index = pageIndex(offset: offset, height: chapterHeight, pageHeight: pageHeight) + 1
+        while index < place.chapterPageCount, Double(index) * pageHeight < bandEnd - 0.5 {
+            pages.append(ChapterPage(spineIndex: spineIndex, pageIndex: index))
+            index += 1
+        }
+        if chapterHeight < bandEnd - 0.5 {
+            for next in visibleSpineIndices where next > spineIndex { pages.append(ChapterPage(spineIndex: next, pageIndex: 0)) }
+        }
+        return pages
+    }
+
     /// Heights of the chapters of a scroll document, in its order, for the blocks that stand in for the chapters
     /// outside the window (§5.2): the measured height where there is one, else the estimated page count times P.
     static func heights(spineIndices: [Int], measured: [Int: Double], pagination: BookPagination, pageHeight: Double) -> [Double] {

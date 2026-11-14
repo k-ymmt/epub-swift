@@ -498,6 +498,14 @@ extension EventRecorder {
         // … and scrolling that ends with it out of sight (here: under the top inset) removes it.
         try await scrollAndRest(host, by: 60)
         #expect(try await !hasTransient(host, spineIndex: far.spineIndex))
+        // Out of sight sideways (text the chapter's frame clips) is out of sight too.
+        await host.session.show(far)
+        #expect(try await hasTransient(host, spineIndex: far.spineIndex))
+        _ = try await host.js("\(Self.frame(far.spineIndex)).contentDocument.body.style.transform = 'translateX(5000px)'; return true")
+        try await scrollAndRest(host, by: -30)
+        #expect(abs((try #require(await top(far))) - 70) < 2, "the match's line is on screen")
+        #expect(try await !hasTransient(host, spineIndex: far.spineIndex), "the match is 5000 px to the right of the screen")
+        _ = try await host.js("\(Self.frame(far.spineIndex)).contentDocument.body.style.transform = ''; return true")
         // The session knows: showing the result again draws it again, and the next step removes that one.
         await host.session.show(far)
         #expect(try await hasTransient(host, spineIndex: far.spineIndex))
@@ -718,6 +726,23 @@ extension EventRecorder {
         #expect(host.session.currentPageIndex == 0)
         #expect(recorder.notes.isEmpty, "the popover's anchor is not where it was")
 
+        // The same when the session has not heard of the move yet (its position is up to 100 ms old, and the `scroll`
+        // event of this move has not even been fired when the lookup ends): the document is asked.
+        try await host.scrollDocument(to: 0)
+        try await host.waitForScrollRest()
+        recorder.reset()
+        host.session.noterefLookupDidFinish = {
+            _ = try? await host.js("window.scrollBy(0, 20); return true")
+            finished += 1
+        }
+        try await click("ref2", spineIndex: 0, in: host)
+        try await host.waitUntil { finished == 2 }
+        try await Task.sleep(for: .milliseconds(200))
+        #expect(recorder.notes.isEmpty, "the document was 20 px further when the note had been read")
+        try await host.scrollDocument(to: 0)
+        try await host.waitForScrollRest()
+        finished = 0
+
         // A lookup during which nothing moved is reported, also when the controller reports its position meanwhile.
         host.session.noterefLookupDidFinish = {
             try? await Task.sleep(for: .milliseconds(300))
@@ -903,6 +928,80 @@ extension EventRecorder {
         #expect(recorder.scrollings == [true, false])
     }
 
+    /// The pages are numbered through the book, and a chapter that is measured (or grows) before the reader's renumbers
+    /// the ones after it. That is not a move: what the scrolling is compared by is the chapter and its own pages
+    /// (codex review of b646abf).
+    @Test func scrollingWhilePagesAreRenumberedIsNotAMove() async throws {
+        let host = try await ScrollStabilityTests().hostInsideChapter8()
+        // In the middle of a virtual page, so that ten pixels keep the same pages in view.
+        let page = try await host.scrollState().page
+        let offset = try #require(try await host.renderer.locationAtReadingLine()).offset
+        let within = offset.truncatingRemainder(dividingBy: page)
+        try await scrollAndRest(host, by: page * 0.4 - within + (within > page * 0.4 ? page : 0))
+        let recorder = EventRecorder(host.session)
+        let before = try #require(host.session.currentPage)
+        let chapterPage = host.session.currentPageIndex
+
+        _ = try await host.js("""
+            \(ScrollStabilityTests.prelude)
+            interact(true);
+            window.scrollBy(0, 10);
+            await new Promise(function (r) { setTimeout(r, 100); });
+            await grow(7, 3 * dbg.state().page);
+            await new Promise(function (r) { setTimeout(r, 300); });
+            interact(false);
+            return true;
+            """)
+        try await host.waitUntil { recorder.scrollings == [true, false] }
+        try await host.waitForScrollRest()
+        #expect(host.session.currentSpineIndex == 8)
+        #expect(host.session.currentPageIndex == chapterPage)
+        #expect(try #require(host.session.currentPage) > before, "chapter 7 grew by three pages: the book's pages were renumbered")
+        #expect(recorder.navigations.isEmpty, "\(recorder.navigations)")
+    }
+
+    /// A `scrolling` message of a layout that is gone (the document that was replaced, or the one before a relayout)
+    /// begins nothing: that document cannot send the end (codex review of b646abf).
+    @Test func aScrollingMessageOfAnOlderLayoutBeginsNothing() async throws {
+        let host = try await SessionHost.scrolled(url: Self.sample)
+        let recorder = EventRecorder(host.session)
+        await host.session.loadIfNeeded()
+        try await host.waitForScrollRest()
+        let generation = try await host.scrollState().generation
+        _ = try await host.js("""
+            window.webkit.messageHandlers.reader.postMessage({ type: "scrolling", payload: { active: true, user: true, generation: \(generation - 1) } });
+            return true;
+            """)
+        try await Task.sleep(for: .milliseconds(100))
+        #expect(!host.session.isScrolling)
+        #expect(recorder.scrollings.isEmpty)
+        // The current layout's is heard.
+        _ = try await host.js("""
+            window.webkit.messageHandlers.reader.postMessage({ type: "scrolling", payload: { active: true, user: true, generation: \(generation) } });
+            window.webkit.messageHandlers.reader.postMessage({ type: "scrolling", payload: { active: false, user: true, generation: \(generation) } });
+            return true;
+            """)
+        try await host.waitUntil { recorder.scrollings == [true, false] }
+    }
+
+    /// ↑ ↓ are not queued behind the session's moves: a key that was pressed just before a jump must not scroll the
+    /// place the jump went to (codex review of b646abf).
+    @Test func linesAskedForBeforeAJumpDoNotScrollItsTarget() async throws {
+        let host = try await SessionHost.scrolled()
+        await host.session.loadIfNeeded()
+        try await host.waitForScrollRest()
+        for _ in 0..<3 {
+            await host.session.go(toSpineIndex: 2)
+            try await host.waitForScrollRest()
+            host.session.scrollByLines(3)
+            await host.session.go(toSpineIndex: 8)
+            try await host.waitForScrollRest()
+            #expect(host.session.currentSpineIndex == 8)
+            let location = try #require(try await host.renderer.locationAtReadingLine())
+            #expect(location.spineIndex == 8 && abs(location.offset) < 1, "the jump's target is on the reading line: chapter \(location.spineIndex), \(location.offset) px")
+        }
+    }
+
     /// The controller writes the scroll position itself when it puts the runway right at rest. That write's `scroll`
     /// event arrives with the next frame: hands that come to the text in between have not moved it.
     @Test func theControllersOwnWriteOfTheScrollPositionIsNotTheReadersScrolling() async throws {
@@ -1024,8 +1123,14 @@ extension EventRecorder {
         try await host.waitForScrollRest()
         let navigation = Task { await host.session.go(toSpineIndex: 8) }
         // The first time the jump lets anything else run, or the first time after it has said that it is loading.
+        // (Neither moment is a particular line of the jump: what is tested is that no moment before the document is
+        // asked for the target loses the jump. `yield` may come back at once, hence the bound.)
         await Task.yield()
-        if onceLoading { while !host.session.isLoading { await Task.yield() } }
+        if onceLoading {
+            let deadline = ContinuousClock.now + .seconds(5)
+            while !host.session.isLoading, ContinuousClock.now < deadline { await Task.yield() }
+            try #require(host.session.isLoading, "the jump never said that it is loading")
+        }
         host.session.webContentProcessDidTerminate()
         await navigation.value
         do {
@@ -1040,6 +1145,22 @@ extension EventRecorder {
         #expect(try await host.scrollState().spineIndices.contains(8))
     }
 
+    /// A step of one screen whose script call dies with the WebContent process is the crash, not an error of its own
+    /// (codex review of b646abf).
+    @Test func aCrashDuringAStepIsReportedOnce() async throws {
+        let host = try await SessionHost.scrolled()
+        let recorder = EventRecorder(host.session)
+        await host.session.loadIfNeeded()
+        try await host.waitForScrollRest()
+        // The process is dead before the session knows: the step's calls go to it.
+        try #require(RecoveryTests.crashWebContent(of: host.renderer), "the WebContent process could not be killed")
+        await host.session.goForward()
+        try await host.waitUntil(timeout: .seconds(15)) { !recorder.errors.isEmpty && host.session.hasLoaded && !host.session.isLoading }
+        try await host.waitForScrollRest()
+        #expect(recorder.errors.count == 1, "\(recorder.errors)")
+        #expect(recorder.errors.contains { if case .webContentTerminated = $0 { true } else { false } })
+    }
+
     @Test func navigationAfterTheReloadLimitLoadsTheScrollDocumentAgain() async throws {
         let host = try await SessionHost.scrolled()
         let recorder = EventRecorder(host.session)
@@ -1049,9 +1170,13 @@ extension EventRecorder {
         try await host.waitForScrollRest()
         let position = try #require(host.session.position)
         for crash in 1...ReaderSession.maximumAutomaticReloads {
+            // The crash is the session's entry point (the document lives on): a mark in the document tells whether
+            // the session loaded a new one.
+            _ = try await host.js("window.__testDocumentOfCrash = \(crash); return true")
             host.session.webContentProcessDidTerminate()
             try await host.waitUntil(timeout: .seconds(15)) {
-                recorder.errors.count == crash && host.session.hasLoaded && !host.session.isLoading
+                guard recorder.errors.count == crash, host.session.hasLoaded, !host.session.isLoading else { return false }
+                return try await host.js("return window.__testDocumentOfCrash === undefined") as? Bool == true
             }
         }
         host.session.webContentProcessDidTerminate()

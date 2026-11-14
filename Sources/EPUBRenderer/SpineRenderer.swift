@@ -189,7 +189,9 @@ enum BridgeMessage: Sendable {
     /// Scrolled layout: the reader's own scrolling began to move the text / has ended (08-continuous-scroll §4.3).
     /// `location`: where it got to, when it ended because something else moves the text (a jump, a step, a relayout)
     /// and no `scrolled` at rest tells it.
-    case scrolling(active: Bool, location: ScrollLocation?)
+    /// `generation`: the layout that was scrolled (a beginning of a layout that is gone is not heard: the document
+    /// that sent it cannot send the end).
+    case scrolling(active: Bool, generation: Int?, location: ScrollLocation?)
     /// Scrolled layout: the controller removed the mark of a search result, because the scrolling ended with the
     /// result out of sight (§10). The range is the one `setTransientHighlight` was given.
     case transientHighlightEnded(cfiRange: String)
@@ -222,7 +224,8 @@ enum BridgeMessage: Sendable {
                 html: payload["html"] as? String,
                 text: payload["text"] as? String,
                 cfi: (payload["cfi"] as? String).flatMap(CFI.init),
-                isHidden: payload["hidden"] as? Bool ?? false
+                isHidden: payload["hidden"] as? Bool ?? false,
+                line: ScrollLocation(payload["line"])
             ))
         case "imageTap":
             guard let src = payload["src"] as? String else { return nil }
@@ -245,7 +248,7 @@ enum BridgeMessage: Sendable {
         case "scrolling":
             // Only the reader's own scrolling is reported to the app (`user`); the controller's steps and jumps are not.
             guard let active = payload["active"] as? Bool, payload["user"] as? Bool ?? true else { return nil }
-            self = .scrolling(active: active, location: active ? nil : ScrollLocation(payload["location"]))
+            self = .scrolling(active: active, generation: payload["generation"] as? Int, location: active ? nil : ScrollLocation(payload["location"]))
         case "transientHighlightEnded":
             guard let range = payload["cfiRange"] as? String else { return nil }
             self = .transientHighlightEnded(cfiRange: range)
@@ -275,6 +278,8 @@ struct BridgeNoteref: Sendable {
     var cfi: CFI?
     /// The note element is not laid out on the page (same-document notes only).
     var isHidden = false
+    /// Scrolled layout: where the reading line was when the noteref was tapped.
+    var line: ScrollLocation?
 }
 
 /// `{cfiRange, text, rects}` from `currentSelection` / `selectionChanged`. Rects are viewport coordinates.

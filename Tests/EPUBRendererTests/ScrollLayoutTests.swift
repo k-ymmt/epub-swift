@@ -98,15 +98,21 @@ extension SessionHost {
     }
 
     /// An async function expression: runs the scroll and, when it moved the document, waits for its `scroll` event
-    /// (this listener is added after the controller's, so the controller has handled the event by then).
+    /// (this listener is added after the controller's, so the controller has handled the event by then). A move
+    /// whose event does not come fails the call: the caller would go on as if the controller knew of it.
     private static let scrollAndSeeTheEvent = """
         await (function (move) {
           const before = window.scrollY;
-          return new Promise(function (resolve) {
-            window.addEventListener("scroll", resolve, { once: true });
+          return new Promise(function (resolve, reject) {
+            let timer = null;
+            function seen() { clearTimeout(timer); resolve(); }
+            window.addEventListener("scroll", seen, { once: true });
             move();
-            if (window.scrollY === before) { window.removeEventListener("scroll", resolve); resolve(); }
-            else { setTimeout(resolve, 500); }
+            if (window.scrollY === before) { window.removeEventListener("scroll", seen); resolve(); return; }
+            timer = setTimeout(function () {
+              window.removeEventListener("scroll", seen);
+              reject(new Error("the document moved, but no scroll event came within 3 s"));
+            }, 3000);
           });
         })
         """

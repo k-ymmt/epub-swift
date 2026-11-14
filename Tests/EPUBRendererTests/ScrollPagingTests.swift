@@ -83,6 +83,22 @@ import EPUBCore
         #expect(ScrollPaging.visiblePages(pagination: pagination, spineIndex: 1, offset: 100, chapterHeight: 500, pageHeight: 700, visibleSpineIndices: [1, 2], isAtEnd: true) == [5])
     }
 
+    /// The same pages by their chapters: what the reader's scrolling is compared by, since the numbers through the
+    /// book change when a chapter before the reader's is measured.
+    @Test func theVisiblePagesByChapterDoNotDependOnThePagination() {
+        typealias Page = ScrollPaging.ChapterPage
+        func pages(_ spineIndex: Int, _ offset: Double, _ height: Double, _ visible: [Int], atEnd: Bool = false) -> [Page] {
+            ScrollPaging.visibleChapterPages(spineIndex: spineIndex, offset: offset, chapterHeight: height, pageHeight: 700, visibleSpineIndices: visible, isAtEnd: atEnd)
+        }
+        #expect(pages(0, 350, 2000, [0]) == [Page(spineIndex: 0, pageIndex: 0), Page(spineIndex: 0, pageIndex: 1)])
+        #expect(pages(0, 700, 2000, [0]) == [Page(spineIndex: 0, pageIndex: 1)])
+        #expect(pages(0, 1700, 2000, [0, 1]) == [Page(spineIndex: 0, pageIndex: 2), Page(spineIndex: 1, pageIndex: 0)])
+        // At the end of the book: the page of the line (the last of its chapter) alone.
+        #expect(pages(1, 100, 500, [1, 2], atEnd: true) == [Page(spineIndex: 1, pageIndex: 0)])
+        // Ten pixels within a page: the same pages.
+        #expect(pages(3, 360, 2000, [3]) == pages(3, 350, 2000, [3]))
+    }
+
     @Test func unmeasuredChaptersAreAsTallAsTheirEstimatedPages() {
         let pagination = pagination()
         let heights = ScrollPaging.heights(spineIndices: [0, 1, 2], measured: [0: 1950.5], pagination: pagination, pageHeight: 700)

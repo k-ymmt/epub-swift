@@ -352,6 +352,30 @@ struct TrackpadEvents {
         #expect(!host.session.isScrolling)
     }
 
+    /// Fingers that moved the text and now hold it still (longer than the 150 ms of quiet), then ↓: taking the
+    /// fingers' hold away must not be a rest between the two (codex review of b646abf).
+    @Test func anArrowKeyWhileFingersHoldTheTextStillIsPartOfTheSameScrolling() async throws {
+        let host = try await ScrollStabilityTests().hostInsideChapter8()
+        let recorder = EventRecorder(host.session)
+        let trackpad = TrackpadEvents(view: host.renderer.webView)
+        try await trackpad.drag(dy: 30, frames: 6)
+        try await host.waitUntil { host.session.isScrolling }
+        try await Task.sleep(for: .milliseconds(400))
+        #expect(try await host.scrollState().interacting)
+        #expect(recorder.scrollings == [true])
+
+        let from = try await host.scrollState().scrollY
+        host.session.scrollByLines(3)
+        try await host.waitUntil { try await host.scrollState().scrollY > from }
+        #expect(recorder.scrollings == [true], "the key took over: \(recorder.scrollings)")
+        try trackpad.send(dy: 0, phase: .ended)
+        try await host.waitUntil { recorder.scrollings.last == false }
+        try await host.waitForScrollRest()
+        try await Task.sleep(for: .milliseconds(100))
+        #expect(recorder.scrollings == [true, false])
+        #expect(!host.session.isScrolling)
+    }
+
     @Test func aJumpToAChapterOutsideTheFlowStopsTheMomentumToo() async throws {
         let host = try await ScrollStabilityTests().visibleHost(url: ScrollLayoutTests.sample)
         await host.session.go(toSpineIndex: 1)

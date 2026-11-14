@@ -1678,6 +1678,9 @@
       program: null,
       // The reader's own scrolling is moving the text: told to Swift as `scrolling` (§3.3).
       userScrolling: false,
+      // The ↑ ↓ keys are taking over from the reader's hands (`setInteraction` with `keep`): no rest until their
+      // scroll has begun, or this timer has run out.
+      holdTimer: null,
       // Where the controller itself last put the scroll position (`wroteScroll`); null once its event has come.
       own: null,
       lastScroll: -1000,
@@ -1825,7 +1828,17 @@
 
     // --- rest (§5.6) ---
     function quiet() { return now() - sc.lastScroll >= QUIET; }
-    function atRest() { return !sc.interacting && !sc.program && quiet(); }
+    function atRest() { return !sc.interacting && !sc.program && !sc.holdTimer && quiet(); }
+    // The keys take the text over from the reader's hands (§3.3): the hands' end is not a rest, also when they had
+    // held the text still for longer than the quiet time. The keys' scroll (a program) follows in the next call; if
+    // it does not move anything (the end of the book), the rest comes when the hold runs out.
+    function holdRest() {
+      releaseHold();
+      sc.holdTimer = setTimeout(function () { sc.holdTimer = null; checkRest(); }, 300);
+    }
+    function releaseHold() {
+      if (sc.holdTimer) { clearTimeout(sc.holdTimer); sc.holdTimer = null; }
+    }
     function armQuiet() {
       if (sc.quietTimer) { clearTimeout(sc.quietTimer); }
       sc.quietTimer = setTimeout(function () {
@@ -1836,7 +1849,7 @@
     function checkRest() {
       if (!sc.laidOut) { return; }
       if (!atRest()) {
-        if (!sc.interacting && !sc.program) { armQuiet(); }
+        if (!sc.interacting && !sc.program && !sc.holdTimer) { armQuiet(); }
         return;
       }
       autoWindow();
@@ -1847,7 +1860,7 @@
       sc.settleTimer = setTimeout(function () {
         sc.settleTimer = null;
         if (!sc.dirty) { return; }
-        if (atRest()) { rest(); } else if (!sc.interacting && !sc.program) { armQuiet(); }
+        if (atRest()) { rest(); } else if (!sc.interacting && !sc.program && !sc.holdTimer) { armQuiet(); }
       }, 0);
     }
     // At rest: the runway is put right, Swift hears where the reading line is, a search result that is no longer on
@@ -1871,14 +1884,14 @@
       if (sc.userScrolling) { return; }
       sc.userScrolling = true;
       log("scrolling", { active: true });
-      post("scrolling", { active: true, user: true });
+      post("scrolling", { active: true, user: true, generation: sc.generation });
     }
     // `taken`: something else moves the text from here (a jump, a step of one screen, a relayout). The place the
     // scrolling got to goes with the message: no `scrolled` at rest will tell it.
     function endUserScroll(taken) {
       if (!sc.userScrolling) { return; }
       sc.userScrolling = false;
-      const payload = { active: false, user: true };
+      const payload = { active: false, user: true, generation: sc.generation };
       if (taken && sc.laidOut && sc.views.length && !sc.showing) { payload.location = currentLocation(); }
       log("scrolling", { active: false, taken: !!taken });
       post("scrolling", payload);
@@ -2177,6 +2190,9 @@
           case "noteref": {
             const out = Object.assign({}, payload);
             if (payload.rect) { out.rect = mapRect(view, payload.rect); }
+            // Where the reading line is at the tap: the note of another document is read first, and the session
+            // asks again then (its own position is as old as the last `scrolled`).
+            out.line = currentLocation();
             post("noteref", out);
             break;
           }
@@ -2317,6 +2333,7 @@
       waiters.push(done);
       const program = { target: top, waiters: waiters, started: now(), arrived: null, timer: null, user: !!user };
       sc.program = program;
+      releaseHold();
       window.scrollTo({ top: top, left: 0, behavior: animated ? "smooth" : "instant" });
       if (!animated && !user) { wroteScroll(); }
       // Ends with `scrollend`, or 150 ms after the position reached the target, or when nothing moves any more.
@@ -2523,10 +2540,18 @@
     }
     function setInteraction(state) {
       const active = !!(state && state.active);
+      // `keep`: the ↑ ↓ keys are about to take the text over from the reader's hands. It is said before the hands'
+      // end is (which may come in a call of its own) and again with it.
+      if (state && state.keep && sc.userScrolling) { holdRest(); }
       if (active === sc.interacting) { return true; }
       sc.interacting = active;
       log("interaction", { active: active });
-      if (active) { if (sc.program) { endProgram(sc.program); } } else { checkRest(); }
+      if (active) {
+        releaseHold();
+        if (sc.program) { endProgram(sc.program); }
+      } else {
+        checkRest();
+      }
       return true;
     }
 
@@ -2570,10 +2595,10 @@
     function dropTransientOffScreen() {
       const range = sc.transient;
       if (!range || sc.showing) { return; }
-      const top = sc.insetTop, bottom = window.innerHeight - sc.insetBottom;
+      const top = sc.insetTop, bottom = window.innerHeight - sc.insetBottom, width = window.innerWidth;
       let rects = [];
       try { rects = rectsFor(range); } catch (e) { rects = []; }
-      if (rects.some(function (r) { return r.y + r.height > top && r.y < bottom; })) { return; }
+      if (rects.some(function (r) { return r.y + r.height > top && r.y < bottom && r.x + r.width > 0 && r.x < width; })) { return; }
       setTransientHighlight(null);
       post("transientHighlightEnded", { cfiRange: range });
     }
