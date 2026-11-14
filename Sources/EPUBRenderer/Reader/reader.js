@@ -1830,11 +1830,13 @@
     function quiet() { return now() - sc.lastScroll >= QUIET; }
     function atRest() { return !sc.interacting && !sc.program && !sc.holdTimer && quiet(); }
     // The keys take the text over from the reader's hands (§3.3): the hands' end is not a rest, also when they had
-    // held the text still for longer than the quiet time. The keys' scroll (a program) follows in the next call; if
-    // it does not move anything (the end of the book), the rest comes when the hold runs out.
+    // held the text still for longer than the quiet time. The hold ends when the keys' scroll begins (a program, in
+    // the call that follows), when that call has nothing to scroll (the end of the book), or when the reader's
+    // scrolling is ended by something else (a jump, a step, a relayout). The timer is for keys that were announced
+    // and never came (the session dropped them).
     function holdRest() {
       releaseHold();
-      sc.holdTimer = setTimeout(function () { sc.holdTimer = null; checkRest(); }, 300);
+      sc.holdTimer = setTimeout(function () { sc.holdTimer = null; checkRest(); }, 1000);
     }
     function releaseHold() {
       if (sc.holdTimer) { clearTimeout(sc.holdTimer); sc.holdTimer = null; }
@@ -1891,6 +1893,7 @@
     function endUserScroll(taken) {
       if (!sc.userScrolling) { return; }
       sc.userScrolling = false;
+      releaseHold();
       const payload = { active: false, user: true, generation: sc.generation };
       if (taken && sc.laidOut && sc.views.length && !sc.showing) { payload.location = currentLocation(); }
       log("scrolling", { active: false, taken: !!taken });
@@ -2365,7 +2368,11 @@
       // A few lines are the reader's own scrolling (↑ ↓, §8.2); a step of one screen is not, and ends it.
       const user = !step.pages && !!step.lines;
       if (!user) { endUserScroll(true); }
-      if (!target.moved) { return Promise.resolve(Object.assign(currentLocation(), { moved: false })); }
+      if (!target.moved) {
+        // Keys that have nothing to scroll: what they took over from the reader's hands comes to rest.
+        if (sc.holdTimer) { releaseHold(); checkRest(); }
+        return Promise.resolve(Object.assign(currentLocation(), { moved: false }));
+      }
       return new Promise(function (resolve) {
         startProgram(target.top, step.animated !== false, function () {
           resolve(Object.assign(currentLocation(), { moved: true }));

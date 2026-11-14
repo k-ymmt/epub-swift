@@ -93,8 +93,11 @@ import EPUBCore
         #expect(pages(0, 350, 2000, [0]) == [Page(spineIndex: 0, pageIndex: 0), Page(spineIndex: 0, pageIndex: 1)])
         #expect(pages(0, 700, 2000, [0]) == [Page(spineIndex: 0, pageIndex: 1)])
         #expect(pages(0, 1700, 2000, [0, 1]) == [Page(spineIndex: 0, pageIndex: 2), Page(spineIndex: 1, pageIndex: 0)])
-        // At the end of the book: the page of the line (the last of its chapter) alone.
-        #expect(pages(1, 100, 500, [1, 2], atEnd: true) == [Page(spineIndex: 1, pageIndex: 0)])
+        // At the end of the book: the end, whatever chapter the line is in and however tall that chapter is (the line
+        // stops a page above the end, so it can be in the chapter before a short last one).
+        #expect(pages(1, 100, 500, [1, 2], atEnd: true) == [ScrollPaging.ChapterPage.endOfBook])
+        #expect(pages(1, 1500, 2000, [1, 2], atEnd: true) == pages(1, 2200, 2700, [1, 2], atEnd: true))
+        #expect(pages(1, 100, 500, [1, 2], atEnd: true) != pages(1, 100, 500, [1, 2]))
         // Ten pixels within a page: the same pages.
         #expect(pages(3, 360, 2000, [3]) == pages(3, 350, 2000, [3]))
     }

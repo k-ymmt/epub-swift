@@ -1000,6 +1000,49 @@ extension EventRecorder {
             let location = try #require(try await host.renderer.locationAtReadingLine())
             #expect(location.spineIndex == 8 && abs(location.offset) < 1, "the jump's target is on the reading line: chapter \(location.spineIndex), \(location.offset) px")
         }
+        // A jump within the window loads nothing and lays nothing out again: it is a move of the session all the same.
+        for _ in 0..<3 {
+            try await host.scrollDocument(by: 300)
+            try await host.waitForScrollRest()
+            host.session.scrollByLines(3)
+            await host.session.goToChapterEdge(end: false)
+            try await host.waitForScrollRest()
+            try await Task.sleep(for: .milliseconds(300))
+            let location = try #require(try await host.renderer.locationAtReadingLine())
+            #expect(location.spineIndex == 8 && abs(location.offset) < 1, "the chapter's start is on the reading line: chapter \(location.spineIndex), \(location.offset) px")
+        }
+    }
+
+    /// The keys take the text over from the reader's hands in two calls (the hands' end, then the lines). However
+    /// long the second takes to come, the scrolling is one (codex review of 46b97c1).
+    @Test func aSlowHandoffToTheKeysIsStillOneScrolling() async throws {
+        let host = try await ScrollStabilityTests().hostInsideChapter8()
+        let recorder = EventRecorder(host.session)
+        _ = try await host.js("""
+            const reader = window.__epubReader;
+            reader.setInteraction({ active: true });
+            window.scrollBy(0, 40);
+            await new Promise(function (r) { setTimeout(r, 250); });
+            reader.setInteraction({ active: true, keep: true });
+            reader.setInteraction({ active: false, keep: true });
+            await new Promise(function (r) { setTimeout(r, 600); });
+            await reader.scrollBy({ pages: 0, lines: 3, animated: true });
+            return true;
+            """)
+        try await host.waitUntil { recorder.scrollings.last == false }
+        try await host.waitForScrollRest()
+        #expect(recorder.scrollings == [true, false], "\(recorder.scrollings)")
+        // Keys that were announced and never came (the session dropped them) do not keep the rest away for good.
+        recorder.reset()
+        _ = try await host.js("""
+            const reader = window.__epubReader;
+            reader.setInteraction({ active: true });
+            window.scrollBy(0, 40);
+            await new Promise(function (r) { setTimeout(r, 100); });
+            reader.setInteraction({ active: false, keep: true });
+            return true;
+            """)
+        try await host.waitUntil(timeout: .seconds(5)) { recorder.scrollings == [true, false] }
     }
 
     /// The controller writes the scroll position itself when it puts the runway right at rest. That write's `scroll`

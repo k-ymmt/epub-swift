@@ -131,14 +131,17 @@ enum ScrollPaging {
     struct ChapterPage: Hashable {
         var spineIndex: Int
         var pageIndex: Int
+
+        /// The end of the book (`visiblePages` gives the book's last page there, whatever chapter the line is in).
+        static let endOfBook = ChapterPage(spineIndex: -1, pageIndex: -1)
     }
 
     /// The pages of `visiblePages`, each by its chapter: what the reader's scrolling is compared by (did it end on
     /// other pages than it began on?), since the book-wide numbers change under a reader who does not move.
     static func visibleChapterPages(spineIndex: Int, offset: Double, chapterHeight: Double, pageHeight: Double, visibleSpineIndices: [Int], isAtEnd: Bool) -> [ChapterPage] {
         let place = place(offset: offset, chapterHeight: chapterHeight, pageHeight: pageHeight, isAtEnd: isAtEnd)
+        guard !isAtEnd else { return [.endOfBook] }
         var pages = [ChapterPage(spineIndex: spineIndex, pageIndex: place.pageIndex)]
-        guard !isAtEnd else { return pages }
         let bandEnd = offset + pageHeight
         var index = pageIndex(offset: offset, height: chapterHeight, pageHeight: pageHeight) + 1
         while index < place.chapterPageCount, Double(index) * pageHeight < bandEnd - 0.5 {

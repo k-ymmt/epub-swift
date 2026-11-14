@@ -252,6 +252,9 @@ public final class ReaderSession {
     /// document for it (any load makes a new generation, so nothing resets this).
     @ObservationIgnored private var crashReloadGeneration: Int?
     private var documentIsGone: Bool { crashReloadGeneration == loadGeneration }
+    /// Counts the moves the session makes in the scroll document (jumps, steps of one screen): a jump within the
+    /// window changes no generation, and the ↑ ↓ keys, which are not queued, must still notice it.
+    @ObservationIgnored private var scrollMoveSerial = 0
     /// Times of recent WebContent crashes; automatic reloads stop after a few in a short time (a document that
     /// crashes the process every time would otherwise loop).
     @ObservationIgnored private var recentTerminations: [ContinuousClock.Instant] = []
@@ -1207,6 +1210,7 @@ public final class ReaderSession {
     /// document does not hold (a non-linear item, or the way back from one) loads another document.
     private func scrollTo(spineIndex: Int, target: LoadTarget) async {
         guard publication.readingOrder.indices.contains(spineIndex) else { return }
+        scrollMoveSerial += 1
         // The document died and its reload has not run yet (the jump was queued before it): the jump's target is
         // loaded instead, which also makes the queued reload of the old position stale (§12).
         guard layout == .scrolled, hasLoaded, !documentIsGone, scrollDocumentIndices.contains(spineIndex) else {
@@ -1275,6 +1279,7 @@ public final class ReaderSession {
     private func scrollByScreens(_ screens: Int) async {
         // A step on a document that died (its reload is queued behind this) is dropped with it.
         guard hasLoaded, !isLoading, !documentIsGone else { return }
+        scrollMoveSerial += 1
         let terminations = terminationCount
         // A step of one screen is not the reader's scrolling, and ends it (§3.3).
         await endReaderScrolling()
@@ -1300,15 +1305,16 @@ public final class ReaderSession {
     /// repeat adds up in the scroll controller, and the position arrives with its `scrolled` messages.
     @_spi(EPUBUI) public func scrollByLines(_ lines: Int) {
         guard layout == .scrolled, hasLoaded, !isLoading, lines != 0 else { return }
+        // Not queued, so a jump, a step, a relayout or a reload may begin before the lines are scrolled: the key was
+        // for the text that was on screen when it was pressed, not for the place those go to.
+        let load = loadGeneration, scroll = scrollGeneration, moves = scrollMoveSerial
         Task { @MainActor [weak self] in
             guard let self else { return }
+            guard load == loadGeneration, scroll == scrollGeneration, moves == scrollMoveSerial else { return }
             // A key during a trackpad gesture or its momentum: the scroll position is written, so the gesture ends.
             // The reader's scrolling goes on: the keys are part of it (§3.3).
-            let load = loadGeneration, scroll = scrollGeneration
             await renderer.stopScrolling(endingReaderScrolling: false)
-            // Not queued, so a jump, a relayout or a reload may have begun meanwhile: the key was for the text that
-            // was on screen, not for the place those go to.
-            guard layout == .scrolled, hasLoaded, !isLoading, !documentIsGone, load == loadGeneration, scroll == scrollGeneration else { return }
+            guard layout == .scrolled, hasLoaded, !isLoading, !documentIsGone, load == loadGeneration, scroll == scrollGeneration, moves == scrollMoveSerial else { return }
             do { _ = try await renderer.scrollBy(pages: 0, lines: lines, animated: true) } catch { logger.debug("scrollBy failed: \(error.localizedDescription)") }
         }
     }
