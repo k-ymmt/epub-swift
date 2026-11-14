@@ -109,6 +109,9 @@ public final class WebHost: NSObject, @preconcurrency WKNavigationDelegate, @pre
         window.title = "EPUB spike"
         window.contentView = clipView
         clipView.addSubview(webView)
+        // A window covered by another one stops painting (the page becomes `hidden`, `requestAnimationFrame` stops),
+        // and a spike that waits for frames then hangs: SPIKE_WINDOW_FLOATING=1 keeps it above the other windows.
+        if ProcessInfo.processInfo.environment["SPIKE_WINDOW_FLOATING"] == "1" { window.level = .floating }
         window.orderFrontRegardless()
         #else
         clipView = UIView(frame: CGRect(origin: .zero, size: visibleSize))

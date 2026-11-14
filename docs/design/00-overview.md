@@ -38,7 +38,7 @@ EPUB-Swift は iOS / macOS 向けの EPUB 3 ビューワーライブラリであ
 | ターゲット | EPUBCore / EPUBRenderer / EPUBUI の 3 分割 |
 | EPUB バージョン | EPUB 3 のみ。NCX と OPF 2.0 固有の要素は読まない |
 | 壊れた XHTML | 努力目標。`XMLParser` で読めない文書だけを Core が libxml2 で修復して整形式 XML として配信する。直らなければ `text/html` で開いて位置精度を諦める。整形式な文書には手を加えない |
-| 表示モード | paged（ページめくり）と見開き。連続スクロールは対象外 |
+| 表示モード | paged（ページめくり）と見開き、スクロール表示（縦の連続スクロール）。スクロール表示は 2026-11-14 に設計した段階で未実装（08-continuous-scroll）。最初の版では後回しにしていただけで、対象外ではない |
 | WebView 構成 | 表示用 1 つ + 事前ページ化用 1 つ。めくり演出はスナップショット画像で行う |
 | リソース配信 | WKURLSchemeHandler で ZIP から直接配信。ディスクに展開しない |
 | 位置表現 | EPUB CFI を正とする |
@@ -58,7 +58,6 @@ EPUB-Swift は iOS / macOS 向けの EPUB 3 ビューワーライブラリであ
 ## 3. 非目標
 
 - EPUB 2（NCX 目次、OPF 2.0）
-- 連続スクロール表示
 - メディアオーバーレイ（SMIL）、埋め込み audio / video、コンテンツ側 JavaScript
 - DRM（Adobe ADEPT、LCP など）
 - ネイティブ組版（TextKit 2 / Core Text）。将来の差し替え点として `Renderer` の境界だけ残す

@@ -11,7 +11,7 @@ scripts/run-ios.sh 3 7              # iOS Simulator（iPhone 17 Pro / iOS 27）�
 swift test                          # SpikeKitTests: 同じスパイクを XCTest から実行（macOS）
 
 # 連続スクロール（項目 8・9）。既定の実行には含めない。結果は docs/design/07-continuous-scroll-spike.md
-swift run -c release spike-run --out output/continuous-scroll 8          # macOS（画面に出ていないとメモリと読み込み時間だけ）
+SPIKE_WINDOW_FLOATING=1 swift run -c release spike-run --out output/continuous-scroll 8   # macOS。ウィンドウが隠れるとページが hidden になって止まるので、最前面に固定する
 OUT=$PWD/output/continuous-scroll/ios scripts/run-ios.sh 8               # iOS Simulator。SPIKE8_PHASES="window all giant stability" で絞れる
 OUT=$PWD/output/continuous-scroll/ios-fling-runway-unknown \
   SPIKE9_MODE=runway SPIKE9_PRESET=0 SPIKE9_SECONDS=60 scripts/run-ios.sh 9   # "SPIKE9 READY" の後、記録中に外からスワイプを入れる

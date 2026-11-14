@@ -143,6 +143,9 @@ public enum ContinuousScrollJS {
                 v.loaded = true;
                 setHeight(v, h, "load");
                 try {
+                  // Observing from the chapter's own window (`new el.contentWindow.ResizeObserver`) was tried for
+                  // the one case that flickers on macOS (a block growing above the reading line inside the chapter
+                  // being read): it made no difference (11 of 525 band snapshots changed, against 14 of 506).
                   v.ro = new ResizeObserver(function () {
                     const nh = contentHeight(el);
                     if (nh !== v.height) { setHeight(v, nh, "resize"); }

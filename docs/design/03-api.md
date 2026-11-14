@@ -6,6 +6,10 @@
 M1 時点の実装状態を「M1 実装済み」「M3 で追加」のように記す。CFI に依存する API（位置、ハイライト、選択、検索）は
 M3 で入り、それまで `ReaderSession` は spine index とページ index を公開する。
 
+スクロール表示で足す API（`ReaderLayout`、`ReaderSettings.layout` / `scrolledTextWidth`、`ReaderSession.layout` /
+`contentInsets` / `isScrolling`、`ReaderEvent.scrolling`、`ReaderNavigation.Cause.scroll`、`readerContentInsets`）は
+`08-continuous-scroll.md` §3 にあり、未実装。実装したマイルストーンごとに、この文書へ移す。
+
 ## 1. 使い方の全体像
 
 ```swift
