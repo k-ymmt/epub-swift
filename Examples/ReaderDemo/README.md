@@ -18,8 +18,10 @@ scripts/run-ios.sh     # xcodebuild for the booted iOS Simulator + install + lau
 ## Scrolled layout
 
 The settings sheet has a "Layout" picker (Pages / Scroll) and, for Scroll, a "Text width" slider (em). The status
-bar shows `scroll <spine indices on screen>` while a book is in the scrolled layout
-(docs/design/08-continuous-scroll.md).
+bar shows `scroll <spine indices on screen>` while a book is in the scrolled layout, and `scrolling <…>` in the
+tint colour while the reader's own scrolling is under way (`ReaderSession.isScrolling`: a finger and its momentum,
+a trackpad, a wheel, the ↑ ↓ keys; not jumps or the steps of one screen). The note popover closes when that
+scrolling begins (docs/design/08-continuous-scroll.md).
 
 ### Recording mode
 

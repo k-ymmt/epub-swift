@@ -31,6 +31,8 @@ struct ScrollDebugState: Decodable {
     var program: Bool
     var loading: Int?
     var runwayTarget: Double
+    var showing: Int?
+    var userScrolling: Bool?
     var visibility: String
     var views: [View]
 
@@ -52,22 +54,62 @@ extension SessionHost {
         return try JSONDecoder().decode(ScrollDebugState.self, from: Data(try #require(json).utf8))
     }
 
-    /// Waits until nothing is loading and the controller is at rest with its runway settled.
-    func waitForScrollRest(timeout: Duration = .seconds(10)) async throws {
-        try await waitUntil(timeout: timeout) {
-            let state = try await self.scrollState()
-            return state.atRest && state.restPosted && state.loading == nil && !state.dirty && state.views.allSatisfy(\.loaded)
+    /// Waits until nothing is loading and the controller is at rest with its runway settled, and stays so: the
+    /// settlement at rest may write the scroll position, and that write's `scroll` event (the next frame) starts
+    /// another 150 ms of "not quiet" that a caller reading the state right after this would see.
+    func waitForScrollRest(timeout: Duration = .seconds(10), sourceLocation: SourceLocation = #_sourceLocation) async throws {
+        var last: ScrollDebugState?
+        func rests(_ state: ScrollDebugState) -> Bool {
+            state.atRest && state.restPosted && state.loading == nil && !state.dirty && state.views.allSatisfy(\.loaded)
+        }
+        do {
+            try await waitUntil(timeout: timeout, sourceLocation: sourceLocation) {
+                var state = try await self.scrollState()
+                last = state
+                guard rests(state) else { return false }
+                // Two frames later (50 ms for a page that gets none) it still rests.
+                _ = try await self.js("""
+                    await new Promise(function (resolve) {
+                      requestAnimationFrame(function () { requestAnimationFrame(resolve); });
+                      setTimeout(resolve, 50);
+                    });
+                    """)
+                state = try await self.scrollState()
+                last = state
+                return rests(state)
+            }
+        } catch {
+            if let last {
+                Issue.record("not at rest: atRest \(last.atRest) restPosted \(last.restPosted) loading \(String(describing: last.loading)) dirty \(last.dirty) interacting \(last.interacting) program \(last.program) showing \(last.showing ?? -1) views \(last.views.map { "\($0.spineIndex):\($0.loaded)" })", sourceLocation: sourceLocation)
+            }
+            throw error
         }
     }
 
-    /// Scrolls the document as a script does (no interaction is reported to the controller).
+    /// Scrolls the document as a script does (no interaction is reported to the controller). Returns once the
+    /// controller has had the `scroll` event: it is fired with the next frame, so a `waitForScrollRest()` right after
+    /// a call that returned at once could see the rest before the scroll (and return before anything was reported).
     func scrollDocument(to y: Double) async throws {
-        _ = try await js("window.scrollTo(0, \(y)); return window.scrollY")
+        _ = try await js("\(Self.scrollAndSeeTheEvent)(function () { window.scrollTo(0, \(y)); }); return window.scrollY")
     }
 
     func scrollDocument(by dy: Double) async throws {
-        _ = try await js("window.scrollBy(0, \(dy)); return window.scrollY")
+        _ = try await js("\(Self.scrollAndSeeTheEvent)(function () { window.scrollBy(0, \(dy)); }); return window.scrollY")
     }
+
+    /// An async function expression: runs the scroll and, when it moved the document, waits for its `scroll` event
+    /// (this listener is added after the controller's, so the controller has handled the event by then).
+    private static let scrollAndSeeTheEvent = """
+        await (function (move) {
+          const before = window.scrollY;
+          return new Promise(function (resolve) {
+            window.addEventListener("scroll", resolve, { once: true });
+            move();
+            if (window.scrollY === before) { window.removeEventListener("scroll", resolve); resolve(); }
+            else { setTimeout(resolve, 500); }
+          });
+        })
+        """
 }
 
 /// The scrolled layout end to end on a real web view (docs/design/08-continuous-scroll.md, milestone S1): opening,
@@ -342,7 +384,9 @@ extension SessionHost {
         #expect(whileScrolling <= seconds + 1, "\(whileScrolling) positions in \(seconds) s of scrolling")
         #expect(recorder.positions.count >= 1 && recorder.positions.count <= whileScrolling + 1)
         #expect(recorder.positions.last == host.session.position)
-        #expect(recorder.navigations.isEmpty, "scrolling by hand is not reported as a jump or a page turn")
+        // Scrolling by hand is reported as such (S2, `ScrollFeatureTests`), never as a jump or a page turn.
+        try await host.waitUntil { recorder.navigations.count == 1 }
+        #expect(recorder.navigations.map(\.cause) == [.scroll])
 
         try await host.scrollDocument(by: 300)
         try await host.waitForScrollRest()

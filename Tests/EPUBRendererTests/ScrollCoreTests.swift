@@ -104,9 +104,9 @@ import Testing
     }
 
     /// Chapters 1000 px tall stacked from `top`, as `removals` takes them.
-    func views(count: Int, top: Double, keep: Set<Int> = []) -> String {
+    func views(count: Int, top: Double, keep: Set<Int> = [], selected: Int? = nil) -> String {
         let items = (0..<count).map { k in
-            "{pos: \(k), top: \(top + Double(k) * 1000), bottom: \(top + Double(k + 1) * 1000), keep: \(keep.contains(k))}"
+            "{pos: \(k), top: \(top + Double(k) * 1000), bottom: \(top + Double(k + 1) * 1000), keep: \(keep.contains(k)), selected: \(k == selected)}"
         }
         return "[" + items.joined(separator: ", ") + "]"
     }
@@ -181,10 +181,31 @@ import Testing
         let window = views(count: 8, top: -3_700)
         // A memory warning trims everything but the visible chapters and one on each side.
         #expect(try eval("core.removals({views: \(window), viewportHeight: 600, pageHeight: 600, atRest: false, trim: true})", as: [Int].self) == [0, 1, 7, 6])
-        // A chapter that holds the selection stays, and so does everything between it and the viewport (the window
-        // is one run of chapters).
-        let selecting = views(count: 8, top: -3_700, keep: [1])
-        #expect(try eval("core.removals({views: \(selecting), viewportHeight: 600, pageHeight: 600, atRest: false, trim: true})", as: [Int].self) == [0, 7, 6])
+        // A chapter that is still loading stays, and so does everything between it and the viewport (the window is
+        // one run of chapters).
+        let loading = views(count: 8, top: -3_700, keep: [1])
+        #expect(try eval("core.removals({views: \(loading), viewportHeight: 600, pageHeight: 600, atRest: false, trim: true})", as: [Int].self) == [0, 7, 6])
+    }
+
+    /// §10: the chapter with the selection is not taken out for being far away, but it does not stand against a
+    /// memory warning nor against the limit of the window.
+    @Test func theChapterWithTheSelectionStaysWhenFarButNotAgainstTheLimitOrAMemoryWarning() throws {
+        // Viewport inside chapter 12 of 14, the selection in chapter 1: at rest only what is before it goes.
+        let far = views(count: 14, top: -12_000, selected: 1)
+        #expect(try eval("core.removals({views: \(far), viewportHeight: 600, pageHeight: 600, atRest: true})", as: [Int].self) == [0])
+        // The far end below is not held by a selection above.
+        let middle = views(count: 14, top: -1_000, selected: 0)
+        #expect(try eval("core.removals({views: \(middle), viewportHeight: 600, pageHeight: 600, atRest: true})", as: [Int].self) == [13, 12, 11, 10, 9, 8, 7])
+        // A memory warning takes it like any other chapter that is not on screen or next to one that is.
+        let trimmed = views(count: 8, top: -3_700, selected: 1)
+        #expect(try eval("core.removals({views: \(trimmed), viewportHeight: 600, pageHeight: 600, atRest: false, trim: true})", as: [Int].self) == [0, 1, 7, 6])
+        // 30 chapters, the viewport in the last one, the selection in the first: the limit takes the furthest ones,
+        // the selected chapter among them.
+        let long = views(count: 30, top: -29_000, selected: 0)
+        #expect(try eval("core.removals({views: \(long), viewportHeight: 600, pageHeight: 600, atRest: false})", as: [Int].self) == [0, 1, 2, 3, 4, 5])
+        // So a full window whose first chapter holds the selection still takes the next chapter below.
+        let full = "(function () { const v = \(Self.shortChapters(4, 27)); v[0].selected = true; return v; })()"
+        #expect(try eval("core.admits({views: \(full), viewportHeight: 600, pageHeight: 600, where: 'append'})", as: Bool.self))
     }
 
     @Test func aWindowTheViewportRanPastKeepsItsNearestChapter() throws {

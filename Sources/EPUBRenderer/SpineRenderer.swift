@@ -186,6 +186,13 @@ enum BridgeMessage: Sendable {
     case chapterHeight(spineIndex: Int, height: Double, generation: Int, isFixed: Bool)
     /// Scrolled layout: a chapter in the window is ready.
     case chapterWritingMode(spineIndex: Int, writingMode: WritingMode)
+    /// Scrolled layout: the reader's own scrolling began to move the text / has ended (08-continuous-scroll §4.3).
+    /// `location`: where it got to, when it ended because something else moves the text (a jump, a step, a relayout)
+    /// and no `scrolled` at rest tells it.
+    case scrolling(active: Bool, location: ScrollLocation?)
+    /// Scrolled layout: the controller removed the mark of a search result, because the scrolling ended with the
+    /// result out of sight (§10). The range is the one `setTransientHighlight` was given.
+    case transientHighlightEnded(cfiRange: String)
 
     init?(body: Any) {
         guard let dict = body as? [String: Any], let type = dict["type"] as? String else { return nil }
@@ -235,6 +242,13 @@ enum BridgeMessage: Sendable {
         case "chapterWritingMode":
             guard let index = payload["spineIndex"] as? Int else { return nil }
             self = .chapterWritingMode(spineIndex: index, writingMode: WritingMode(cssValue: payload["writingMode"] as? String ?? "horizontal-tb"))
+        case "scrolling":
+            // Only the reader's own scrolling is reported to the app (`user`); the controller's steps and jumps are not.
+            guard let active = payload["active"] as? Bool, payload["user"] as? Bool ?? true else { return nil }
+            self = .scrolling(active: active, location: active ? nil : ScrollLocation(payload["location"]))
+        case "transientHighlightEnded":
+            guard let range = payload["cfiRange"] as? String else { return nil }
+            self = .transientHighlightEnded(cfiRange: range)
         default:
             return nil
         }
@@ -340,8 +354,11 @@ protocol SpineRenderer: AnyObject {
     func setScrollMode(_ enabled: Bool)
     /// The reader's hands started or stopped scrolling (§5.6). The renderer has already told the document.
     var onScrollInteractionChanged: (@MainActor (Bool) -> Void)? { get set }
-    /// Ends the reader's scrolling now (a finger, momentum, a trackpad gesture), so the position can be written (§5.6).
-    func stopScrolling() async
+    /// Ends the reader's hands on the text now (a finger, momentum, a trackpad gesture), so the position can be
+    /// written (§5.6). `endingReaderScrolling`: the reader's own scrolling as the app sees it (`scrolling`, §3.3) ends
+    /// with it, the scroll of the ↑ ↓ keys included: the session is about to move the text itself. The `scrolling`
+    /// message has arrived when this returns.
+    func stopScrolling(endingReaderScrolling: Bool) async
     func showLocation(_ target: ScrollTarget) async throws -> ScrollShowResult
     /// One page (`pages: ±1`) or a few lines; returns once the scroll has ended.
     func scrollBy(pages: Int, lines: Int, animated: Bool) async throws -> ScrollLocation?

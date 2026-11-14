@@ -34,20 +34,27 @@ final class SessionHost {
         try await renderer.webView.callAsyncJavaScript(body, arguments: [:], in: nil, contentWorld: WebViewSpineRenderer.readerWorld)
     }
 
-    func waitUntil(timeout: Duration = .seconds(10), _ condition: @MainActor () -> Bool) async throws {
+    /// A timeout is also recorded at the call (the thrown error alone names only the test).
+    func waitUntil(timeout: Duration = .seconds(10), sourceLocation: SourceLocation = #_sourceLocation, _ condition: @MainActor () -> Bool) async throws {
         let clock = ContinuousClock()
         let deadline = clock.now + timeout
         while !condition() {
-            if clock.now > deadline { throw SessionHostError.timeout }
+            if clock.now > deadline {
+                Issue.record("timed out after \(timeout)", sourceLocation: sourceLocation)
+                throw SessionHostError.timeout
+            }
             try await Task.sleep(for: .milliseconds(20))
         }
     }
 
-    func waitUntil(timeout: Duration = .seconds(10), _ condition: @MainActor () async throws -> Bool) async throws {
+    func waitUntil(timeout: Duration = .seconds(10), sourceLocation: SourceLocation = #_sourceLocation, _ condition: @MainActor () async throws -> Bool) async throws {
         let clock = ContinuousClock()
         let deadline = clock.now + timeout
         while try await !condition() {
-            if clock.now > deadline { throw SessionHostError.timeout }
+            if clock.now > deadline {
+                Issue.record("timed out after \(timeout)", sourceLocation: sourceLocation)
+                throw SessionHostError.timeout
+            }
             try await Task.sleep(for: .milliseconds(20))
         }
     }

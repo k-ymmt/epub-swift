@@ -58,6 +58,12 @@ public final class ReaderSession {
         }
     }
 
+    /// Scrolled layout: `true` from the moment the reader's own scrolling (a finger and its momentum, a trackpad, a
+    /// wheel, the ↑ ↓ keys) moves the text until it has come to rest (08-continuous-scroll §3.2, §5.6). A finger that
+    /// holds the text still has not come to rest. `go(to:)` and `goForward()` / `goBackward()` do not set it.
+    /// `ReaderEvent.scrolling` mirrors it. Always `false` in the paged layout.
+    public private(set) var isScrolling = false
+
     /// The face being shown (M4): one reflowable item, or one or two fixed-layout pages. nil until the first load.
     private(set) var currentUnit: SpreadPlan.Unit?
     /// Whether the visible face is a spread wrapper document (fixed layout, or a vertical-writing chapter shown as
@@ -117,13 +123,7 @@ public final class ReaderSession {
     public var visiblePages: [Int] {
         if layout == .scrolled {
             guard hasLoaded else { return [] }
-            // The offset itself is not observed (it changes with every scroll message); the band is, and it changes
-            // exactly when the pages below do.
-            _ = scrollBand
-            return ScrollPaging.visiblePages(
-                pagination: pagination, spineIndex: currentSpineIndex, offset: scrollOffset, chapterHeight: scrollChapterHeight,
-                pageHeight: scrollPageHeight, visibleSpineIndices: scrollVisible, isAtEnd: scrollAtEnd
-            )
+            return scrollPagesInBand
         }
         guard let current = currentPage else { return [] }
         var pages: Set<Int> = [current]
@@ -247,6 +247,10 @@ public final class ReaderSession {
     @ObservationIgnored private var pendingLoadURL: URL?
     /// The load in progress (spine index and target), so a WebContent crash during it can be retried (§9).
     @ObservationIgnored private var loadInProgress: (spineIndex: Int, target: LoadTarget)?
+    /// The `loadGeneration` in which a reload after a WebContent crash was queued. While it is the current one the
+    /// document on screen is the dead one: a jump of the scrolled layout loads its target instead of asking that
+    /// document for it (any load makes a new generation, so nothing resets this).
+    @ObservationIgnored private var crashReloadGeneration: Int?
     /// Times of recent WebContent crashes; automatic reloads stop after a few in a short time (a document that
     /// crashes the process every time would otherwise loop).
     @ObservationIgnored private var recentTerminations: [ContinuousClock.Instant] = []
@@ -288,6 +292,11 @@ public final class ReaderSession {
     /// The chapters the loaded scroll document holds: the linear reading order, or one non-linear item alone.
     @ObservationIgnored private var scrollDocumentIndices: [Int] = []
     @ObservationIgnored private var lastScrollPositionEmit: ContinuousClock.Instant?
+    /// The first text at the reading line as the controller last told it; nil when there is none there.
+    @ObservationIgnored private var scrollLineCFI: CFI?
+    /// Where the reader's own scrolling began (`isScrolling`): what its end is compared with, and the `from` of its
+    /// `navigated(.scroll)`.
+    @ObservationIgnored private var scrollingStart: (place: NavigationPlace, position: ReadingPosition?)?
     @ObservationIgnored private var estimatesTask: Task<Void, Never>?
 
     /// What the heights of the scrolled layout depend on (08-continuous-scroll §6.3).
@@ -509,6 +518,8 @@ public final class ReaderSession {
     /// reported like any other.
     private func reportingNavigation(_ cause: ReaderNavigation.Cause, _ move: @MainActor () async -> Void) async {
         let hadShownAPage = hasEverLoaded
+        // Scrolled layout: the reader's own scrolling ends first, so this move starts from where it got to.
+        if hasLoaded { await endReaderScrolling() }
         let before = navigationPlace
         let from = position
         await move()
@@ -525,7 +536,20 @@ public final class ReaderSession {
     }
 
     private var navigationPlace: NavigationPlace {
-        NavigationPlace(spineIndex: currentSpineIndex, pageIndex: currentPageIndex, pages: layout == .scrolled ? visiblePages : [])
+        NavigationPlace(spineIndex: currentSpineIndex, pageIndex: currentPageIndex, pages: layout == .scrolled ? scrollPagesInBand : [])
+    }
+
+    /// Scrolled layout: the virtual pages in the band below the reading line as last reported, also while the
+    /// document is not loaded (after the automatic reloads ran out the place is still the one to compare a move
+    /// with: loading the same place again is not a move).
+    private var scrollPagesInBand: [Int] {
+        // The offset itself is not observed (it changes with every scroll message); the band is, and it changes
+        // exactly when the pages below do.
+        _ = scrollBand
+        return ScrollPaging.visiblePages(
+            pagination: pagination, spineIndex: currentSpineIndex, offset: scrollOffset, chapterHeight: scrollChapterHeight,
+            pageHeight: scrollPageHeight, visibleSpineIndices: scrollVisible, isAtEnd: scrollAtEnd
+        )
     }
 
     /// Restores a position recorded earlier (`position`), for example at the next launch.
@@ -804,6 +828,8 @@ public final class ReaderSession {
     func webContentProcessDidTerminate() {
         logger.error("WebContent process terminated (spine \(self.currentSpineIndex))")
         emit(.error(.webContentTerminated))
+        // The document that would have told the end of the reader's scrolling is gone.
+        abandonReaderScrolling()
         let now = ContinuousClock.now
         recentTerminations = recentTerminations.filter { now - $0 < .seconds(30) } + [now]
         let retry = loadInProgress
@@ -843,6 +869,7 @@ public final class ReaderSession {
         // A navigation that starts a load before this reload runs (one queued behind the crashed load) replaces the
         // dead page anyway; reloading the old target afterwards would undo it.
         let generation = loadGeneration
+        crashReloadGeneration = generation
         enqueue { [weak self] in
             guard let self, self.loadGeneration == generation else { return }
             await self.loadChapter(spineIndex, target: target)
@@ -1033,6 +1060,7 @@ public final class ReaderSession {
     /// Back to the paged setup (the book cannot be scrolled after all, or the setting changed).
     private func leaveScrolledLayout() {
         guard layout == .scrolled else { return }
+        abandonReaderScrolling()
         layout = .paged
         estimatesTask?.cancel()
         estimatesTask = nil
@@ -1097,6 +1125,8 @@ public final class ReaderSession {
         loadInProgress = (spineIndex, target)
         defer { if generation == loadGeneration { loadInProgress = nil } }
         renderer.setContentHidden(true)
+        // The document is replaced: what it held and what it would have reported go with it.
+        abandonReaderScrolling()
         transientHighlight = nil
         if currentSelection != nil {
             currentSelection = nil
@@ -1164,34 +1194,50 @@ public final class ReaderSession {
     /// document does not hold (a non-linear item, or the way back from one) loads another document.
     private func scrollTo(spineIndex: Int, target: LoadTarget) async {
         guard publication.readingOrder.indices.contains(spineIndex) else { return }
-        guard layout == .scrolled, hasLoaded, scrollDocumentIndices.contains(spineIndex) else {
+        // The document died and its reload has not run yet (the jump was queued before it): the jump's target is
+        // loaded instead, which also makes the queued reload of the old position stale (§12).
+        let documentIsGone = crashReloadGeneration == loadGeneration
+        guard layout == .scrolled, hasLoaded, !documentIsGone, scrollDocumentIndices.contains(spineIndex) else {
             // Another document takes the place of this one (a non-linear item, or the way back from it): the rest
             // of a gesture or of its momentum must not scroll it.
-            if layout == .scrolled, hasLoaded { await renderer.stopScrolling() }
+            if layout == .scrolled, hasLoaded, !documentIsGone { await endReaderScrolling() }
             await loadChapter(spineIndex, target: target)
             return
         }
-        await renderer.stopScrolling()
-        await clearTransientHighlightIfNeeded()
-        let inWindow = (try? await renderer.scrollWindowContains(spineIndex: spineIndex)) ?? false
+        // A jump is "a load in progress" as a chapter load of the paged layout is (§12), from here on (also while the
+        // reader's scrolling is stopped and the picture that covers a rebuilt window is taken): when the WebContent
+        // process dies during it, the document is loaded at the jump's target, the jump stops at its next check of
+        // the generation, and the script call that failed on the dead document is not reported as an error of its own.
+        let generation = loadGeneration
+        loadInProgress = (spineIndex, target)
         let wasLoading = isLoading
+        var rebuilds = false
+        defer {
+            if generation == loadGeneration { loadInProgress = nil }
+            if rebuilds, !wasLoading, pendingResize == nil {
+                // After a crash the reload that takes over ends the loading.
+                if generation == loadGeneration { isLoading = false }
+                relayoutSnapshot = nil
+            }
+        }
+        await endReaderScrolling()
+        guard generation == loadGeneration else { return }
+        await clearTransientHighlightIfNeeded()
+        guard generation == loadGeneration else { return }
+        let inWindow = (try? await renderer.scrollWindowContains(spineIndex: spineIndex)) ?? false
+        guard generation == loadGeneration else { return }
         if !inWindow {
+            rebuilds = true
             isLoading = true
             captureRelayoutSnapshotIfNeeded()
             await relayoutSnapshotTask?.value
+            guard generation == loadGeneration else { return }
             // The window is rebuilt: the selection goes with its chapter (§10).
             if currentSelection != nil {
                 currentSelection = nil
                 emit(.selectionChanged(nil))
             }
         }
-        defer {
-            if !inWindow, !wasLoading, pendingResize == nil {
-                isLoading = false
-                relayoutSnapshot = nil
-            }
-        }
-        let generation = loadGeneration
         do {
             let shown = try await renderer.showLocation(ScrollTarget(spineIndex: spineIndex, place: scrollPlace(for: target)))
             guard generation == loadGeneration, layout == .scrolled else { return }
@@ -1207,6 +1253,7 @@ public final class ReaderSession {
                 await loadChapter(spineIndex, target: target)
             }
         } catch {
+            guard generation == loadGeneration else { return }
             emit(.error(.scriptFailed(error.localizedDescription)))
         }
     }
@@ -1215,7 +1262,8 @@ public final class ReaderSession {
     /// when the position moved.
     private func scrollByScreens(_ screens: Int) async {
         guard hasLoaded, !isLoading else { return }
-        await renderer.stopScrolling()
+        // A step of one screen is not the reader's scrolling, and ends it (§3.3).
+        await endReaderScrolling()
         await clearTransientHighlightIfNeeded()
         let from = position
         let generation = loadGeneration
@@ -1238,7 +1286,8 @@ public final class ReaderSession {
         Task { @MainActor [weak self] in
             guard let self else { return }
             // A key during a trackpad gesture or its momentum: the scroll position is written, so the gesture ends.
-            await renderer.stopScrolling()
+            // The reader's scrolling goes on: the keys are part of it (§3.3).
+            await renderer.stopScrolling(endingReaderScrolling: false)
             do { _ = try await renderer.scrollBy(pages: 0, lines: lines, animated: true) } catch { logger.debug("scrollBy failed: \(error.localizedDescription)") }
         }
     }
@@ -1253,6 +1302,54 @@ public final class ReaderSession {
         }
     }
 
+    // The reader's own scrolling (§3.2, §3.3): the controller tells its first move and its rest.
+
+    private func beginReaderScrolling() {
+        guard !isScrolling else { return }
+        scrollingStart = (navigationPlace, position)
+        isScrolling = true
+        emit(.scrolling(true))
+    }
+
+    /// The reader's scrolling has ended: the position it stopped at is published, the move is reported when other
+    /// pages are in view than when it began, then `scrolling(false)`. `location`: where it got to, when the controller
+    /// sent it along (the scrolling was ended by a move of the session, not by coming to rest).
+    private func finishReaderScrolling(at location: ScrollLocation?) {
+        guard isScrolling else { return }
+        let start = scrollingStart
+        scrollingStart = nil
+        if layout == .scrolled, hasLoaded {
+            if let location, location.generation == scrollGeneration { applyScrollLocation(location) }
+            publishScrollPosition(cfi: scrollLineCFI, force: true)
+            if let start, start.place != navigationPlace, let to = position {
+                emit(.navigated(ReaderNavigation(cause: .scroll, from: start.position, to: to)))
+            }
+        }
+        isScrolling = false
+        emit(.scrolling(false))
+    }
+
+    /// The document that was being scrolled is gone (a crash, another document, the paged layout): the scrolling is
+    /// over without a place to report.
+    private func abandonReaderScrolling() {
+        guard isScrolling else { return }
+        scrollingStart = nil
+        isScrolling = false
+        emit(.scrolling(false))
+    }
+
+    /// The session is about to move the text itself (a jump, a step of one screen, a relayout): the reader's hands
+    /// are taken off it (§5.6) and the reader's own scrolling ends where it is, so its `positionChanged`,
+    /// `navigated(.scroll)` and `scrolling(false)` come before anything the move reports, and the move starts from
+    /// the place the scrolling got to.
+    private func endReaderScrolling() async {
+        guard layout == .scrolled else { return }
+        await renderer.stopScrolling(endingReaderScrolling: true)
+        // The controller's `scrolling` message has been handled by now. A document that could not send it (it is
+        // being replaced) leaves the state to be closed here.
+        if isScrolling { finishReaderScrolling(at: nil) }
+    }
+
     /// Takes over what the scroll controller says about the reading line.
     private func applyScrollLocation(_ location: ScrollLocation) {
         let pageHeight = scrollPageHeight
@@ -1260,6 +1357,7 @@ public final class ReaderSession {
         let place = ScrollPaging.place(offset: location.offset, chapterHeight: height, pageHeight: pageHeight, isAtEnd: location.isAtEnd)
         scrollOffset = location.offset
         scrollChapterHeight = height
+        scrollLineCFI = location.cfi
         if currentSpineIndex != location.spineIndex { currentSpineIndex = location.spineIndex }
         // Also when the chapter is the one a paged spread showed: the scrolled layout has no spread (§3.2).
         let unit = SpreadPlan.Unit.reflowable(spineIndex: location.spineIndex, twoPages: false)
@@ -1317,7 +1415,7 @@ public final class ReaderSession {
     private func relayoutScrolledOrSwitch() async {
         var anchor: CFI?
         if layout == .scrolled {
-            await renderer.stopScrolling()
+            await endReaderScrolling()
             if let location = (try? await renderer.locationAtReadingLine()) ?? nil, location.generation == scrollGeneration {
                 applyScrollLocation(location)
                 anchor = location.cfi
@@ -1661,6 +1759,14 @@ public final class ReaderSession {
             guard hasLoaded else { return }
             isLoading = true
             enqueue { [weak self] in await self?.relayoutPreservingPosition() }
+        case .scrolling(let active, let location):
+            // Also during a jump that rebuilds the window (`isLoading`): the scrolling it ended must be closed.
+            guard layout == .scrolled, hasLoaded else { return }
+            if active { beginReaderScrolling() } else { finishReaderScrolling(at: location) }
+        case .transientHighlightEnded(let range):
+            // The controller has removed the mark already (the scrolling ended with the result out of sight, §10);
+            // a mark set since then is another range, or is set again after this message.
+            if transientHighlight?.description == range { transientHighlight = nil }
         }
     }
 
@@ -1735,17 +1841,38 @@ public final class ReaderSession {
         // The lookup reads another document, and the reader may move on before it ends. The noteref's box is then no
         // longer on the visible page, so the note is dropped: an app would anchor its popover to a place that is gone
         // (codex review of 99facab).
-        let tappedAt = (loadGeneration, currentSpineIndex, currentPageIndex)
+        // Scrolled layout: "moved" is any other distance of the reading line from its chapter's top, also within one
+        // virtual page (§10), or scrolling that is under way when the note has been read.
+        let tappedAt = tapPlace
         Task { @MainActor [weak self] in
             guard let self else { return }
             let found = if let fragment { await FragmentLookup.note(path: path, fragment: fragment, spineIndex: spineIndex, in: self.container) } else { nil as (cfi: CFI?, text: String)? }
             await self.noterefLookupDidFinish?()
-            guard tappedAt == (self.loadGeneration, self.currentSpineIndex, self.currentPageIndex) else {
+            guard self.tapPlace.isWhere(tappedAt), !self.isScrolling else {
                 self.logger.debug("noteref to \(path) dropped: the page moved before the note was read")
                 return
             }
             self.emit(.noteref(NoteContent(path: path, fragment: fragment, spineIndex: spineIndex, cfi: found?.cfi, html: nil, text: found?.text, isInSameDocument: false, sourceRect: rect)))
         }
+    }
+
+    /// Where the page is while a tap is answered later (the note of another document is read first).
+    private struct TapPlace {
+        var loadGeneration: Int
+        var scrollGeneration: Int
+        var spineIndex: Int
+        var pageIndex: Int
+        /// Scrolled layout: distance of the reading line from the top of its chapter; 0 in pages.
+        var offset: Double
+
+        func isWhere(_ other: TapPlace) -> Bool {
+            loadGeneration == other.loadGeneration && scrollGeneration == other.scrollGeneration && spineIndex == other.spineIndex
+                && pageIndex == other.pageIndex && abs(offset - other.offset) < 0.5
+        }
+    }
+
+    private var tapPlace: TapPlace {
+        TapPlace(loadGeneration: loadGeneration, scrollGeneration: scrollGeneration, spineIndex: currentSpineIndex, pageIndex: currentPageIndex, offset: layout == .scrolled ? scrollOffset : 0)
     }
 
     private func handleImageTap(src: String, alt: String?, rect: CGRect, x: Double, y: Double) {

@@ -510,7 +510,7 @@ final class WebViewSpineRenderer: NSObject, SpineRenderer {
     }
     #endif
 
-    func stopScrolling() async {
+    func stopScrolling(endingReaderScrolling: Bool) async {
         guard isScrollMode else { return }
         #if canImport(UIKit)
         let scrollView = webView.scrollView
@@ -533,7 +533,13 @@ final class WebViewSpineRenderer: NSObject, SpineRenderer {
         syncWheelInteraction(at: now)
         #endif
         // The document hears "not active" before whatever the caller does next.
-        _ = try? await call("return window.__epubReader && window.__epubReader.setInteraction ? window.__epubReader.setInteraction({active: active}) : false", arguments: ["active": isScrollInteractionActive])
+        _ = try? await call("""
+            const reader = window.__epubReader;
+            if (!reader || !reader.setInteraction) { return false; }
+            reader.setInteraction({active: active});
+            if (end && reader.endScrolling) { reader.endScrolling(); }
+            return true;
+            """, arguments: ["active": isScrollInteractionActive, "end": endingReaderScrolling])
     }
 
     func showLocation(_ target: ScrollTarget) async throws -> ScrollShowResult {

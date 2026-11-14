@@ -8,8 +8,9 @@ M3 で入り、それまで `ReaderSession` は spine index とページ index �
 
 スクロール表示の API は `08-continuous-scroll.md` §3 に設計がある。S1（2026-11-14）で実装したのは `ReaderLayout`、
 `ReaderSettings.layout` / `scrolledTextWidth`、`ReaderSession.layout` / `contentInsets`、`ReaderInsets`、
-`readerContentInsets(top:bottom:)` で、下の該当箇所に書いてある。`ReaderSession.isScrolling`、`ReaderEvent.scrolling`、
-`ReaderNavigation.Cause.scroll` は S2 で足す（未実装）。
+`readerContentInsets(top:bottom:)` で、下の該当箇所に書いてある。S2（同日）で `ReaderSession.isScrolling`、
+`ReaderEvent.scrolling`、`ReaderNavigation.Cause.scroll` を足し、選択・注釈・検索結果の表示・脚注・画像・リンク・復旧を
+スクロール表示でもページ表示と同じ API で動くようにした（08 §10、§12、§17）。
 
 ## 1. 使い方の全体像
 
@@ -382,6 +383,8 @@ public enum ReaderEvent: Sendable {
     case imageTapped(TappedImage)           // リフローのページ上の img / SVG image（リンク内を除く）のタップ
     // 2026-11-12 実装済み
     case navigated(ReaderNavigation)        // 読者の移動で可視ページが変わった。理由と移動元つき（下記）
+    // スクロール表示の S2（2026-11-14）で追加
+    case scrolling(Bool)                    // 読者のスクロールが始まった（true）/ 止まった（false）。ReaderSession.isScrolling と同じ値（08 §3.3）
 }
 
 public struct ReaderNavigation: Sendable, Hashable {
@@ -389,6 +392,7 @@ public struct ReaderNavigation: Sendable, Hashable {
         case pageTurn                       // goForward() / goBackward()
         case jump                           // go(to:) / go(toPage:) / go(toSpineIndex:) / go(toPageInChapter:) / show(_:)
         case link                           // 出版物内のリンクをたどった（このあと internalLink が出る）
+        case scroll                         // スクロール表示: 読者のスクロールが、始まったときと違うページで止まった（S2）
     }
     public var cause: Cause
     public var from: ReadingPosition?       // 移動前の position。まだ無ければ nil
@@ -496,6 +500,7 @@ extension View {
 extension ReaderSession {
     public private(set) var layout: ReaderLayout     // 今この本を表示している方式
     public var contentInsets: ReaderInsets           // EPUBReaderView が上の修飾子の値を入れる
+    public private(set) var isScrolling: Bool        // S2 で追加。読者のスクロール（指・慣性・トラックパッド・ホイール・↑ ↓）が続いている間 true
 }
 
 public struct ReaderInsets: Hashable, Sendable {
@@ -508,7 +513,12 @@ public struct ReaderInsets: Hashable, Sendable {
   本文は枠の端まで流れ、読む行（位置を決める行）・位置の復元・1 ページの高さはインセットの内側で数える。ページ表示では使わない。
 - スクロール表示での `ReaderSession` の各プロパティの意味（`position` は読む行の最初の文字、`currentPage` は高さ P ごとの
   仮想ページ、`isShowingSpread` / `isZoomed` は常に false、`pageSnapshot(_:)` は常に nil）と、`go(to:)` 系・`goForward()` /
-  `goBackward()` の動作は 08 §3.2。S1 では、読者のスクロールで出るイベントは `positionChanged` だけ。
+  `goBackward()` の動作は 08 §3.2。読者のスクロールでは、`scrolling(true)`、スクロール中の `positionChanged`（1 秒に 1 回まで）、
+  止まったときの `positionChanged`、可視ページが変わっていれば `navigated(cause: .scroll)`、`scrolling(false)` の順に出る
+  （S2。08 §3.3）。ページ表示では `isScrolling` は常に false で、`scrolling` は出ない。
+- スクロール表示での矩形（`SelectedText.rects`、`annotationTapped` の `rects`、`NoteContent.sourceRect`、`TappedImage.rect`、
+  `rects(for:)`）は `EPUBReaderView` の枠の座標で、その時点のもの。スクロールすると古くなるので、アプリは `scrolling(true)` で
+  矩形に結び付けた表示を閉じる。
 - `pageTransition`、`ReaderGestures` の `swipeEnabled` / `tapToTurnEnabled` / `tapZones` はスクロール表示では効かない
   （タップは常に `tapped(_, zone: .center)`、`imageTapped` は常にアプリへ）。`keyboardEnabled` は効き、対応は ↑ ↓ = 3 行分、
   space / PageDown / → = 1 画面進む、⇧space / PageUp / ← = 戻る、Home / End = 章の先頭 / 末尾（`ReaderKeyAction` の

@@ -241,6 +241,117 @@ struct TrackpadEvents {
         #expect(moved >= 0 && moved < 150, "the lines of the key, and nothing of the stopped momentum: \(moved) px")
     }
 
+    // MARK: The reader's own scrolling as the app hears it (§3.2, §3.3; milestone S2)
+
+    @Test func aGestureAndItsMomentumAreOneScrollingForTheApp() async throws {
+        let host = try await ScrollStabilityTests().hostInsideChapter8()
+        let recorder = EventRecorder(host.session)
+        let trackpad = TrackpadEvents(view: host.renderer.webView)
+        let start = try #require(host.session.position)
+
+        // Fingers rest on the trackpad: the document hears of the hands, the app of nothing.
+        try trackpad.send(dy: 0, phase: .mayBegin)
+        try await host.waitUntil { try await host.scrollState().interacting }
+        try await Task.sleep(for: .milliseconds(200))
+        #expect(!host.session.isScrolling)
+        #expect(recorder.scrollings.isEmpty)
+
+        // They move: the scrolling begins, once.
+        try trackpad.send(dy: 30, phase: .began)
+        for _ in 1..<10 {
+            try await Task.sleep(for: .milliseconds(16))
+            try trackpad.send(dy: 30, phase: .changed)
+        }
+        try await host.waitUntil { host.session.isScrolling }
+        // They lift and the momentum carries the text on: still the same scrolling.
+        try trackpad.release(dy: 28)
+        for _ in 0..<30 {
+            try await Task.sleep(for: .milliseconds(16))
+            try trackpad.send(dy: 24, momentum: .changed)
+        }
+        #expect(host.session.isScrolling)
+        #expect(recorder.scrollings == [true])
+        #expect(recorder.navigations.isEmpty)
+
+        // The momentum ends and the text comes to rest: the position, the move (a page and more further on), the end.
+        try trackpad.send(dy: 0, momentum: .ended)
+        try await host.waitUntil { recorder.scrollings == [true, false] }
+        #expect(!host.session.isScrolling)
+        let moves = recorder.moves
+        #expect(Array(moves.suffix(3)) == ["position", "navigated(scroll)", "scrolling-"], "\(moves)")
+        #expect(recorder.navigations.map(\.cause) == [.scroll])
+        #expect(recorder.navigations.first?.from == start)
+        #expect(recorder.navigations.first?.to == host.session.position)
+        // (On a busy machine the last synthesized events can reach the document after its first rest: the position
+        // is compared once nothing moves any more.)
+        try await host.waitForScrollRest()
+        let location = try #require(try await host.renderer.locationAtReadingLine())
+        #expect(host.session.position?.cfi == location.cfi)
+        #expect(recorder.scrollings == [true, false])
+    }
+
+    @Test func aJumpDuringTheMomentumEndsTheScrollingBeforeTheJumpIsReported() async throws {
+        let host = try await ScrollStabilityTests().hostInsideChapter8()
+        let recorder = EventRecorder(host.session)
+        let trackpad = TrackpadEvents(view: host.renderer.webView)
+        try await trackpad.drag(dy: 30, frames: 8)
+        try trackpad.release(dy: 30)
+        for _ in 0..<6 {
+            try await Task.sleep(for: .milliseconds(16))
+            try trackpad.send(dy: 28, momentum: .changed)
+        }
+        try await host.waitUntil { host.session.isScrolling }
+
+        let jump = Task { @MainActor in await host.session.go(toSpineIndex: 9) }
+        for _ in 0..<30 {
+            try await Task.sleep(for: .milliseconds(16))
+            try trackpad.send(dy: 24, momentum: .changed)
+        }
+        await jump.value
+        #expect(!host.session.isScrolling)
+        try await host.waitUntil { recorder.moves.contains("navigated(jump)") }
+        let moves = recorder.moves
+        #expect(try #require(moves.firstIndex(of: "scrolling-")) < (try #require(moves.firstIndex(of: "navigated(jump)"))), "\(moves)")
+        let scroll = recorder.navigations.first { $0.cause == .scroll }
+        let jumped = try #require(recorder.navigations.first { $0.cause == .jump })
+        // The jump starts from where the momentum had carried the text (the scrolling's own end, when it moved a page).
+        if let scroll { #expect(jumped.from == scroll.to) }
+        #expect(jumped.from?.spineIndex == 8 && jumped.to.spineIndex == 9)
+
+        // The rest of the stopped momentum is withheld: it does not begin another scrolling.
+        for _ in 0..<10 {
+            try await Task.sleep(for: .milliseconds(16))
+            try trackpad.send(dy: 24, momentum: .changed)
+        }
+        try trackpad.send(dy: 0, momentum: .ended)
+        try await host.waitForScrollRest()
+        try await Task.sleep(for: .milliseconds(100))
+        #expect(recorder.scrollings == [true, false])
+    }
+
+    @Test func anArrowKeyDuringTheMomentumIsPartOfTheSameScrolling() async throws {
+        let host = try await ScrollStabilityTests().hostInsideChapter8()
+        let recorder = EventRecorder(host.session)
+        let trackpad = TrackpadEvents(view: host.renderer.webView)
+        try await trackpad.drag(dy: 30, frames: 6)
+        try trackpad.release(dy: 30)
+        for _ in 0..<4 {
+            try await Task.sleep(for: .milliseconds(16))
+            try trackpad.send(dy: 28, momentum: .changed)
+        }
+        try await host.waitUntil { host.session.isScrolling }
+
+        // ↓ ends the momentum and scrolls its lines: the app sees one scrolling, with one end.
+        host.session.scrollByLines(3)
+        try await host.waitUntil { try await !host.scrollState().interacting }
+        try trackpad.send(dy: 0, momentum: .ended)
+        try await host.waitUntil { recorder.scrollings.last == false }
+        try await host.waitForScrollRest()
+        try await Task.sleep(for: .milliseconds(100))
+        #expect(recorder.scrollings == [true, false])
+        #expect(!host.session.isScrolling)
+    }
+
     @Test func aJumpToAChapterOutsideTheFlowStopsTheMomentumToo() async throws {
         let host = try await ScrollStabilityTests().visibleHost(url: ScrollLayoutTests.sample)
         await host.session.go(toSpineIndex: 1)

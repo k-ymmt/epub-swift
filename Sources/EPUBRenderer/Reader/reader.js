@@ -1673,8 +1673,13 @@
       anchor: null,
       // Swift's view of the reader's hands: a finger, momentum, a trackpad gesture, a wheel (§5.6).
       interacting: false,
-      // A scroll this controller started and that has not ended: {target, waiters, …}.
+      // A scroll this controller started and that has not ended: {target, waiters, user, …}. `user`: the ↑ ↓ keys,
+      // which count as the reader's own scrolling (§8.2).
       program: null,
+      // The reader's own scrolling is moving the text: told to Swift as `scrolling` (§3.3).
+      userScrolling: false,
+      // Where the controller itself last put the scroll position (`wroteScroll`); null once its event has come.
+      own: null,
       lastScroll: -1000,
       quietTimer: null,
       settleTimer: null,
@@ -1835,16 +1840,54 @@
         return;
       }
       autoWindow();
-      settle();
-      postScrolled(true);
+      rest();
     }
     function scheduleSettle() {
       if (sc.settleTimer) { return; }
       sc.settleTimer = setTimeout(function () {
         sc.settleTimer = null;
         if (!sc.dirty) { return; }
-        if (atRest()) { settle(); postScrolled(true); } else if (!sc.interacting && !sc.program) { armQuiet(); }
+        if (atRest()) { rest(); } else if (!sc.interacting && !sc.program) { armQuiet(); }
       }, 0);
+    }
+    // At rest: the runway is put right, Swift hears where the reading line is, a search result that is no longer on
+    // screen loses its mark, and the reader's scrolling (if this is its end) is over, in this order (§3.3, §10).
+    function rest() {
+      settle();
+      postScrolled(true);
+      dropTransientOffScreen();
+      endUserScroll(false);
+    }
+
+    // --- the reader's own scrolling (§3.2, §3.3) ---
+    // It begins with the first scroll event while the reader's hands are on the text (a finger and its momentum, a
+    // trackpad, a wheel: `sc.interacting`) or while the ↑ ↓ keys scroll it (`program.user`): a finger that rests on
+    // the text without moving it has not begun anything. It ends at rest, so not while a finger holds the text still.
+    // The controller wrote the scroll position (a settlement, a jump, the end of a program). The `scroll` event of
+    // that write comes with the next frame, when the reader's hands may already be on the text: it is told from
+    // theirs by the position it reports, which is the one written here.
+    function wroteScroll() { sc.own = window.scrollY; }
+    function beginUserScroll() {
+      if (sc.userScrolling) { return; }
+      sc.userScrolling = true;
+      log("scrolling", { active: true });
+      post("scrolling", { active: true, user: true });
+    }
+    // `taken`: something else moves the text from here (a jump, a step of one screen, a relayout). The place the
+    // scrolling got to goes with the message: no `scrolled` at rest will tell it.
+    function endUserScroll(taken) {
+      if (!sc.userScrolling) { return; }
+      sc.userScrolling = false;
+      const payload = { active: false, user: true };
+      if (taken && sc.laidOut && sc.views.length && !sc.showing) { payload.location = currentLocation(); }
+      log("scrolling", { active: false, taken: !!taken });
+      post("scrolling", payload);
+    }
+    // Swift ends the reader's scrolling before it moves the text itself (§3.3): the keys' scroll stops where it is.
+    function endScrolling() {
+      if (sc.program && sc.program.user) { cancelProgram(); }
+      endUserScroll(true);
+      return true;
     }
     // Puts the runway back to the height of the chapters before the window (and the negative margin to 0) and moves
     // the scroll position by as much as that moved the text in the viewport (§5.4). Only at rest. The position is
@@ -1864,7 +1907,7 @@
       applyUpper(plan.pad, plan.neg);
       const after = anchorY(anchor);
       const top = core.settledScrollTop(window.scrollY, before, after, maxScroll());
-      if (Math.abs(top - window.scrollY) >= 0.01) { window.scrollTo(0, top); }
+      if (Math.abs(top - window.scrollY) >= 0.01) { window.scrollTo(0, top); wroteScroll(); }
       anchor.docY = anchorY(anchor) + window.scrollY;
       sc.dirty = false;
       log("correct", { by: top - from, reason: "settle", pad: sc.pad });
@@ -2027,6 +2070,8 @@
       if (k < 0) { return; }
       const anchorView = sc.anchor ? sc.anchor.view : null;
       const above = anchorView ? view.pos < anchorView.pos : false;
+      // The frame's document goes without a `selectionchange`: the selection it held is reported as gone (§10).
+      const selected = hasSelection(view);
       if (view.observer) { view.observer.disconnect(); }
       // In the same layout as the removal, the runway grows by the chapter's height first: growing it afterwards
       // lets the document shrink in between, and at its end the scroll position is clamped (§5.3).
@@ -2041,6 +2086,7 @@
       if (anchorView === view) { refreshAnchor(); }
       if (above) { correct("remove"); } else { syncTail(); }
       log("remove", { index: view.spineIndex, above: above, height: view.height, reason: reason || "" });
+      if (selected) { post("selectionChanged", { selection: currentSelection() }); }
     }
     function hasSelection(view) {
       try {
@@ -2054,7 +2100,7 @@
       const height = window.innerHeight;
       const infos = sc.views.map(function (view) {
         const rect = rectOf(view);
-        return { pos: view.pos, top: rect.top, bottom: rect.bottom, keep: view === sc.loading || (!trim && hasSelection(view)) };
+        return { pos: view.pos, top: rect.top, bottom: rect.bottom, keep: view === sc.loading, selected: hasSelection(view) };
       });
       const out = core.removals({ views: infos, viewportHeight: height, pageHeight: sc.page, atRest: atRest(), holdFar: sc.holdFar, trim: !!trim });
       for (const pos of out) {
@@ -2079,7 +2125,7 @@
       // lookahead asks for more than the limit holds, and the new chapter would leave again at once).
       const current = sc.views.map(function (view) {
         const rect = rectOf(view);
-        return { pos: view.pos, top: rect.top, bottom: rect.bottom, keep: hasSelection(view) };
+        return { pos: view.pos, top: rect.top, bottom: rect.bottom, keep: false, selected: hasSelection(view) };
       });
       if (!core.admits({ views: current, viewportHeight: height, pageHeight: sc.page, where: action })) { return; }
       if (action === "prepend") { addView(first.pos - 1, "prepend"); }
@@ -2104,6 +2150,7 @@
       syncTail();
       sc.dirty = false;
       window.scrollTo(0, Math.min(sc.pad, maxScroll()));
+      wroteScroll();
       log("rebuild", { index: view.spineIndex });
       return view;
     }
@@ -2215,6 +2262,9 @@
       sc.lastScroll = now();
       sc.restPosted = false;
       if (!sc.laidOut) { return; }
+      const own = sc.own !== null && Math.abs(window.scrollY - sc.own) < 0.5;
+      sc.own = null;
+      if (!own && !sc.userScrolling && !sc.showing && (sc.interacting || (sc.program && sc.program.user))) { beginUserScroll(); }
       // First what the anchor has seen since the last event, then (if it left the reading line) a new anchor.
       correct("scroll");
       followLine();
@@ -2244,6 +2294,7 @@
       clearInterval(program.timer);
       if (arrived && !sc.interacting && window.scrollY !== program.target && Math.abs(window.scrollY - program.target) < 2) {
         window.scrollTo({ top: program.target, left: 0, behavior: "instant" });
+        wroteScroll();
       }
       sc.program = null;
       const waiters = program.waiters;
@@ -2256,16 +2307,18 @@
       const program = sc.program;
       if (!program) { return; }
       window.scrollTo({ top: window.scrollY, left: 0, behavior: "instant" });
+      wroteScroll();
       endProgram(program);
     }
-    function startProgram(top, animated, done) {
+    function startProgram(top, animated, done, user) {
       const previous = sc.program;
       const waiters = previous ? previous.waiters : [];
       if (previous) { clearInterval(previous.timer); }
       waiters.push(done);
-      const program = { target: top, waiters: waiters, started: now(), arrived: null, timer: null };
+      const program = { target: top, waiters: waiters, started: now(), arrived: null, timer: null, user: !!user };
       sc.program = program;
       window.scrollTo({ top: top, left: 0, behavior: animated ? "smooth" : "instant" });
+      if (!animated && !user) { wroteScroll(); }
       // Ends with `scrollend`, or 150 ms after the position reached the target, or when nothing moves any more.
       program.timer = setInterval(function () {
         if (sc.program !== program) { clearInterval(program.timer); return; }
@@ -2292,11 +2345,14 @@
         pages: step.pages || 0, lines: step.lines || 0, pageHeight: sc.page, lineHeight: lineHeightAtLine(),
         scrollY: window.scrollY, from: sc.program ? sc.program.target : window.scrollY, maxScroll: maxScroll(),
       });
+      // A few lines are the reader's own scrolling (↑ ↓, §8.2); a step of one screen is not, and ends it.
+      const user = !step.pages && !!step.lines;
+      if (!user) { endUserScroll(true); }
       if (!target.moved) { return Promise.resolve(Object.assign(currentLocation(), { moved: false })); }
       return new Promise(function (resolve) {
         startProgram(target.top, step.animated !== false, function () {
           resolve(Object.assign(currentLocation(), { moved: true }));
-        });
+        }, user);
       });
     }
 
@@ -2338,6 +2394,7 @@
       // Jumps write the scroll position anyway: the runway is put right first, so the scroll range is the book's.
       settle();
       window.scrollTo(0, topFor(view, locate(view, target)));
+      wroteScroll();
       refreshAnchor();
       return frames(2).then(function () {
         if (view.epoch !== sc.epoch || !view.el.isConnected) { return; }
@@ -2355,6 +2412,8 @@
       target = target || {};
       const pos = posOf[target.spineIndex];
       if (pos === undefined || !sc.laidOut) { return Promise.resolve({ missing: true }); }
+      // A jump takes the text over: the reader's scrolling ends where it is (§3.3).
+      endUserScroll(true);
       cancelProgram();
       sc.showing += 1;
       let view = viewAt(pos);
@@ -2366,6 +2425,10 @@
           if (!sc.interacting) { settle(); }
           autoWindow();
           refreshAnchor();
+          // No `scrolled` is sent while a jump places the window. When the jump's own scroll event came to rest
+          // meanwhile (a page that gets no frames waits 160 ms above, longer than the 150 ms of quiet), that rest
+          // was not reported and nothing else would report it: it is reported now, or once the scrolling is quiet.
+          if (!sc.restPosted) { checkRest(); }
           const location = currentLocation();
           sc.lastPost = now();
           return location;
@@ -2400,6 +2463,8 @@
     // nothing afterwards: Swift follows with `showLocation` (§11).
     function layout(params) {
       params = params || {};
+      // The text is laid out again and put back by `showLocation`: the reader's scrolling ends here (§3.3).
+      endUserScroll(true);
       sc.params = params;
       applyWrapperParams(params);
       const insets = params.insets || {};
@@ -2499,6 +2564,19 @@
       }
       return any;
     }
+    // The mark of a search result leaves when the scrolling ends with the result outside the part of the frame the
+    // reader sees (between the insets), or with its chapter out of the window (§10). Swift is told, so it does not
+    // remove the mark of the next result for this one.
+    function dropTransientOffScreen() {
+      const range = sc.transient;
+      if (!range || sc.showing) { return; }
+      const top = sc.insetTop, bottom = window.innerHeight - sc.insetBottom;
+      let rects = [];
+      try { rects = rectsFor(range); } catch (e) { rects = []; }
+      if (rects.some(function (r) { return r.y + r.height > top && r.y < bottom; })) { return; }
+      setTransientHighlight(null);
+      post("transientHighlightEnded", { cfiRange: range });
+    }
     function currentSelection() {
       for (const view of sc.views) {
         if (!chapter(view)) { continue; }
@@ -2520,6 +2598,7 @@
           pad: sc.pad, neg: sc.neg, tail: sc.tail, page: sc.page, generation: sc.generation, dirty: sc.dirty,
           scrollY: window.scrollY, maxScroll: maxScroll(), viewportHeight: window.innerHeight,
           atRest: atRest(), restPosted: sc.restPosted, interacting: sc.interacting, program: !!sc.program, loading: sc.loading ? sc.loading.spineIndex : null,
+          userScrolling: sc.userScrolling, showing: sc.showing,
           runwayTarget: sc.views.length ? core.runwayTarget(sc.heights, sc.views[0].pos) : 0,
           visibility: document.visibilityState,
           // Whether the engine has the `scrollend` event (the end of a program scroll, §5.6).
@@ -2580,6 +2659,7 @@
       setEstimates: setEstimates,
       trimWindow: trimWindow,
       setInteraction: setInteraction,
+      endScrolling: endScrolling,
       windowContains: function (spineIndex) { const pos = posOf[spineIndex]; return pos !== undefined && !!viewAt(pos); },
       holds: function (spineIndex) { return posOf[spineIndex] !== undefined; },
       cfi: CFI,

@@ -85,12 +85,16 @@
   }
 
   // The chapters to take out of the window (§5.1, §12), as spine positions, in the order to remove them.
-  // `views`: the window in order, each `{pos, top, bottom, keep}` with `top` / `bottom` in viewport coordinates and
-  // `keep` for a chapter that must stay (it holds the selection, or it is still loading). A chapter in the viewport
-  // and its two neighbours always stay, so the window stays one run of chapters: only its ends are removed.
-  // - at rest (and without `holdFar`: VoiceOver is running), the chapters further than 8 pages away go;
-  // - at any time, the furthest ones go until at most 24 are left;
-  // - `trim` (a memory warning): everything that is not protected goes.
+  // `views`: the window in order, each `{pos, top, bottom, keep, selected}` with `top` / `bottom` in viewport
+  // coordinates, `keep` for a chapter that must stay (it is still loading) and `selected` for the chapter that holds
+  // the selection. A chapter in the viewport and its two neighbours always stay, so the window stays one run of
+  // chapters: only its ends are removed.
+  // - at rest (and without `holdFar`: VoiceOver is running), the chapters further than 8 pages away go, but not
+  //   the chapter with the selection (nor, the window being one run, the chapters between it and the viewport);
+  // - at any time, the furthest ones go until at most 24 are left: the selection does not hold a chapter against
+  //   the limit (a reader 24 chapters away from it would otherwise scroll into a window that cannot take the next
+  //   chapter, or the window would grow without end);
+  // - `trim` (a memory warning): everything that is not protected goes, the chapter with the selection too.
   function removals(input) {
     const views = input.views || [];
     const n = views.length;
@@ -113,8 +117,9 @@
     let lo = 0, hi = n - 1;
     const far = input.trim ? 0 : FAR_PAGES * page;
     if (input.trim || (input.atRest && !input.holdFar)) {
-      while (lo < hi && !keep[lo] && distance(views[lo]) > far) { out.push(views[lo].pos); lo++; }
-      while (hi > lo && !keep[hi] && distance(views[hi]) > far) { out.push(views[hi].pos); hi--; }
+      const held = function (k) { return keep[k] || (!input.trim && !!views[k].selected); };
+      while (lo < hi && !held(lo) && distance(views[lo]) > far) { out.push(views[lo].pos); lo++; }
+      while (hi > lo && !held(hi) && distance(views[hi]) > far) { out.push(views[hi].pos); hi--; }
     }
     while (hi - lo + 1 > limit) {
       const a = keep[lo] ? -1 : distance(views[lo]);

@@ -381,6 +381,9 @@ struct BookView: View {
                     break
                 case .zoomChanged(let zoomed):
                     status = zoomed ? "Zoomed in: pinch out (or turn a page) to return" : ""
+                case .scrolling(let active):
+                    // Scrolled layout: the note popover is anchored to a rectangle that moves with the text.
+                    if active { note = nil }
                 }
             }
             // M5: the note a noteref points at, anchored to the noteref's box (page coordinates = this view's).
@@ -453,9 +456,10 @@ struct StatusBar: View {
                 Spacer()
                 // M4: the face kind (spread of which spine items, fixed layout, zoom).
                 if session.layout == .scrolled {
-                    // 08-continuous-scroll: the chapters on screen.
-                    Text("scroll \(session.visibleSpineIndices.map(String.init).joined(separator: "+"))")
-                        .foregroundStyle(.secondary)
+                    // 08-continuous-scroll: the chapters on screen, and whether the reader's own scrolling is under
+                    // way (`isScrolling`: a finger, a trackpad, a wheel, the ↑ ↓ keys; not jumps or page steps).
+                    Text("\(session.isScrolling ? "scrolling" : "scroll") \(session.visibleSpineIndices.map(String.init).joined(separator: "+"))")
+                        .foregroundStyle(session.isScrolling ? AnyShapeStyle(.tint) : AnyShapeStyle(.secondary))
                 } else if session.isShowingSpread {
                     Text("spread \(session.visibleSpineIndices.map(String.init).joined(separator: "+"))")
                         .foregroundStyle(.secondary)

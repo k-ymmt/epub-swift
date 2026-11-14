@@ -141,7 +141,8 @@ The design documents are in `docs/design/`, written in Japanese:
 - `05-spike-results.md`
 - `06-annotations.md`
 - `07-continuous-scroll-spike.md` (measurements for a continuous vertical scroll)
-- `08-continuous-scroll.md` (the scrolled layout: designed, not implemented)
+- `08-continuous-scroll.md` (the scrolled layout: milestones S1 and S2 are implemented, page numbers from measured
+  heights (S3) are not)
 
 Known gaps and follow-ups are listed in `TODO.md`.
 

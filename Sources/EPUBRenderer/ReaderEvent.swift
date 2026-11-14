@@ -36,6 +36,13 @@ public enum ReaderEvent: Sendable {
     /// Not emitted for the first load, nor when only the layout changed under the same text (settings, resize, a
     /// late page count): apps tell "the reader went somewhere" from "the page was laid out again" by this event.
     case navigated(ReaderNavigation)
+    /// Scrolled layout (docs/design/08-continuous-scroll.md §3.3): the reader's own scrolling (a finger and its
+    /// momentum, a trackpad, a wheel, the ↑ ↓ keys) began to move the text (`true`), or has come to rest (`false`).
+    /// Mirrors `ReaderSession.isScrolling`. Apps hide their bars and close what they anchored to a rectangle on
+    /// `true`. `go(to:)` and `goForward()` / `goBackward()` do not emit it. Before `false` the session emits the
+    /// `positionChanged` of the place the scrolling stopped at and, when the visible pages changed since `true`,
+    /// `navigated` with the cause `.scroll`.
+    case scrolling(Bool)
 }
 
 /// One move of the reader (docs/design/03-api.md §3.4): why the visible page changed, and from where to where.
@@ -47,6 +54,9 @@ public struct ReaderNavigation: Sendable, Hashable {
         case jump
         /// A link inside the publication that the reader tapped (`ReaderEvent.internalLink` follows).
         case link
+        /// Scrolled layout: the reader scrolled (a finger, a trackpad, a wheel, the ↑ ↓ keys) and the scrolling came
+        /// to rest on other pages than it began on. `from` is the position when the scrolling began.
+        case scroll
     }
 
     public var cause: Cause
