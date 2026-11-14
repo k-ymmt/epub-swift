@@ -8,9 +8,15 @@ enum ReaderKey: Sendable, Hashable {
 
 /// What a key does to the session.
 enum ReaderKeyAction: Sendable, Hashable {
+    /// One page; in the scrolled layout one screen.
     case forward, backward
-    /// First / last page of the current chapter (face).
+    /// First / last page of the current chapter (face); in the scrolled layout the chapter's start / end.
     case chapterStart, chapterEnd
+    /// Scrolled layout only: a few lines of text down / up (docs/design/08-continuous-scroll.md §8.2).
+    case linesForward, linesBackward
+
+    /// Lines of text one press of ↑ or ↓ scrolls.
+    static let linesPerArrowKey = 3
 }
 
 extension ReaderKey {
@@ -18,7 +24,20 @@ extension ReaderKey {
     /// `page-progression-direction="rtl"`, or vertical-rl writing by default). The horizontal arrows follow the
     /// page progression (in a right-bound book the next page is to the left); the vertical arrows, page keys and
     /// space always mean "next" / "previous".
-    func action(isRightToLeft: Bool) -> ReaderKeyAction {
+    ///
+    /// In the scrolled layout (`isScrolled`; never right-to-left) ↑ and ↓ scroll a few lines instead, and the other
+    /// keys keep their meaning with a screen for a page (08-continuous-scroll §0).
+    func action(isRightToLeft: Bool, isScrolled: Bool = false) -> ReaderKeyAction {
+        if isScrolled {
+            switch self {
+            case .down: return .linesForward
+            case .up: return .linesBackward
+            case .right, .pageDown, .space: return .forward
+            case .left, .pageUp, .shiftSpace: return .backward
+            case .home: return .chapterStart
+            case .end: return .chapterEnd
+            }
+        }
         switch self {
         case .right: return isRightToLeft ? .backward : .forward
         case .left: return isRightToLeft ? .forward : .backward

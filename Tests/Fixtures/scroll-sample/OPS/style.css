@@ -1,0 +1,8 @@
+body { font-family: serif; }
+h1 { font-size: 1.4em; margin: 0 0 1em; }
+p { margin: 0 0 0.8em; }
+.cover { height: 100vh; background: linear-gradient(#35506b, #b9c7d6); }
+.cover-title { color: #ffffff; font-size: 2em; text-align: center; padding-top: 30vh; margin: 0; }
+.caption { text-align: center; }
+img.block { display: block; width: 120px; height: 80px; }
+img.inline { height: 1em; width: auto; vertical-align: baseline; }

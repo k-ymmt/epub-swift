@@ -1,8 +1,12 @@
 import SwiftUI
 import EPUBCore
-import EPUBRenderer
+@_spi(EPUBUI) import EPUBRenderer
 
 /// Shows a `ReaderSession` with page-turn effects and the standard gestures (docs/design/03-api.md §4.1).
+///
+/// A session in the scrolled layout (`session.layout == .scrolled`, docs/design/08-continuous-scroll.md §3.4, §9)
+/// scrolls by itself: no swipe, no tap zones, no page-turn effect; the keys scroll (↑ ↓ a few lines, space and the
+/// page keys one screen), and `readerContentInsets(top:bottom:)` says what the app's bars cover.
 ///
 /// ```swift
 /// EPUBReaderView(session: session)
@@ -18,6 +22,7 @@ public struct EPUBReaderView: View {
     @Environment(\.readerGestures) private var gestures
     @Environment(\.readerEventHandler) private var eventHandler
     @Environment(\.selectionActions) private var selectionActions
+    @Environment(\.readerContentInsets) private var contentInsets
 
     @State private var turn = PageTurnController()
 
@@ -58,13 +63,20 @@ public struct EPUBReaderView: View {
         .animation(.easeOut(duration: 0.2), value: session.relayoutSnapshot == nil)
         .contentShape(Rectangle())
         // While a fixed-layout page is zoomed in, drags pan the page instead of turning it (02-rendering §6.3, M4).
-        .gesture(dragGesture, isEnabled: gestures.swipeEnabled && !session.isZoomed)
+        // The scrolled layout scrolls in the web view; a horizontal swipe does nothing there (08-continuous-scroll §9).
+        .gesture(dragGesture, isEnabled: gestures.swipeEnabled && !session.isZoomed && session.layout == .paged)
         .onGeometryChange(for: CGSize.self, of: { $0.size }) { size in
             guard size.width > 0, size.height > 0 else { return }
+            // Before the size, so the first load already counts the page height inside the insets.
+            session.contentInsets = contentInsets
             session.viewportSize = size
             Task { await session.loadIfNeeded() }
         }
+        .onChange(of: contentInsets, initial: true) { _, insets in
+            session.contentInsets = insets
+        }
         .task(id: ObjectIdentifier(session)) {
+            session.contentInsets = contentInsets
             turn.configure(session: session, transition: transition)
             for await event in session.events {
                 handle(event)
@@ -84,7 +96,8 @@ public struct EPUBReaderView: View {
     @ViewBuilder private var platformView: some View {
         #if canImport(UIKit)
         ReaderPlatformView(session: session, onAccessibilityScroll: { direction in
-            guard session.hasLoaded, !session.isZoomed else { return false }
+            // The scrolled layout leaves VoiceOver's scroll to the web view (08-continuous-scroll §9).
+            guard session.hasLoaded, !session.isZoomed, session.layout == .paged else { return false }
             let forward: Bool
             switch direction {
             case .next, .down: forward = true
@@ -110,11 +123,12 @@ public struct EPUBReaderView: View {
                 guard gestures.keyboardEnabled, session.hasLoaded, !session.isZoomed else { return false }
                 // The session's progress slider has keyboard focus: the keys are its own (§4.6).
                 guard !ProgressSliderFocus.isFocused(session) else { return false }
-                perform(key.action(isRightToLeft: session.isRightToLeft))
+                perform(key.action(isRightToLeft: session.isRightToLeft, isScrolled: session.layout == .scrolled))
                 return true
             },
             onScrollPhase: { event in
-                guard gestures.swipeEnabled, !session.isZoomed else { return false }
+                // In the scrolled layout the trackpad and the wheel belong to the web view.
+                guard gestures.swipeEnabled, !session.isZoomed, session.layout == .paged else { return false }
                 return turn.handleScroll(event, layoutDirection: layoutDirection)
             }
         )
@@ -132,6 +146,18 @@ public struct EPUBReaderView: View {
     /// Keyboard moves (03-api §4.3, M5): page turns go through the turn controller (with the effect); chapter
     /// start / end jump without one.
     private func perform(_ action: ReaderKeyAction) {
+        if session.layout == .scrolled {
+            // No effect to run: the session scrolls (08-continuous-scroll §8.2).
+            switch action {
+            case .forward: Task { await session.goForward() }
+            case .backward: Task { await session.goBackward() }
+            case .chapterStart: Task { await session.goToChapterEdge(end: false) }
+            case .chapterEnd: Task { await session.goToChapterEdge(end: true) }
+            case .linesForward: session.scrollByLines(ReaderKeyAction.linesPerArrowKey)
+            case .linesBackward: session.scrollByLines(-ReaderKeyAction.linesPerArrowKey)
+            }
+            return
+        }
         switch action {
         case .forward:
             Task { await turn.turn(.forward) }
@@ -143,6 +169,9 @@ public struct EPUBReaderView: View {
         case .chapterEnd:
             guard !turn.isActive else { return }
             Task { await session.go(toPageInChapter: max(0, session.chapterPageCount - 1)) }
+        case .linesForward, .linesBackward:
+            // The paged layout has no line scrolling; its key table never produces these.
+            break
         }
     }
 
@@ -157,6 +186,12 @@ public struct EPUBReaderView: View {
     }
 
     private func handle(_ event: ReaderEvent) {
+        if session.layout == .scrolled {
+            // No tap zones: every tap is the app's, as the session reported it (zone `.center`), and an image tap
+            // always opens the image (08-continuous-scroll §3.3).
+            eventHandler?.handle(event)
+            return
+        }
         switch event {
         case .tapped(let point, _):
             let zone = gestures.tapZones.zone(forX: point.x, width: session.viewportSize.width)

@@ -3,14 +3,30 @@ import EPUBCore
 
 /// Reader-side display settings (docs/design/03-api.md §3.1). Changing a value on `ReaderSession.settings`
 /// re-layouts the current document through CSS variables (02-rendering §3.5) and restores the reading position.
+/// How a book is shown (docs/design/08-continuous-scroll.md §3.1).
+public enum ReaderLayout: String, Codable, Hashable, Sendable {
+    /// One page at a time, turned (the default).
+    case paged
+    /// One vertical scroll through the whole book. Books it does not apply to (fixed layout, right-to-left page
+    /// progression, vertical writing) are shown paged all the same: `ReaderSession.layout` says which one is in use.
+    case scrolled
+}
+
 public struct ReaderSettings: Codable, Hashable, Sendable {
     public var font: FontChoice = .publisher
     /// 1.0 = the publisher's font size. Applied as `html { font-size: calc(100% * scale) }` so `rem`/`em` ratios survive.
     public var fontScale: Double = 1.0
     public var lineHeight: Double = 1.6
+    /// Paged: the margins of a page. Scrolled: `horizontal` is the margin on each side of the text, and twice
+    /// `vertical` is left above and below every chapter.
     public var pageMargins: PageMargins = PageMargins(horizontal: 24, vertical: 20)
     public var theme: ReaderTheme = .light
+    /// Not used by the scrolled layout (always one column).
     public var spreadPolicy: SpreadPolicy = .auto
+    public var layout: ReaderLayout = .paged
+    /// Scrolled layout: the widest the text gets, in multiples of the base font size (after `fontScale`). 36 is about
+    /// 70 Latin characters or 36 Japanese ones. A narrower view uses its width minus the horizontal margins.
+    public var scrolledTextWidth: Double = 36
 
     public var respectsPublisherFonts: Bool { font == .publisher }
 
@@ -20,7 +36,9 @@ public struct ReaderSettings: Codable, Hashable, Sendable {
         lineHeight: Double = 1.6,
         pageMargins: PageMargins = PageMargins(horizontal: 24, vertical: 20),
         theme: ReaderTheme = .light,
-        spreadPolicy: SpreadPolicy = .auto
+        spreadPolicy: SpreadPolicy = .auto,
+        layout: ReaderLayout = .paged,
+        scrolledTextWidth: Double = 36
     ) {
         self.font = font
         self.fontScale = fontScale
@@ -28,6 +46,22 @@ public struct ReaderSettings: Codable, Hashable, Sendable {
         self.pageMargins = pageMargins
         self.theme = theme
         self.spreadPolicy = spreadPolicy
+        self.layout = layout
+        self.scrolledTextWidth = scrolledTextWidth
+    }
+
+    /// Settings saved before the scrolled layout existed have no `layout` / `scrolledTextWidth`: they read as paged,
+    /// with the default width. Every other key is required, as it was.
+    public init(from decoder: any Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        font = try c.decode(FontChoice.self, forKey: .font)
+        fontScale = try c.decode(Double.self, forKey: .fontScale)
+        lineHeight = try c.decode(Double.self, forKey: .lineHeight)
+        pageMargins = try c.decode(PageMargins.self, forKey: .pageMargins)
+        theme = try c.decode(ReaderTheme.self, forKey: .theme)
+        spreadPolicy = try c.decode(SpreadPolicy.self, forKey: .spreadPolicy)
+        layout = try c.decodeIfPresent(ReaderLayout.self, forKey: .layout) ?? .paged
+        scrolledTextWidth = try c.decodeIfPresent(Double.self, forKey: .scrolledTextWidth) ?? 36
     }
 
     public enum FontChoice: Codable, Hashable, Sendable {
@@ -47,8 +81,15 @@ public struct ReaderSettings: Codable, Hashable, Sendable {
     }
 
     /// Settings that change pagination (everything except the theme colors). Used as part of the layout cache key.
+    /// Only what the layout in use reads is in it: the text width counts for the scrolled layout alone, the spread
+    /// policy for the paged one alone, so changing a value the visible layout ignores keeps the measurements.
     var layoutKey: LayoutKey {
-        LayoutKey(font: font, fontScale: fontScale, lineHeight: lineHeight, pageMargins: pageMargins, spreadPolicy: spreadPolicy)
+        LayoutKey(
+            font: font, fontScale: fontScale, lineHeight: lineHeight, pageMargins: pageMargins,
+            spreadPolicy: layout == .paged ? spreadPolicy : .auto,
+            layout: layout,
+            scrolledTextWidth: layout == .scrolled ? scrolledTextWidth : 0
+        )
     }
 
     struct LayoutKey: Hashable, Sendable {
@@ -57,6 +98,8 @@ public struct ReaderSettings: Codable, Hashable, Sendable {
         var lineHeight: Double
         var pageMargins: PageMargins
         var spreadPolicy: SpreadPolicy
+        var layout: ReaderLayout = .paged
+        var scrolledTextWidth: Double = 0
     }
 }
 

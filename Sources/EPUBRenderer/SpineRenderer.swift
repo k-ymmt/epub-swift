@@ -40,6 +40,8 @@ struct LayoutParameters: Sendable {
     /// 2 shows a horizontal reflowable chapter as two facing pages (two columns per page stride; M4, 02-rendering
     /// §6.2). Vertical writing ignores it (the renderer uses the vertical wrapper instead).
     var columnsPerPage: Int = 1
+    /// Set for the scroll wrapper (08-continuous-scroll §4.3): `layout` then lays out the scrolled layout.
+    var scroll: ScrollLayoutParameters? = nil
 
     var dictionary: [String: Any] {
         var dict: [String: Any] = [
@@ -59,8 +61,100 @@ struct LayoutParameters: Sendable {
         if let rootStyle { dict["rootStyle"] = rootStyle }
         dict["spineSteps"] = CFI.render(steps: spineSteps)
         dict["columnsPerPage"] = columnsPerPage
+        if let scroll {
+            dict["scrolled"] = true
+            dict["insets"] = ["top": scroll.insets.top, "bottom": scroll.insets.bottom]
+            dict["heights"] = scroll.heights
+            dict["generation"] = scroll.generation
+            dict["holdFar"] = scroll.keepsFarChapters
+        }
+        dict["textWidth"] = settings.scrolledTextWidth
         return dict
     }
+}
+
+/// What `layout` needs for the scroll wrapper besides the page size and the settings (08-continuous-scroll §4.3).
+struct ScrollLayoutParameters: Sendable, Equatable {
+    var insets: ReaderInsets
+    /// Height of every chapter of the scroll document, in its order (`ScrollPaging.heights`).
+    var heights: [Double]
+    /// Number of this layout; the controller returns it with `scrolled` / `chapterHeight`, and messages that carry
+    /// another one are dropped.
+    var generation: Int
+    /// VoiceOver is running: chapters far from the viewport stay in the window (§5.1).
+    var keepsFarChapters = false
+}
+
+/// Where `showLocation` puts the reading line (08-continuous-scroll §8.1).
+struct ScrollTarget: Sendable, Equatable {
+    enum Place: Sendable, Equatable {
+        case start
+        /// The chapter's last page: its end at the bottom of the page.
+        case end
+        /// Distance from the chapter's top.
+        case offset(Double)
+        case fragment(String)
+        case cfi(CFI)
+    }
+
+    var spineIndex: Int
+    var place: Place = .start
+
+    var dictionary: [String: Any] {
+        var dict: [String: Any] = ["spineIndex": spineIndex]
+        switch place {
+        case .start: dict["offset"] = 0.0
+        case .end: dict["end"] = true
+        case .offset(let offset): dict["offset"] = offset
+        case .fragment(let fragment): dict["fragment"] = fragment
+        case .cfi(let cfi): dict["cfi"] = cfi.description
+        }
+        return dict
+    }
+}
+
+/// The reading line of the scrolled layout as the controller reports it (`scrolled`, `showLocation`, `scrollBy`,
+/// `locationAtReadingLine`).
+struct ScrollLocation: Sendable, Equatable {
+    /// The chapter the reading line is in.
+    var spineIndex: Int
+    /// Distance from that chapter's top to the reading line.
+    var offset: Double
+    var chapterHeight: Double
+    /// Chapters with a part inside the insets, in reading order.
+    var visible: [Int]
+    var isAtEnd: Bool
+    var isAtStart: Bool
+    /// The first text at the reading line; nil when there is none (an image, a chapter still loading).
+    var cfi: CFI?
+    var generation: Int
+    /// The message was sent because the scrolling stopped.
+    var isAtRest = false
+    /// `scrollBy` only: whether the position changed.
+    var moved = true
+
+    init?(_ value: Any?) {
+        guard let dict = value as? [String: Any], let spineIndex = dict["spineIndex"] as? Int, let offset = dict["offset"] as? Double else { return nil }
+        self.spineIndex = spineIndex
+        self.offset = offset
+        chapterHeight = dict["chapterHeight"] as? Double ?? 0
+        visible = (dict["visible"] as? [Int]) ?? [spineIndex]
+        isAtEnd = dict["atEnd"] as? Bool ?? false
+        isAtStart = dict["atStart"] as? Bool ?? false
+        cfi = (dict["cfi"] as? String).flatMap(CFI.init)
+        generation = dict["generation"] as? Int ?? 0
+        isAtRest = dict["rest"] as? Bool ?? false
+        moved = dict["moved"] as? Bool ?? true
+    }
+}
+
+/// What `showLocation` answered.
+enum ScrollShowResult: Sendable, Equatable {
+    case shown(ScrollLocation)
+    /// The scroll document does not hold the chapter (a non-linear item, or the linear flow from a single one).
+    case missing
+    /// The chapter is in vertical writing: the book is shown paged (§1).
+    case vertical(spineIndex: Int)
 }
 
 /// Messages `reader.js` posts to Swift.
@@ -85,6 +179,13 @@ enum BridgeMessage: Sendable {
     case noteref(BridgeNoteref)
     /// An image was tapped (M5). `rect` and the point are in viewport coordinates.
     case imageTap(src: String, alt: String?, rect: CGRect, x: Double, y: Double)
+    /// Scrolled layout: the reading line moved (at most every 100 ms, and once when the scrolling stops).
+    case scrolled(ScrollLocation)
+    /// Scrolled layout: a chapter in the window was measured. `isFixed`: its height depends on the viewport and was
+    /// pinned (08-continuous-scroll §4.2).
+    case chapterHeight(spineIndex: Int, height: Double, generation: Int, isFixed: Bool)
+    /// Scrolled layout: a chapter in the window is ready.
+    case chapterWritingMode(spineIndex: Int, writingMode: WritingMode)
 
     init?(body: Any) {
         guard let dict = body as? [String: Any], let type = dict["type"] as? String else { return nil }
@@ -125,6 +226,15 @@ enum BridgeMessage: Sendable {
                 x: payload["x"] as? Double ?? 0,
                 y: payload["y"] as? Double ?? 0
             )
+        case "scrolled":
+            guard let location = ScrollLocation(payload) else { return nil }
+            self = .scrolled(location)
+        case "chapterHeight":
+            guard let index = payload["spineIndex"] as? Int, let height = payload["height"] as? Double else { return nil }
+            self = .chapterHeight(spineIndex: index, height: height, generation: payload["generation"] as? Int ?? 0, isFixed: payload["fixed"] as? Bool ?? false)
+        case "chapterWritingMode":
+            guard let index = payload["spineIndex"] as? Int else { return nil }
+            self = .chapterWritingMode(spineIndex: index, writingMode: WritingMode(cssValue: payload["writingMode"] as? String ?? "horizontal-tb"))
         default:
             return nil
         }
@@ -222,6 +332,26 @@ protocol SpineRenderer: AnyObject {
     func snapshot(slot: Int) async throws -> (image: CGImage, scale: CGFloat)?
     /// The slot currently aligned with the visible area.
     var visibleSlot: Int { get }
+
+    // MARK: Scrolled layout (08-continuous-scroll §4)
+
+    /// Switches the view between the paged setup (three page slots, no scrolling) and the scrolled one (the frame is
+    /// the visible area and the document scrolls vertically).
+    func setScrollMode(_ enabled: Bool)
+    /// The reader's hands started or stopped scrolling (§5.6). The renderer has already told the document.
+    var onScrollInteractionChanged: (@MainActor (Bool) -> Void)? { get set }
+    /// Ends the reader's scrolling now (a finger, momentum, a trackpad gesture), so the position can be written (§5.6).
+    func stopScrolling() async
+    func showLocation(_ target: ScrollTarget) async throws -> ScrollShowResult
+    /// One page (`pages: ±1`) or a few lines; returns once the scroll has ended.
+    func scrollBy(pages: Int, lines: Int, animated: Bool) async throws -> ScrollLocation?
+    func locationAtReadingLine() async throws -> ScrollLocation?
+    /// New height estimates for the chapters outside the window (§5.2).
+    func setEstimates(_ heights: [Double]) async throws
+    /// Whether the chapter is loaded in the window (a jump to it does not rebuild the window).
+    func scrollWindowContains(spineIndex: Int) async throws -> Bool
+    /// Keeps only the chapters in the viewport and their neighbours (§12).
+    func trimScrollWindow() async throws
 }
 
 /// One highlight as `reader.js` draws it (06-annotations §10.2). `id` is the bridge id (layer prefix plus the

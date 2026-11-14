@@ -21,6 +21,14 @@
 // script (the spread controller, `installSpreadController` below) presents the same API to Swift, proxying the
 // calls to the frames and mapping coordinates. `layout({fixedLayout: true})` turns a pre-paginated page into a
 // single page without columns.
+//
+// Scrolled layout (docs/design/08-continuous-scroll.md): the script also runs in the `_reader/scroll` wrapper
+// document (the scroll controller, `installScrollController` below) and in the chapter iframes it stacks. A chapter
+// laid out with `layout({scrolled: true})` has no columns and is as tall as its content; it gives the controller the
+// `scroll` functions (content height, the text at a height, where a CFI is). Added for the controller:
+//   Swift -> JS: showLocation, scrollBy, locationAtReadingLine, setEstimates, trimWindow, setInteraction
+//   JS -> Swift: scrolled {spineIndex, offset, chapterHeight, visible, atEnd, atStart, cfi, rest, generation},
+//                chapterHeight {spineIndex, height, generation, fixed}, chapterWritingMode {spineIndex, writingMode}
 (function () {
   "use strict";
   if (window.__epubReader) { return; }
@@ -47,10 +55,22 @@
     columnsPerPage: 1,
     // Inside a spread wrapper: the controller's callback that receives this document's events (M4).
     host: null,
+    // A chapter of the scrolled layout: no columns, as tall as its content (08-continuous-scroll §4.2).
+    scrolled: false,
   };
   // In an iframe (a spread wrapper's page, or an iframe inside a content document). Framed documents never post to
   // Swift: the wrapper proxies for them, and an iframe inside a chapter has no say in the chapter's pagination.
   const framed = (function () { try { return window.top !== window; } catch (e) { return true; } })();
+
+  // A chapter frame of the scroll wrapper gets the scrolled layout before its first paint: the attribute switches
+  // reader-before.css from columns to a document as tall as its content (08-continuous-scroll §4.2).
+  const scrollFramed = framed && (function () {
+    try { return window.parent.document.documentElement.hasAttribute("data-reader-scroll"); } catch (e) { return false; }
+  })();
+  if (scrollFramed) {
+    state.scrolled = true;
+    document.documentElement.setAttribute("data-reader-layout", "scrolled");
+  }
 
   const OPS_NS = "http://www.idpf.org/2007/ops";
   const XLINK_NS = "http://www.w3.org/1999/xlink";
@@ -150,7 +170,7 @@
 
   // Stretches the scroll area to exactly `pageCount` pages along the page axis (reader-before.css `html::after`).
   function applyExtent() {
-    if (state.fixedLayout || !state.pageWidth || !state.pageHeight) {
+    if (state.fixedLayout || state.scrolled || !state.pageWidth || !state.pageHeight) {
       root().style.removeProperty("--reader-extent-x");
       root().style.removeProperty("--reader-extent-y");
       return;
@@ -175,6 +195,7 @@
     if (p.columnsPerPage) { state.columnsPerPage = Math.max(1, Math.min(2, Math.floor(p.columnsPerPage))); }
     if (p.fontScale !== undefined && p.fontScale !== null) { setVar("--reader-font-size", String(p.fontScale)); }
     if (p.lineHeight !== undefined && p.lineHeight !== null) { setVar("--reader-line-height", String(p.lineHeight)); }
+    if (p.textWidth) { setVar("--reader-scroll-text-width", String(p.textWidth)); }
     if (p.theme) {
       setVar("--reader-fg", p.theme.foreground);
       setVar("--reader-bg", p.theme.background);
@@ -211,7 +232,17 @@
       state.spineSteps = parsed ? parsed[0].spineSteps : [];
     }
     state.fixedLayout = !!(params && params.fixedLayout);
+    state.scrolled = !!(params && params.scrolled);
+    if (state.scrolled) { root().setAttribute("data-reader-layout", "scrolled"); }
+    else { root().removeAttribute("data-reader-layout"); }
     state.writingMode = detectWritingMode();
+    if (state.scrolled) {
+      // No columns and no page count: the controller makes the frame as tall as the content (`scroll.contentHeight`).
+      state.pageCount = 1;
+      applyExtent();
+      drawOverlay();
+      return { pageCount: 1, writingMode: state.writingMode, columnsPerPage: 1, height: scrollContentHeight() };
+    }
     if (state.fixedLayout) {
       // The page is the publisher's fixed design: no sentinel, no columns, exactly one page (02-rendering §6.1).
       state.pageCount = 1;
@@ -286,6 +317,7 @@
 
   // Update CSS variables / font override and re-measure. Returns {pageCount}.
   function applySettings(params) {
+    if (state.scrolled) { return layout(Object.assign({}, params || {}, { scrolled: true })); }
     applyParams(params);
     const columns = state.fixedLayout ? 1 : applyColumns();
     void root().offsetWidth;
@@ -931,6 +963,85 @@
     return range ? rectList(range.getClientRects()) : [];
   }
 
+  // --- a chapter of the scrolled layout (08-continuous-scroll §4.2, §5.3, §7) -------------------------------
+  // The frame is as tall as the document and never scrolls, so the document's viewport coordinates are distances
+  // from the chapter's top. The controller asks for the content height, for the text at a height (the reference of
+  // its position correction and the reading position) and for where a CFI or a fragment is.
+
+  function scrollContentHeight() {
+    return Math.max(1, Math.ceil(root().getBoundingClientRect().height));
+  }
+
+  // The first text at or below height `y`: `{node, offset}` (a text node), or `{node, offset: null}` (the element
+  // under the line: an image-only screen), or null (nothing there: the margin around the text).
+  function scrollAnchorAt(y) {
+    const box = root().getBoundingClientRect();
+    const pad = parseFloat(getComputedStyle(root()).paddingLeft) || 0;
+    const inner = Math.max(1, box.width - 2 * pad);
+    const xs = [box.left + pad + 2, box.left + pad + inner * 0.25, box.left + pad + inner * 0.5, box.left + pad + inner * 0.75];
+    const ys = [y + 2, y + 12, y + 28, y + 60, y + 120];
+    let fallback = null;
+    for (const py of ys) {
+      for (const px of xs) {
+        const range = document.caretRangeFromPoint ? document.caretRangeFromPoint(px, py) : null;
+        const node = range && range.startContainer;
+        if (node && (node.nodeType === Node.TEXT_NODE || node.nodeType === Node.CDATA_SECTION_NODE) && (node.data || "").trim().length > 0) {
+          const candidate = { node: node, offset: Math.min(range.startOffset, Math.max(0, node.data.length - 1)) };
+          const rect = rectForResolved(candidate);
+          // A point in the gap between two blocks snaps to the nearest text, which may be the line above the
+          // reading line: that text is not "at the line".
+          if (rect && (rect.width > 0 || rect.height > 0) && rect.bottom > y - 0.5) { return candidate; }
+        }
+        if (!fallback) {
+          const el = document.elementFromPoint(px, py);
+          if (el && el !== document.body && el !== root() && !isInOverlay(el)) {
+            const r = el.getBoundingClientRect();
+            if (r.bottom > y - 0.5 && el.children.length === 0) { fallback = { node: el, offset: null }; }
+          }
+        }
+      }
+    }
+    return fallback;
+  }
+
+  // Distance from the chapter's top to the anchor's top; null when the anchor is gone or has no box any more.
+  function scrollAnchorTop(anchor) {
+    if (!anchor || !anchor.node || !anchor.node.isConnected) { return null; }
+    const rect = rectForResolved(anchor);
+    if (!rect || (rect.width === 0 && rect.height === 0)) { return null; }
+    return rect.top;
+  }
+
+  function scrollAnchorCFI(anchor) {
+    return anchor && anchor.node ? CFI.fromNode(anchor.node, anchor.offset) : null;
+  }
+
+  // Distance from the chapter's top to the position a CFI addresses (a point, or the start of a range); null when
+  // it does not resolve here.
+  function scrollOffsetForCFI(cfiString) {
+    const parsed = CFI.parse(cfiString);
+    if (!parsed) { return null; }
+    const rect = rectForResolved(CFI.resolvePoint(parsed[0]));
+    if (!rect || (rect.width === 0 && rect.height === 0 && rect.left === 0 && rect.top === 0)) { return null; }
+    return rect.top;
+  }
+
+  function scrollOffsetForFragment(id) {
+    if (!id) { return null; }
+    const el = document.getElementById(id) || document.querySelector('[name="' + CSS.escape(id) + '"]');
+    if (!el) { return null; }
+    const rects = el.getClientRects();
+    return rects.length ? rects[0].top : el.getBoundingClientRect().top;
+  }
+
+  // One line of body text in px (the overlap of a page step and the unit of a line step, §8.2).
+  function scrollLineHeight() {
+    const style = getComputedStyle(document.body || root());
+    let height = parseFloat(style.lineHeight);
+    if (!isFinite(height) || height <= 0) { height = (parseFloat(style.fontSize) || 16) * 1.6; }
+    return height;
+  }
+
   // --- highlights (CSS Custom Highlight API, 02-rendering §4.1 / §10) ----------------------------------
 
   const HIGHLIGHT_PREFIX = "reader-h-";
@@ -1451,6 +1562,953 @@
     return;
   }
 
+  // --- scroll wrapper (docs/design/08-continuous-scroll.md) -------------------------------------------------
+  // The wrapper document (`_reader/scroll`, ScrollDocument.swift) scrolls vertically and stacks one same-origin
+  // iframe per chapter, each as tall as its content. This controller keeps a window of consecutive chapters loaded
+  // around the viewport, stands in for the rest of the book with two empty blocks (the runway above, the tail below)
+  // and keeps the line being read where it is when the layout above it changes:
+  //
+  //   #__reader_head     top inset (the reading line is this far below the viewport's top)
+  //   #__reader_runway   as tall as the chapters before the window
+  //   #__reader_stage    the chapter frames
+  //   #__reader_tail     as tall as the chapters after the window
+  //   #__reader_foot     bottom inset
+  //
+  // The scroll position is never written while the reader scrolls: the UI process owns it then and overwrites what
+  // the page wrote with an older value. A change above the reading line is taken out of the runway instead (a
+  // layout-only change), and the runway is put back to what it should be once the scrolling has stopped (§5.3, §5.4).
+  // The rules that need no DOM are in scroll-core.js.
+  function installScrollController() {
+    const core = window.__epubScrollCore;
+    const kind = root().getAttribute("data-reader-scroll") || "linear";
+    // The chapters this document can show, in reading order: [{i: spine index, s: spine steps, u: URL}].
+    let spine = [];
+    try { spine = JSON.parse(root().getAttribute("data-reader-spine") || "[]"); } catch (e) { spine = []; }
+    const posOf = {};
+    spine.forEach(function (item, k) { posOf[item.i] = k; });
+    const dom = {
+      head: document.getElementById("__reader_head"),
+      runway: document.getElementById("__reader_runway"),
+      stage: document.getElementById("__reader_stage"),
+      tail: document.getElementById("__reader_tail"),
+      foot: document.getElementById("__reader_foot"),
+    };
+    const sc = {
+      laidOut: false,
+      insetTop: 0,
+      insetBottom: 0,
+      // Page height P: the viewport minus the insets (§2).
+      page: 0,
+      params: null,
+      // Height of every chapter by position in `spine`: the measured value for a chapter that was in the window
+      // since the last `layout` (`known`), else Swift's estimate.
+      heights: spine.map(function () { return 0; }),
+      known: {},
+      generation: 0,
+      // Counts window rebuilds, so a frame of an earlier window that loads late is ignored.
+      epoch: 0,
+      views: [],
+      // The space above the first chapter of the window is `pad - neg` (runway height, negative stage margin).
+      pad: 0,
+      neg: 0,
+      tail: 0,
+      // The text at the reading line: {view, a (the chapter's anchor, or null: the view's top), docY}.
+      anchor: null,
+      // Swift's view of the reader's hands: a finger, momentum, a trackpad gesture, a wheel (§5.6).
+      interacting: false,
+      // A scroll this controller started and that has not ended: {target, waiters, …}.
+      program: null,
+      lastScroll: -1000,
+      quietTimer: null,
+      settleTimer: null,
+      // The runway may differ from its target (§5.4).
+      dirty: false,
+      loading: null,
+      // > 0 while `showLocation` is placing the window: no `scrolled` messages for the positions in between.
+      showing: 0,
+      holdFar: false,
+      highlights: [],
+      transient: null,
+      lastPost: 0,
+      postTimer: null,
+      // The position after the last scroll event has been posted as a position at rest.
+      restPosted: true,
+      cost: { events: 0, total: 0, max: 0 },
+      log: null,
+    };
+    const QUIET = 150;
+
+    function now() { return performance.now(); }
+    function log(ev, extra) {
+      if (!sc.log) { return; }
+      sc.log.push(Object.assign({ ev: ev, t: now(), scrollY: window.scrollY }, extra || {}));
+      if (sc.log.length > 20000) { sc.log.shift(); }
+    }
+    function parseSpineSteps(str) {
+      if (!str) { return []; }
+      const parsed = CFI.parse("epubcfi(" + str + "!/2)");
+      return parsed ? parsed[0].spineSteps : [];
+    }
+    function stepsMatch(a, b) {
+      if (a.length !== b.length) { return false; }
+      for (let k = 0; k < a.length; k++) {
+        if (a[k].id && b[k].id) { if (a[k].id !== b[k].id) { return false; } }
+        else if (a[k].index !== b[k].index) { return false; }
+      }
+      return true;
+    }
+    function bridgeOf(view) {
+      try { return (view.el.contentWindow && view.el.contentWindow.__epubReader) || null; } catch (e) { return null; }
+    }
+    function chapter(view) { return view.loaded && !view.failed && view.bridge ? view.bridge.scroll : null; }
+    function rectOf(view) { return view.el.getBoundingClientRect(); }
+    function viewAt(pos) { return sc.views.find(function (v) { return v.pos === pos; }) || null; }
+    function lineY() { return sc.insetTop; }
+    function maxScroll() { return Math.max(0, scroller().scrollHeight - window.innerHeight); }
+
+    // --- the blocks around the window ---
+    function applyUpper(pad, neg) {
+      sc.pad = pad;
+      sc.neg = neg;
+      dom.runway.style.height = pad + "px";
+      dom.stage.style.marginTop = neg > 0 ? (-neg) + "px" : "0px";
+    }
+    function syncTail() {
+      const last = sc.views.length ? sc.views[sc.views.length - 1].pos : -1;
+      const tail = sc.views.length ? core.tailTarget(sc.heights, last) : 0;
+      if (tail !== sc.tail) {
+        sc.tail = tail;
+        dom.tail.style.height = tail + "px";
+      }
+    }
+
+    // --- the reading line ---
+    // The chapter the reading line is in: the first one that ends below it. A line above the window (the viewport
+    // ran past it, §5.5) takes the first chapter, a line below it the last one.
+    function viewAtLine() {
+      const y = lineY();
+      for (const view of sc.views) {
+        const rect = rectOf(view);
+        if (rect.bottom > y + 0.5) { return { view: view, rect: rect }; }
+      }
+      if (!sc.views.length) { return null; }
+      const last = sc.views[sc.views.length - 1];
+      return { view: last, rect: rectOf(last) };
+    }
+    // The anchor's position in the viewport; null when its text has no box any more.
+    function anchorY(anchor) {
+      const rect = rectOf(anchor.view);
+      if (!anchor.a) { return rect.top; }
+      const scroll = chapter(anchor.view);
+      const top = scroll ? scroll.anchorTop(anchor.a) : null;
+      return top === null ? null : rect.top + top;
+    }
+    // The text to hold on to: what is at the reading line, or the start of the next chapter when the line has none.
+    function anchorNearLine() {
+      const at = viewAtLine();
+      if (!at) { return null; }
+      const y = lineY();
+      let view = at.view, rect = at.rect, a = null;
+      const scroll = chapter(view);
+      if (scroll && rect.top <= y + 0.5 && rect.bottom > y + 0.5) { a = scroll.anchorAt(y - rect.top); }
+      if (!a) {
+        // Nothing to hold on to at the line: a chapter that is still loading, or the space under a chapter's last
+        // line. When the next chapter starts on screen, that is what the reader is looking at, and it is what must
+        // stay put while the chapter at the line gets its height (a chapter added above the last one of the book).
+        const next = viewAt(view.pos + 1);
+        const nextRect = next ? rectOf(next) : null;
+        if (next && nextRect.top < window.innerHeight - sc.insetBottom) {
+          view = next;
+          rect = nextRect;
+          const nextScroll = chapter(next);
+          a = nextScroll ? nextScroll.anchorAt(Math.max(0, y - rect.top)) : null;
+        }
+      }
+      return { view: view, a: a, rect: rect };
+    }
+    function refreshAnchor() {
+      const near = anchorNearLine();
+      if (!near) { sc.anchor = null; return; }
+      const anchor = { view: near.view, a: near.a, docY: 0 };
+      let position = anchorY(anchor);
+      if (position === null) { anchor.a = null; position = near.rect.top; }
+      // Document coordinates: both terms are read in the same task, so a stale `scrollY` cancels out (§5.3).
+      anchor.docY = position + window.scrollY;
+      sc.anchor = anchor;
+    }
+    // The anchor is looked up again once it has left the reading line (after a correction for what it has seen).
+    function followLine() {
+      const anchor = sc.anchor;
+      if (!anchor || !anchor.view.el.isConnected) { refreshAnchor(); return; }
+      const y = anchorY(anchor);
+      if (y === null || y < lineY() - 2 || y > lineY() + 160 || (!anchor.a && chapter(anchor.view))) { refreshAnchor(); }
+    }
+
+    // The layout above the reading line changed: the distance the anchor moved in the document comes out of the
+    // space above it, so the anchor (and the line being read) is where it was. No scroll position is written.
+    function correct(reason) {
+      const anchor = sc.anchor;
+      if (!anchor || !anchor.view.el.isConnected) { refreshAnchor(); return 0; }
+      const y = anchorY(anchor);
+      if (y === null) { refreshAnchor(); return 0; }
+      const d = (y + window.scrollY) - anchor.docY;
+      if (Math.abs(d) < 0.05) { return 0; }
+      const upper = core.correction(sc.pad, sc.neg, d);
+      applyUpper(upper.pad, upper.neg);
+      sc.dirty = true;
+      log("shift", { by: -d, reason: reason || "", pad: sc.pad, neg: sc.neg });
+      scheduleSettle();
+      return d;
+    }
+
+    // --- rest (§5.6) ---
+    function quiet() { return now() - sc.lastScroll >= QUIET; }
+    function atRest() { return !sc.interacting && !sc.program && quiet(); }
+    function armQuiet() {
+      if (sc.quietTimer) { clearTimeout(sc.quietTimer); }
+      sc.quietTimer = setTimeout(function () {
+        sc.quietTimer = null;
+        checkRest();
+      }, Math.max(10, QUIET - (now() - sc.lastScroll) + 5));
+    }
+    function checkRest() {
+      if (!sc.laidOut) { return; }
+      if (!atRest()) {
+        if (!sc.interacting && !sc.program) { armQuiet(); }
+        return;
+      }
+      autoWindow();
+      settle();
+      postScrolled(true);
+    }
+    function scheduleSettle() {
+      if (sc.settleTimer) { return; }
+      sc.settleTimer = setTimeout(function () {
+        sc.settleTimer = null;
+        if (!sc.dirty) { return; }
+        if (atRest()) { settle(); postScrolled(true); } else if (!sc.interacting && !sc.program) { armQuiet(); }
+      }, 0);
+    }
+    // Puts the runway back to the height of the chapters before the window (and the negative margin to 0) and moves
+    // the scroll position by as much as that moved the text in the viewport (§5.4). Only at rest. The position is
+    // compared in the viewport, after the layout: at the document's end the browser has clamped the scroll position
+    // by then, and adding the runway's change on top would move the text twice.
+    function settle() {
+      if (!sc.views.length || sc.loading || !sc.laidOut) { return false; }
+      syncTail();
+      const target = core.runwayTarget(sc.heights, sc.views[0].pos);
+      const plan = core.settlement(sc.pad, sc.neg, target);
+      if (!plan.needed) { sc.dirty = false; return false; }
+      refreshAnchor();
+      const anchor = sc.anchor;
+      if (!anchor) { return false; }
+      const before = anchorY(anchor);
+      const from = window.scrollY;
+      applyUpper(plan.pad, plan.neg);
+      const after = anchorY(anchor);
+      const top = core.settledScrollTop(window.scrollY, before, after, maxScroll());
+      if (Math.abs(top - window.scrollY) >= 0.01) { window.scrollTo(0, top); }
+      anchor.docY = anchorY(anchor) + window.scrollY;
+      sc.dirty = false;
+      log("correct", { by: top - from, reason: "settle", pad: sc.pad });
+      return true;
+    }
+
+    // --- chapter frames ---
+    function measure(view) {
+      const scroll = chapter(view);
+      try { return scroll ? scroll.contentHeight() : view.height; } catch (e) { return view.height; }
+    }
+    function setFrameHeight(view, height) {
+      view.height = height;
+      view.el.style.height = height + "px";
+    }
+    function recordHeight(view, reason) {
+      sc.heights[view.pos] = view.height;
+      sc.known[view.pos] = true;
+      if (view.reported === view.height && view.reportedFixed === view.fixed) { return; }
+      // `old` / `h` / `reason` as the spike's recordings have them (Spikes/scripts/analyse-fling.py reads both).
+      log("height", { index: view.spineIndex, old: view.reported || 0, h: view.height, reason: reason || "" });
+      view.reported = view.height;
+      view.reportedFixed = view.fixed;
+      post("chapterHeight", { spineIndex: view.spineIndex, height: view.height, generation: sc.generation, fixed: !!view.fixed });
+    }
+    // The frame takes the height of its content (§4.2), then the reading line is put back (§5.3).
+    function fitView(view, reason) {
+      if (!chapter(view) || view.fixed || view.fitting) { return; }
+      view.fitting = true;
+      let result;
+      // A frame that gets shorter makes the document shorter until the correction below has given the difference to
+      // the runway, and the correction needs a layout to see how far the reading line moved. At the document's end
+      // the browser would clamp the scroll position in that layout: a scroll write nobody asked for, which the
+      // correction (it compares positions in the document) cannot see and which leaves the text that far off. So the
+      // lost height is held below the frames until the correction is done.
+      let held = 0;
+      try {
+        result = core.fit(view.height, view.first, function () { return measure(view); }, function (h) {
+          if (h < view.height) {
+            held += view.height - h;
+            dom.stage.style.paddingBottom = held + "px";
+          }
+          setFrameHeight(view, h);
+        });
+      } finally {
+        view.fitting = false;
+      }
+      if (result.fixed) { view.fixed = true; }
+      recordHeight(view, reason);
+      correct(reason || "height");
+      if (held) { dom.stage.style.paddingBottom = "0px"; }
+      syncTail();
+    }
+    function childParams(view) {
+      const p = Object.assign({}, sc.params || {});
+      p.pageWidth = view.el.clientWidth || window.innerWidth;
+      p.pageHeight = sc.page;
+      p.spineSteps = view.stepsString;
+      p.scrolled = true;
+      p.columnsPerPage = 1;
+      delete p.heights;
+      delete p.insets;
+      delete p.generation;
+      return p;
+    }
+    function makeView(pos) {
+      const item = spine[pos];
+      const el = document.createElement("iframe");
+      el.setAttribute("scrolling", "no");
+      el.setAttribute("data-spine-index", String(item.i));
+      el.setAttribute("data-spine-steps", item.s || "");
+      // One page tall until the content is known: `100vh` in the chapter then means one page (§4.2).
+      el.style.height = sc.page + "px";
+      el.style.visibility = "hidden";
+      const view = {
+        pos: pos, spineIndex: item.i, stepsString: item.s || "", spineSteps: parseSpineSteps(item.s || ""),
+        el: el, height: sc.page, first: sc.page, loaded: false, failed: false, fixed: false, vertical: false,
+        bridge: null, observer: null, epoch: sc.epoch, ready: null, reported: null, reportedFixed: null, fitting: false,
+      };
+      view.ready = new Promise(function (resolve) {
+        let done = false;
+        function finish() {
+          if (done) { return; }
+          done = true;
+          viewDidLoad(view);
+          resolve(view);
+        }
+        el.addEventListener("load", function () {
+          const bridge = bridgeOf(view);
+          if (bridge && bridge.whenReady) { bridge.whenReady().then(finish, finish); } else { finish(); }
+        }, { once: true });
+        // A chapter that never answers still gets out of the way (Swift has its own load timeout).
+        setTimeout(finish, 8000);
+      });
+      el.src = item.u;
+      return view;
+    }
+    function viewDidLoad(view) {
+      if (sc.loading === view) { sc.loading = null; }
+      if (view.epoch !== sc.epoch || !view.el.isConnected) { return; }
+      view.bridge = bridgeOf(view);
+      view.loaded = true;
+      if (!view.bridge || !view.bridge.scroll) {
+        // The document did not load (a missing file): the frame stays one page tall.
+        view.failed = true;
+        recordHeight(view);
+      } else {
+        view.bridge.setHost(hostFor(view));
+        let mode = "horizontal-tb";
+        try { mode = view.bridge.layout(childParams(view)).writingMode || mode; } catch (e) { view.failed = true; }
+        view.vertical = mode.indexOf("vertical") === 0 || mode.indexOf("sideways") === 0;
+        post("chapterWritingMode", { spineIndex: view.spineIndex, writingMode: mode });
+        if (!view.failed) {
+          view.first = measure(view);
+          fitView(view, "loaded");
+          try {
+            view.observer = new ResizeObserver(function () { fitView(view, "resize"); });
+            view.observer.observe(view.el.contentDocument.documentElement);
+          } catch (e) { view.observer = null; }
+          applyHighlightsTo(view);
+          if (sc.transient) { setTransientHighlight(sc.transient); }
+        }
+      }
+      view.el.style.visibility = "visible";
+      log("loaded", { index: view.spineIndex, height: view.height });
+      if (!sc.showing) {
+        autoWindow();
+        schedulePost();
+        checkRest();
+      }
+    }
+    function addView(pos, where) {
+      const view = makeView(pos);
+      sc.loading = view;
+      if (where === "prepend") {
+        // The correction below compares with where the anchor was before the frame went in.
+        if (!sc.anchor || !sc.anchor.view.el.isConnected) { refreshAnchor(); }
+        sc.views.unshift(view);
+        dom.stage.insertBefore(view.el, dom.stage.firstChild);
+        correct("add");
+      } else {
+        sc.views.push(view);
+        dom.stage.appendChild(view.el);
+        syncTail();
+      }
+      log("add", { index: view.spineIndex, where: where });
+      return view;
+    }
+    function removeView(view, reason) {
+      const k = sc.views.indexOf(view);
+      if (k < 0) { return; }
+      const anchorView = sc.anchor ? sc.anchor.view : null;
+      const above = anchorView ? view.pos < anchorView.pos : false;
+      if (view.observer) { view.observer.disconnect(); }
+      // In the same layout as the removal, the runway grows by the chapter's height first: growing it afterwards
+      // lets the document shrink in between, and at its end the scroll position is clamped (§5.3).
+      if (above) {
+        const upper = core.splitUpper((sc.pad - sc.neg) + view.height);
+        applyUpper(upper.pad, upper.neg);
+      }
+      view.el.remove();
+      sc.views.splice(k, 1);
+      if (sc.loading === view) { sc.loading = null; }
+      if (anchorView === view) { refreshAnchor(); }
+      if (above) { correct("remove"); } else { syncTail(); }
+      log("remove", { index: view.spineIndex, above: above, height: view.height, reason: reason || "" });
+    }
+    function hasSelection(view) {
+      try {
+        const selection = view.el.contentWindow.getSelection();
+        return !!selection && selection.rangeCount > 0 && !selection.isCollapsed;
+      } catch (e) { return false; }
+    }
+    // Removes what the window no longer needs and adds the next chapter at the end the viewport is close to (§5.1).
+    function autoWindow(trim) {
+      if (!sc.views.length || !sc.page) { return; }
+      const height = window.innerHeight;
+      const infos = sc.views.map(function (view) {
+        const rect = rectOf(view);
+        return { pos: view.pos, top: rect.top, bottom: rect.bottom, keep: view === sc.loading || (!trim && hasSelection(view)) };
+      });
+      const out = core.removals({ views: infos, viewportHeight: height, pageHeight: sc.page, atRest: atRest(), holdFar: sc.holdFar, trim: !!trim });
+      for (const pos of out) {
+        const view = viewAt(pos);
+        if (view) { removeView(view, trim ? "trim" : "window"); }
+      }
+      if (trim || sc.loading || !sc.views.length) { return; }
+      const first = sc.views[0], last = sc.views[sc.views.length - 1];
+      const fr = rectOf(first), lr = rectOf(last);
+      const action = core.windowAction({
+        busy: false,
+        pageHeight: sc.page,
+        above: -fr.top,
+        below: lr.bottom - height,
+        hasPrevious: first.pos > 0,
+        hasNext: last.pos < spine.length - 1,
+        firstVisible: fr.bottom > 0 && fr.top < height,
+        lastVisible: lr.bottom > 0 && lr.top < height,
+      });
+      if (action === "prepend") { addView(first.pos - 1, "prepend"); }
+      else if (action === "append") { addView(last.pos + 1, "append"); }
+    }
+    // A new window that starts with the chapter at `pos`, its top at the reading line.
+    function rebuildWindow(pos) {
+      sc.epoch += 1;
+      for (const view of sc.views) {
+        if (view.observer) { view.observer.disconnect(); }
+        view.el.remove();
+      }
+      sc.views = [];
+      sc.anchor = null;
+      applyUpper(core.runwayTarget(sc.heights, pos), 0);
+      const view = makeView(pos);
+      sc.loading = view;
+      sc.views.push(view);
+      dom.stage.appendChild(view.el);
+      syncTail();
+      sc.dirty = false;
+      window.scrollTo(0, Math.min(sc.pad, maxScroll()));
+      log("rebuild", { index: view.spineIndex });
+      return view;
+    }
+
+    // --- events from the frames ---
+    function mapRect(view, r) {
+      const frame = rectOf(view);
+      return { x: frame.left + r.x, y: frame.top + r.y, width: r.width, height: r.height };
+    }
+    function mapRects(view, rects) { return (rects || []).map(function (r) { return mapRect(view, r); }); }
+    function withRects(view, selection) {
+      return { cfiRange: selection.cfiRange, text: selection.text, rects: mapRects(view, selection.rects) };
+    }
+    function hostFor(view) {
+      return function (type, payload) {
+        payload = payload || {};
+        switch (type) {
+          case "contentChanged":
+            fitView(view, "content");
+            break;
+          case "link":
+            post("link", payload);
+            break;
+          case "noteref": {
+            const out = Object.assign({}, payload);
+            if (payload.rect) { out.rect = mapRect(view, payload.rect); }
+            post("noteref", out);
+            break;
+          }
+          case "imageTap": {
+            const frame = rectOf(view);
+            post("imageTap", {
+              src: payload.src, alt: payload.alt, rect: payload.rect ? mapRect(view, payload.rect) : null,
+              x: frame.left + (payload.x || 0), y: frame.top + (payload.y || 0),
+            });
+            break;
+          }
+          case "tap": {
+            const frame = rectOf(view);
+            post("tap", { x: frame.left + (payload.x || 0), y: frame.top + (payload.y || 0), viewportWidth: window.innerWidth, viewportHeight: window.innerHeight });
+            break;
+          }
+          case "highlightTap":
+            post("highlightTap", { id: payload.id, rects: mapRects(view, payload.rects) });
+            break;
+          case "selectionChanged": {
+            // Each frame has its own selection; when one frame loses its selection another may still hold one.
+            let selection = payload.selection ? withRects(view, payload.selection) : null;
+            if (!selection) { selection = currentSelection(); }
+            post("selectionChanged", { selection: selection });
+            break;
+          }
+          default:
+            break;
+        }
+      };
+    }
+    document.addEventListener("click", function (e) {
+      // Outside every frame (the blocks around the window).
+      post("tap", { x: e.clientX, y: e.clientY, viewportWidth: window.innerWidth, viewportHeight: window.innerHeight });
+    }, true);
+
+    // --- where the reader is ---
+    function currentLocation() {
+      const at = viewAtLine();
+      if (!at) { return { spineIndex: spine.length ? spine[0].i : 0, offset: 0, chapterHeight: 0, visible: [], atEnd: false, atStart: true, cfi: null, generation: sc.generation }; }
+      const view = at.view;
+      const offset = Math.max(0, Math.min(lineY() - at.rect.top, view.height));
+      let cfi = null;
+      const scroll = chapter(view);
+      if (scroll) {
+        const a = scroll.anchorAt(Math.min(offset, Math.max(0, view.height - 1)));
+        cfi = a ? scroll.anchorCFI(a) : null;
+      }
+      const top = sc.insetTop, bottom = window.innerHeight - sc.insetBottom;
+      const visible = [];
+      for (const v of sc.views) {
+        const rect = v === view ? at.rect : rectOf(v);
+        if (rect.bottom > top + 0.5 && rect.top < bottom - 0.5) { visible.push(v.spineIndex); }
+      }
+      if (!visible.length) { visible.push(view.spineIndex); }
+      const last = sc.views[sc.views.length - 1];
+      const atEnd = last.pos === spine.length - 1 && last.loaded && sc.tail === 0 && window.scrollY >= maxScroll() - 1;
+      const atStart = view.pos === 0 && offset < 1;
+      return {
+        spineIndex: view.spineIndex, offset: offset, chapterHeight: view.height, visible: visible,
+        atEnd: atEnd, atStart: atStart, cfi: cfi, generation: sc.generation, loaded: view.loaded,
+      };
+    }
+    function postScrolled(rest) {
+      if (!sc.laidOut || sc.showing || !sc.views.length) { return; }
+      if (sc.postTimer) { clearTimeout(sc.postTimer); sc.postTimer = null; }
+      sc.lastPost = now();
+      const location = currentLocation();
+      location.rest = !!rest;
+      if (rest) { sc.restPosted = true; }
+      post("scrolled", location);
+    }
+    function schedulePost() {
+      const elapsed = now() - sc.lastPost;
+      if (elapsed >= 100) { postScrolled(false); return; }
+      if (!sc.postTimer) {
+        sc.postTimer = setTimeout(function () { sc.postTimer = null; postScrolled(false); }, 100 - elapsed);
+      }
+    }
+
+    window.addEventListener("scroll", function () {
+      const started = sc.log ? performance.now() : 0;
+      sc.lastScroll = now();
+      sc.restPosted = false;
+      if (!sc.laidOut) { return; }
+      // First what the anchor has seen since the last event, then (if it left the reading line) a new anchor.
+      correct("scroll");
+      followLine();
+      if (!sc.showing) {
+        autoWindow();
+        schedulePost();
+      }
+      armQuiet();
+      if (sc.log) {
+        // What a scroll event costs the page (diagnostics: the time is taken from painting the tiles).
+        const ms = performance.now() - started;
+        sc.cost.events += 1;
+        sc.cost.total += ms;
+        sc.cost.max = Math.max(sc.cost.max, ms);
+      }
+    }, { passive: true });
+    window.addEventListener("scrollend", function () {
+      const program = sc.program;
+      if (program && now() - program.started > 30) { endProgram(program, true); }
+    });
+
+    // --- scrolling by the controller (§8) ---
+    // `arrived`: the animation ran to its end. It may stop a fraction of a pixel short of the target; the position
+    // is then put on the target, so a step forward and a step back end where they started.
+    function endProgram(program, arrived) {
+      if (sc.program !== program) { return; }
+      clearInterval(program.timer);
+      if (arrived && !sc.interacting && window.scrollY !== program.target && Math.abs(window.scrollY - program.target) < 2) {
+        window.scrollTo({ top: program.target, left: 0, behavior: "instant" });
+      }
+      sc.program = null;
+      const waiters = program.waiters;
+      program.waiters = [];
+      for (const done of waiters) { done(); }
+      checkRest();
+    }
+    // Stops an animated scroll where it is.
+    function cancelProgram() {
+      const program = sc.program;
+      if (!program) { return; }
+      window.scrollTo({ top: window.scrollY, left: 0, behavior: "instant" });
+      endProgram(program);
+    }
+    function startProgram(top, animated, done) {
+      const previous = sc.program;
+      const waiters = previous ? previous.waiters : [];
+      if (previous) { clearInterval(previous.timer); }
+      waiters.push(done);
+      const program = { target: top, waiters: waiters, started: now(), arrived: null, timer: null };
+      sc.program = program;
+      window.scrollTo({ top: top, left: 0, behavior: animated ? "smooth" : "instant" });
+      // Ends with `scrollend`, or 150 ms after the position reached the target, or when nothing moves any more.
+      program.timer = setInterval(function () {
+        if (sc.program !== program) { clearInterval(program.timer); return; }
+        const t = now();
+        if (Math.abs(window.scrollY - program.target) < 2) {
+          if (program.arrived === null) { program.arrived = t; }
+          if (t - program.arrived >= QUIET) { endProgram(program, true); }
+          return;
+        }
+        program.arrived = null;
+        if (t - program.started > 2500 || (t - program.started > 400 && t - sc.lastScroll > 400)) { endProgram(program); }
+      }, 40);
+    }
+    function lineHeightAtLine() {
+      const at = viewAtLine();
+      const scroll = at ? chapter(at.view) : null;
+      try { return scroll ? scroll.lineHeight() : 24; } catch (e) { return 24; }
+    }
+    // One page (`{pages: ±1}`) or a few lines (`{lines: ±3}`), animated unless `animated` is false.
+    function scrollByStep(step) {
+      step = step || {};
+      if (!sc.laidOut || !sc.views.length) { return Promise.resolve(Object.assign(currentLocation(), { moved: false })); }
+      const target = core.scrollTarget({
+        pages: step.pages || 0, lines: step.lines || 0, pageHeight: sc.page, lineHeight: lineHeightAtLine(),
+        scrollY: window.scrollY, from: sc.program ? sc.program.target : window.scrollY, maxScroll: maxScroll(),
+      });
+      if (!target.moved) { return Promise.resolve(Object.assign(currentLocation(), { moved: false })); }
+      return new Promise(function (resolve) {
+        startProgram(target.top, step.animated !== false, function () {
+          resolve(Object.assign(currentLocation(), { moved: true }));
+        });
+      });
+    }
+
+    // Resolves after `n` frames; a hidden page gets no frames, so a timer stands in.
+    function frames(n) {
+      return new Promise(function (resolve) {
+        let done = false;
+        function finish() { if (!done) { done = true; resolve(); } }
+        let left = n;
+        function step() { left -= 1; if (left <= 0) { finish(); } else { requestAnimationFrame(step); } }
+        requestAnimationFrame(step);
+        setTimeout(finish, 60 * n + 40);
+      });
+    }
+    // Where in a chapter a target is: distance from the chapter's top.
+    function locate(view, target) {
+      const scroll = chapter(view);
+      if (target.cfi && scroll) {
+        const offset = scroll.offsetForCFI(target.cfi);
+        if (offset !== null) { return Math.max(0, offset); }
+      }
+      if (target.fragment && scroll) {
+        const offset = scroll.offsetForFragment(target.fragment);
+        if (offset !== null) { return Math.max(0, offset); }
+      }
+      if (target.end) { return Math.max(0, view.height - sc.page); }
+      if (typeof target.offset === "number") { return Math.max(0, Math.min(target.offset, Math.max(0, view.height - 1))); }
+      return 0;
+    }
+    function topFor(view, offset) {
+      const rect = rectOf(view);
+      return Math.max(0, Math.min(rect.top + window.scrollY + offset - lineY(), maxScroll()));
+    }
+    // Scrolls the target to the reading line and checks it after two frames: the layout may have changed in
+    // between (fonts, a neighbour that loaded), and on iOS the UI process may have clamped the request against an
+    // older content size.
+    function place(view, target, attempt) {
+      if (view.epoch !== sc.epoch || !view.el.isConnected) { return Promise.resolve(); }
+      // Jumps write the scroll position anyway: the runway is put right first, so the scroll range is the book's.
+      settle();
+      window.scrollTo(0, topFor(view, locate(view, target)));
+      refreshAnchor();
+      return frames(2).then(function () {
+        if (view.epoch !== sc.epoch || !view.el.isConnected) { return; }
+        correct("place");
+        const want = topFor(view, locate(view, target));
+        if (Math.abs(window.scrollY - want) > 1 && attempt < 5) { return place(view, target, attempt + 1); }
+      });
+    }
+    // `{spineIndex, cfi | fragment | offset | end}`: the target goes to the reading line (§8.1). A chapter outside
+    // the window makes a new window. Resolves with the location, `{missing: true}` for a chapter this document does
+    // not hold, or `{vertical: true}` for a chapter in vertical writing (§1: the session switches to pages).
+    function showLocation(target) {
+      target = target || {};
+      const pos = posOf[target.spineIndex];
+      if (pos === undefined || !sc.laidOut) { return Promise.resolve({ missing: true }); }
+      cancelProgram();
+      sc.showing += 1;
+      let view = viewAt(pos);
+      if (!view) { view = rebuildWindow(pos); }
+      return view.ready.then(function () {
+        if (view.vertical) { return { vertical: true, spineIndex: view.spineIndex }; }
+        return place(view, target, 0).then(function () {
+          sc.showing -= 1;
+          settle();
+          autoWindow();
+          refreshAnchor();
+          const location = currentLocation();
+          sc.lastPost = now();
+          return location;
+        });
+      }).then(function (result) {
+        if (result && result.vertical) { sc.showing -= 1; }
+        return result;
+      }, function (error) {
+        sc.showing -= 1;
+        throw error;
+      });
+    }
+
+    // --- the document API ---
+    function applyWrapperParams(params) {
+      if (params.theme) {
+        setVar("--reader-bg", params.theme.background);
+        setVar("--reader-fg", params.theme.foreground);
+        root().setAttribute("data-reader-theme", params.theme.isDark ? "dark" : "light");
+      }
+      if (typeof params.rootStyle === "string") {
+        let el = document.getElementById("__reader_settings");
+        if (!el) {
+          el = document.createElement("style");
+          el.id = "__reader_settings";
+          (document.head || root()).appendChild(el);
+        }
+        el.textContent = params.rootStyle;
+      }
+    }
+    // Lays the window's chapters out again for new settings, a new size or new insets. The scroll position means
+    // nothing afterwards: Swift follows with `showLocation` (§11).
+    function layout(params) {
+      params = params || {};
+      sc.params = params;
+      applyWrapperParams(params);
+      const insets = params.insets || {};
+      sc.insetTop = Math.max(0, insets.top || 0);
+      sc.insetBottom = Math.max(0, insets.bottom || 0);
+      sc.page = Math.max(1, (params.pageHeight || window.innerHeight) - sc.insetTop - sc.insetBottom);
+      dom.head.style.height = sc.insetTop + "px";
+      dom.foot.style.height = sc.insetBottom + "px";
+      sc.generation = params.generation || 0;
+      sc.holdFar = !!params.holdFar;
+      const heights = Array.isArray(params.heights) ? params.heights : [];
+      sc.heights = spine.map(function (_, k) { return Math.max(0, heights[k] || 0) || sc.page; });
+      sc.known = {};
+      if (sc.program) { cancelProgram(); }
+      sc.laidOut = true;
+      for (const view of sc.views) {
+        view.fixed = false;
+        view.reported = null;
+        setFrameHeight(view, sc.page);
+        if (!chapter(view)) { continue; }
+        try { view.bridge.layout(childParams(view)); } catch (e) { continue; }
+        view.first = measure(view);
+        const result = core.fit(view.height, view.first, function () { return measure(view); }, function (h) { setFrameHeight(view, h); });
+        if (result.fixed) { view.fixed = true; }
+        recordHeight(view);
+      }
+      applyUpper(sc.views.length ? core.runwayTarget(sc.heights, sc.views[0].pos) : 0, 0);
+      syncTail();
+      sc.anchor = null;
+      sc.dirty = false;
+      return { pageCount: 1, writingMode: "horizontal-tb", columnsPerPage: 1 };
+    }
+    // New estimates for the chapters that were not measured here. The blocks follow at rest (§5.4).
+    function setEstimates(heights) {
+      if (!Array.isArray(heights)) { return false; }
+      for (let k = 0; k < spine.length; k++) {
+        if (!sc.known[k] && heights[k] > 0) { sc.heights[k] = heights[k]; }
+      }
+      syncTail();
+      sc.dirty = true;
+      scheduleSettle();
+      return true;
+    }
+    // Memory warning (§12): only the chapters in the viewport and their neighbours stay. No scroll position is
+    // written, so it does not wait for rest.
+    function trimWindow() {
+      autoWindow(true);
+      return sc.views.length;
+    }
+    function setInteraction(state) {
+      const active = !!(state && state.active);
+      if (active === sc.interacting) { return true; }
+      sc.interacting = active;
+      log("interaction", { active: active });
+      if (active) { if (sc.program) { endProgram(sc.program); } } else { checkRest(); }
+      return true;
+    }
+
+    function viewFor(cfiString) {
+      const parsed = CFI.parse(cfiString);
+      if (!parsed || !parsed[0].spineSteps.length) { return null; }
+      return sc.views.find(function (v) { return chapter(v) && stepsMatch(v.spineSteps, parsed[0].spineSteps); }) || null;
+    }
+    function rectsFor(cfiRange) {
+      const view = viewFor(cfiRange);
+      return view ? mapRects(view, view.bridge.rectsFor(cfiRange)) : [];
+    }
+    function applyHighlightsTo(view) {
+      if (!chapter(view)) { return []; }
+      const mine = sc.highlights.filter(function (item) { return stepsMatch(view.spineSteps, item.steps); }).map(function (item) { return item.item; });
+      try { return view.bridge.setHighlights(mine); } catch (e) { return []; }
+    }
+    // The whole list is remembered: a chapter gets its part when it enters the window (§10).
+    function setHighlights(list) {
+      sc.highlights = (list || []).map(function (item) {
+        const parsed = CFI.parse(item.cfiRange);
+        return { item: item, steps: parsed ? parsed[0].spineSteps : [] };
+      });
+      let applied = [];
+      for (const view of sc.views) { applied = applied.concat(applyHighlightsTo(view)); }
+      return applied;
+    }
+    function setTransientHighlight(cfiRange) {
+      sc.transient = cfiRange || null;
+      const target = cfiRange ? viewFor(cfiRange) : null;
+      let any = false;
+      for (const view of sc.views) {
+        if (!chapter(view)) { continue; }
+        if (view.bridge.setTransientHighlight(view === target ? cfiRange : null) && view === target) { any = true; }
+      }
+      return any;
+    }
+    function currentSelection() {
+      for (const view of sc.views) {
+        if (!chapter(view)) { continue; }
+        const selection = view.bridge.currentSelection();
+        if (selection) { return withRects(view, selection); }
+      }
+      return null;
+    }
+    function clearSelection() {
+      for (const view of sc.views) { if (chapter(view)) { view.bridge.clearSelection(); } }
+      return true;
+    }
+
+    // Tests and the demo's recording mode.
+    let mark = null;
+    const debug = {
+      state: function () {
+        return {
+          pad: sc.pad, neg: sc.neg, tail: sc.tail, page: sc.page, generation: sc.generation, dirty: sc.dirty,
+          scrollY: window.scrollY, maxScroll: maxScroll(), viewportHeight: window.innerHeight,
+          atRest: atRest(), restPosted: sc.restPosted, interacting: sc.interacting, program: !!sc.program, loading: sc.loading ? sc.loading.spineIndex : null,
+          runwayTarget: sc.views.length ? core.runwayTarget(sc.heights, sc.views[0].pos) : 0,
+          visibility: document.visibilityState,
+          // Whether the engine has the `scrollend` event (the end of a program scroll, §5.6).
+          scrollEndEvent: "onscrollend" in window, scrollCost: sc.cost,
+          views: sc.views.map(function (v) {
+            const rect = rectOf(v);
+            return { pos: v.pos, spineIndex: v.spineIndex, height: v.height, loaded: v.loaded, fixed: v.fixed, top: rect.top, bottom: rect.bottom };
+          }),
+        };
+      },
+      heights: function () { return sc.heights.slice(); },
+      // Remembers the text at the reading line; `markY` is where that text is in the viewport now.
+      mark: function () {
+        const near = anchorNearLine();
+        mark = near && near.a ? { view: near.view, a: near.a, docY: 0 } : null;
+        return mark ? anchorY(mark) : null;
+      },
+      markY: function () { return mark && mark.view.el.isConnected ? anchorY(mark) : null; },
+      prepend: function () {
+        if (!sc.views.length || sc.views[0].pos === 0 || sc.loading) { return null; }
+        return addView(sc.views[0].pos - 1, "prepend").ready.then(function (v) { return v.spineIndex; });
+      },
+      append: function () {
+        if (!sc.views.length || sc.views[sc.views.length - 1].pos >= spine.length - 1 || sc.loading) { return null; }
+        return addView(sc.views[sc.views.length - 1].pos + 1, "append").ready.then(function (v) { return v.spineIndex; });
+      },
+      remove: function (spineIndex) {
+        const view = sc.views.find(function (v) { return v.spineIndex === spineIndex; });
+        if (!view) { return false; }
+        removeView(view, "debug");
+        return true;
+      },
+      settle: function () { return settle(); },
+      setLogging: function (on) { sc.log = on ? [] : null; sc.cost = { events: 0, total: 0, max: 0 }; return true; },
+      drainLog: function () { const out = sc.log || []; if (sc.log) { sc.log = []; } return out; },
+      now: now,
+    };
+
+    window.__epubReader = {
+      version: 1,
+      isScrollWrapper: true,
+      kind: kind,
+      layout: layout,
+      applySettings: layout,
+      // The paged calls have no meaning here; they answer harmlessly.
+      goToPage: function () { return { pageIndex: 0, slot: 0, pageCount: 1, scrollLeft: 0, scrollTop: window.scrollY }; },
+      pageForFragment: function () { return null; },
+      cfiForPage: function () { return sc.views.length ? currentLocation().cfi : null; },
+      pageFor: function () { return null; },
+      rectsFor: rectsFor,
+      setHighlights: setHighlights,
+      setTransientHighlight: setTransientHighlight,
+      currentSelection: currentSelection,
+      clearSelection: clearSelection,
+      showLocation: showLocation,
+      scrollBy: scrollByStep,
+      locationAtReadingLine: function () { return sc.views.length && sc.laidOut ? currentLocation() : null; },
+      setEstimates: setEstimates,
+      trimWindow: trimWindow,
+      setInteraction: setInteraction,
+      windowContains: function (spineIndex) { const pos = posOf[spineIndex]; return pos !== undefined && !!viewAt(pos); },
+      holds: function (spineIndex) { return posOf[spineIndex] !== undefined; },
+      cfi: CFI,
+      pageCount: function () { return 1; },
+      debug: debug,
+    };
+
+    post("ready", { writingMode: "horizontal-tb", readyState: document.readyState, href: location.href });
+  }
+
+  if (root().hasAttribute("data-reader-scroll")) {
+    installScrollController();
+    return;
+  }
+
   // --- notes (M5) ----------------------------------------------------------------------------------
   // Footnote / endnote / rearnote asides that a noteref in this document points at are read in a popup, so they
   // are taken out of the page flow (`data-reader-note`, display: none in reader-before.css). Notes that nothing
@@ -1634,6 +2692,12 @@
   let changeTimer = null;
   function scheduleRecount() {
     if (changeTimer) { clearTimeout(changeTimer); }
+    if (state.scrolled) {
+      // The controller fits the frame in this very task, so the frame and the correction of the reading position
+      // reach the screen in the same frame as the change (08-continuous-scroll §5.3).
+      if (state.readySent) { drawOverlay(); post("contentChanged", {}); }
+      return;
+    }
     changeTimer = setTimeout(function () {
       changeTimer = null;
       if (!state.readySent || !state.pageWidth) { return; }
@@ -1694,5 +2758,15 @@
     setHost: setHost,
     whenReady: function () { return readyPromise; },
     isFramed: framed,
+    // A chapter of the scrolled layout (08-continuous-scroll): what the scroll controller asks its frames.
+    scroll: {
+      contentHeight: scrollContentHeight,
+      anchorAt: scrollAnchorAt,
+      anchorTop: scrollAnchorTop,
+      anchorCFI: scrollAnchorCFI,
+      offsetForCFI: scrollOffsetForCFI,
+      offsetForFragment: scrollOffsetForFragment,
+      lineHeight: scrollLineHeight,
+    },
   };
 })();

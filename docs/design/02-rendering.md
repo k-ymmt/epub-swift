@@ -10,7 +10,29 @@ SwiftUI は import せず、UIKit / AppKit の WKWebView を扱う。
 いずれもスナップショット画像で演出する（§7）。
 
 この文書はページ表示（paged と見開き）の描画を扱う。スクロール表示（縦の連続スクロール）の描画は
-`08-continuous-scroll.md` に設計してあり、未実装。実装したマイルストーンごとに、この文書の該当箇所へ移す。
+`08-continuous-scroll.md` にあり、S1（スクロールで読める）まで実装した（2026-11-14）。この文書と関わる所だけを §1.3 に書く。
+
+### 1.3 スクロール表示（S1 実装済み）
+
+`ReaderSettings.layout == .scrolled` で、対象の本（横書きリフロー。08 §1）を開いたとき。詳細と根拠は 08。
+
+- 表示用 WebView は同じものを使い、設定だけ変える: フレームは枠と同じ大きさ（3 ページ幅にしない。§1.2 のクリップも
+  ずらしもしない）、WebView 自身が縦にスクロールする。スクロールインジケータは出さない。
+- 読み込むのは章の文書でなく、ラッパー文書 `epub://<id>/_reader/scroll?start=<spineIndex>`（線形でない章を単独で見せるときは
+  `&single=1`）。`ScrollDocument` が生成する `text/html` で、`EPUBSchemeHandler` が配る。章は章ごとの `<iframe scrolling="no">`
+  として縦に並ぶ（見開きラッパー §6.1 と同じ作りで、iframe の中の `reader.js` はホストにだけ話す）。
+- ラッパーには `scroll-core.js`（WebView の要らない算術: 窓の規則、余白と清算の量、1 画面分の移動量、高さの合わせ方）と
+  `reader.js` をこの順に注入する。`reader.js` は `html[data-reader-scroll]` で「スクロールコントローラ」として動く。
+  `scroll-core.js` は JavaScriptCore だけでテストする（`ScrollCoreTests`）。
+- 章の文書には `layout({scrolled: true, …})` を渡す。`reader.js` が `<html data-reader-layout="scrolled">` を付け、
+  `reader-before.css` が多段組（§3.4）を外して本文の箱を作る（08 §4.2）。
+- ページめくりの演出（§7）、隣接章のスナップショット（§8.3）、3 ページ幅のフレーム（§1.2）は使わない。`relayoutSnapshot` は
+  再レイアウトと窓の作り直しの間に使う。
+- 読者のスクロールが進んでいるかは Swift が調べてコントローラに伝える（iOS: スクロールビューの状態を 0.05 秒ごとに読む。
+  macOS: `ReaderWebView.onScrollWheel` で受けたホイールイベントの位相を `WheelInteraction` で追う）。コントローラが
+  スクロール位置を書くのは静止しているときだけ（08 §5.3、§5.6）。
+- S1 では、スクロール表示の間は事前ページ化（§8）を止める。章の高さの見積もりは文字数から出し、表示して分かった高さは
+  セッションが持つ。高さの計測とキャッシュは S3。
 
 ### 1.1 `WKWebViewConfiguration`
 

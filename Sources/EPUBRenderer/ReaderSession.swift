@@ -11,6 +11,9 @@ import UIKit
 /// Loads a spine item into the web view, pages within it, crosses chapter boundaries, applies `ReaderSettings`
 /// with position restoration, provides page snapshots for the UI layer's page-turn effects (M1 / M2), and keeps
 /// the reading position as a CFI (`position`), the selection, the annotations (M6) and the search (M3).
+///
+/// With `settings.layout == .scrolled` a book that allows it is shown as one vertically scrolling document instead
+/// (docs/design/08-continuous-scroll.md): `layout` says which of the two is in effect.
 @MainActor
 @Observable
 public final class ReaderSession {
@@ -39,6 +42,22 @@ public final class ReaderSession {
     /// Writing mode of the current document as reported by the bridge (M2: typed; was the raw CSS string in M1).
     public private(set) var writingMode: WritingMode = .horizontalTB
 
+    /// The layout this book is shown in (08-continuous-scroll §1, §3.2). `settings.layout` asks for one; a book with
+    /// fixed-layout items, right-to-left page progression or a chapter in vertical writing stays `.paged` whatever
+    /// the settings say, so an app can tell "this book is paged only" from the two values.
+    public private(set) var layout: ReaderLayout = .paged
+
+    /// What bars and safe areas cover at the top and the bottom of the reader's frame, in points (08-continuous-scroll
+    /// §3.2). The scrolled layout lets the text run under them and counts the reading line, the restored position and
+    /// the page height inside them; changing them re-lays out. The paged layout ignores them. `EPUBReaderView` sets
+    /// this from `readerContentInsets(top:bottom:)`.
+    public var contentInsets = ReaderInsets() {
+        didSet {
+            guard contentInsets != oldValue else { return }
+            contentInsetsDidChange()
+        }
+    }
+
     /// The face being shown (M4): one reflowable item, or one or two fixed-layout pages. nil until the first load.
     private(set) var currentUnit: SpreadPlan.Unit?
     /// Whether the visible face is a spread wrapper document (fixed layout, or a vertical-writing chapter shown as
@@ -53,7 +72,12 @@ public final class ReaderSession {
 
     /// Spine indices of the documents on the visible face, in reading order: one item, or the two pages of a
     /// fixed-layout spread (M4). `currentSpineIndex` is the first of them.
-    public var visibleSpineIndices: [Int] { currentUnit?.spineIndices ?? (hasLoaded ? [currentSpineIndex] : []) }
+    ///
+    /// Scrolled layout: the chapters with a part inside the frame's insets.
+    public var visibleSpineIndices: [Int] {
+        if layout == .scrolled { return hasLoaded ? (scrollVisible.isEmpty ? [currentSpineIndex] : scrollVisible) : [] }
+        return currentUnit?.spineIndices ?? (hasLoaded ? [currentSpineIndex] : [])
+    }
 
     /// `true` while a fixed-layout face is pinch-zoomed in (M4, docs/design/02-rendering.md §6.3). EPUBUI turns its
     /// page-turn gestures off meanwhile; loading another face resets the zoom.
@@ -75,14 +99,29 @@ public final class ReaderSession {
     public private(set) var pagination: BookPagination = .empty
 
     /// Book page index (0-based) of the visible page, or nil while nothing is loaded / for a non-linear item.
+    ///
+    /// Scrolled layout: the virtual page the reading line is on (one page is the frame's height inside the insets),
+    /// and the last page of the book once it is scrolled to its end (08-continuous-scroll §6.1).
     public var currentPage: Int? {
         guard hasLoaded else { return nil }
+        if layout == .scrolled {
+            return ScrollPaging.currentPage(pagination: pagination, spineIndex: currentSpineIndex, pageIndex: currentPageIndex, isAtEnd: scrollAtEnd)
+        }
         return pagination.pageIndex(spineIndex: currentSpineIndex, pageIndex: currentPageIndex)
     }
 
     /// Book page indices of everything on the visible face, ascending: `currentPage`, and for a fixed-layout spread
     /// the other page of the pair too. Empty while nothing is loaded and for a non-linear item.
+    ///
+    /// Scrolled layout: the virtual pages with a part in the page-high band below the reading line, usually two.
     public var visiblePages: [Int] {
+        if layout == .scrolled {
+            guard hasLoaded else { return [] }
+            return ScrollPaging.visiblePages(
+                pagination: pagination, spineIndex: currentSpineIndex, offset: scrollOffset, chapterHeight: scrollChapterHeight,
+                pageHeight: scrollPageHeight, visibleSpineIndices: scrollVisible, isAtEnd: scrollAtEnd
+            )
+        }
         guard let current = currentPage else { return [] }
         var pages: Set<Int> = [current]
         for index in visibleSpineIndices where index != currentSpineIndex {
@@ -158,6 +197,10 @@ public final class ReaderSession {
     /// Fraction of the book read (0...1) from `pagination` (an estimate while `pagination.isEstimated`). Falls back
     /// to a spine-position approximation for non-linear items.
     public var totalProgression: Double {
+        if hasLoaded, layout == .scrolled, scrollAtEnd, pagination.pageIndex(spineIndex: currentSpineIndex, pageIndex: currentPageIndex) != nil {
+            // The pages below the reading line at the book's end never reach it (08-continuous-scroll §6.1).
+            return 1
+        }
         if hasLoaded, let progression = pagination.progression(spineIndex: currentSpineIndex, pageIndex: currentPageIndex) {
             return progression
         }
@@ -169,12 +212,15 @@ public final class ReaderSession {
     }
 
     /// Whether the current chapter is the last page of the linear reading order (nothing further forward).
+    /// Scrolled layout: the document is scrolled to its very end.
     public var isAtEnd: Bool {
-        currentPageIndex >= chapterPageCount - 1 && nextLinearSpineIndex(after: currentSpineIndex) == nil
+        if layout == .scrolled { return scrollAtEnd }
+        return currentPageIndex >= chapterPageCount - 1 && nextLinearSpineIndex(after: currentSpineIndex) == nil
     }
 
     public var isAtStart: Bool {
-        currentPageIndex == 0 && previousLinearSpineIndex(before: currentSpineIndex) == nil
+        if layout == .scrolled { return scrollAtStart }
+        return currentPageIndex == 0 && previousLinearSpineIndex(before: currentSpineIndex) == nil
     }
 
     /// Events for the app. Each access returns a new stream; all of them receive every event.
@@ -216,6 +262,34 @@ public final class ReaderSession {
     /// Where the first load opens (`init(container:settings:initialPosition:)`); cleared once a chapter has loaded.
     @ObservationIgnored private var initialCFI: CFI?
     @ObservationIgnored private let logger = Logger(subsystem: "EPUB", category: "ReaderSession")
+
+    // Scrolled layout (08-continuous-scroll). The reading line as the scroll controller last reported it.
+    /// A chapter in vertical writing was seen: the book stays paged for the rest of the session (§1).
+    @ObservationIgnored private var sawVerticalChapter = false
+    /// Distance from the top of the chapter at the reading line to the line, and that chapter's height.
+    @ObservationIgnored private var scrollOffset: Double = 0
+    @ObservationIgnored private var scrollChapterHeight: Double = 0
+    private var scrollVisible: [Int] = []
+    private var scrollAtEnd = false
+    private var scrollAtStart = false
+    /// Number of the scrolled layout in effect: `scrolled` / `chapterHeight` messages that carry another one come
+    /// from a layout that is gone (§4.3).
+    @ObservationIgnored private(set) var scrollGeneration = 0
+    /// Heights of the chapters the display web view has laid out in the layout `scrollLayoutKey` names. Chapters that
+    /// are not in it are estimated from their character counts (S1; the measurement of every chapter is S3).
+    @ObservationIgnored private(set) var scrollHeights: [Int: Double] = [:]
+    @ObservationIgnored private var scrollLayoutKey: ScrollLayoutKey?
+    /// The chapters the loaded scroll document holds: the linear reading order, or one non-linear item alone.
+    @ObservationIgnored private var scrollDocumentIndices: [Int] = []
+    @ObservationIgnored private var lastScrollPositionEmit: ContinuousClock.Instant?
+    @ObservationIgnored private var estimatesTask: Task<Void, Never>?
+
+    /// What the heights of the scrolled layout depend on (08-continuous-scroll §6.3).
+    private struct ScrollLayoutKey: Equatable {
+        var width: Int
+        var pageHeight: Int
+        var settings: ReaderSettings.LayoutKey
+    }
 
     static let loadTimeout: Duration = .seconds(10)
     /// Window resizes on macOS come as a stream of sizes; the relayout waits for them to settle (03-api §4.5).
@@ -292,6 +366,7 @@ public final class ReaderSession {
     isolated deinit {
         let id = container.id
         paginationService.cancel()
+        estimatesTask?.cancel()
         if let memoryWarningObserver { NotificationCenter.default.removeObserver(memoryWarningObserver) }
         Task { @MainActor in PublicationRegistry.shared.unregister(id) }
     }
@@ -301,9 +376,11 @@ public final class ReaderSession {
 
     // MARK: - Navigation
 
-    /// Next page, or the first page of the next linear spine item.
+    /// Next page, or the first page of the next linear spine item. Scrolled layout: one screen further, animated
+    /// (the page height less one line of text, 08-continuous-scroll §8.2).
     public func goForward() async {
         await run { [self] in
+            if layout == .scrolled { await scrollByScreens(1); return }
             await reportingNavigation(.pageTurn) { [self] in
                 // Ask the document for page `current + 1` even when it looks like the last page: the page count can
                 // grow after late image loads, and `goToPage` re-measures before clamping. Only when the document
@@ -317,9 +394,10 @@ public final class ReaderSession {
         }
     }
 
-    /// Previous page, or the last page of the previous linear spine item.
+    /// Previous page, or the last page of the previous linear spine item. Scrolled layout: one screen back.
     public func goBackward() async {
         await run { [self] in
+            if layout == .scrolled { await scrollByScreens(-1); return }
             await reportingNavigation(.pageTurn) { [self] in
                 if currentPageIndex > 0 {
                     await goToPageInChapter(currentPageIndex - 1)
@@ -334,6 +412,7 @@ public final class ReaderSession {
         guard publication.readingOrder.indices.contains(index) else { return }
         await run { [self] in
             await reportingNavigation(.jump) { [self] in
+                if layout == .scrolled, hasLoaded { await scrollTo(spineIndex: index, target: .first); return }
                 // The other page of the visible fixed-layout spread is already on screen.
                 if hasLoaded, isShowing(spineIndex: index), isShowingWrapper, currentUnit?.isFixedLayout == true { return }
                 await loadChapter(index, target: .first)
@@ -348,6 +427,10 @@ public final class ReaderSession {
         let fragment = entry.fragment.flatMap { $0.isEmpty ? nil : ($0.removingPercentEncoding ?? $0) }
         await run { [self] in
             await reportingNavigation(.jump) { [self] in
+                if layout == .scrolled, hasLoaded {
+                    await scrollTo(spineIndex: spineIndex, target: fragment.map { .fragment($0) } ?? .first)
+                    return
+                }
                 if isShowing(spineIndex: spineIndex), hasLoaded, let fragment {
                     if let page = try? await renderer.pageForFragment(fragment) { await goToPageInChapter(page) }
                     return
@@ -358,10 +441,17 @@ public final class ReaderSession {
         }
     }
 
-    /// Page `index` within the current chapter.
+    /// Page `index` within the current chapter. Scrolled layout: the top of that virtual page goes to the reading
+    /// line.
     public func go(toPageInChapter index: Int) async {
         await run { [self] in
-            await reportingNavigation(.jump) { [self] in await goToPageInChapter(index) }
+            await reportingNavigation(.jump) { [self] in
+                if layout == .scrolled, hasLoaded {
+                    await scrollTo(spineIndex: currentSpineIndex, target: .page(min(max(0, index), chapterPageCount - 1)))
+                    return
+                }
+                await goToPageInChapter(index)
+            }
         }
     }
 
@@ -371,6 +461,10 @@ public final class ReaderSession {
         guard let location = pagination.location(ofPageIndex: index) else { return }
         await run { [self] in
             await reportingNavigation(.jump) { [self] in
+                if layout == .scrolled, hasLoaded {
+                    await scrollTo(spineIndex: location.spineIndex, target: .page(location.pageIndex))
+                    return
+                }
                 if isShowing(spineIndex: location.spineIndex), hasLoaded {
                     await goToPageInChapter(location.pageIndex)
                 } else {
@@ -391,6 +485,10 @@ public final class ReaderSession {
 
     /// The body of `go(to:)`, for use inside an operation.
     private func goToCFI(_ cfi: CFI, spineIndex: Int) async {
+        if layout == .scrolled, hasLoaded {
+            await scrollTo(spineIndex: spineIndex, target: .cfi(cfi))
+            return
+        }
         if isShowing(spineIndex: spineIndex), hasLoaded {
             let page = (try? await renderer.pageFor(cfi)) ?? nil
             await goToPageInChapter(page ?? currentPageIndex)
@@ -405,11 +503,23 @@ public final class ReaderSession {
     /// reported like any other.
     private func reportingNavigation(_ cause: ReaderNavigation.Cause, _ move: @MainActor () async -> Void) async {
         let hadShownAPage = hasEverLoaded
-        let before = (spineIndex: currentSpineIndex, pageIndex: currentPageIndex)
+        let before = navigationPlace
         let from = position
         await move()
-        guard hadShownAPage, hasLoaded, before != (spineIndex: currentSpineIndex, pageIndex: currentPageIndex), let to = position else { return }
+        guard hadShownAPage, hasLoaded, before != navigationPlace, let to = position else { return }
         emit(.navigated(ReaderNavigation(cause: cause, from: from, to: to)))
+    }
+
+    /// What a move must change to count as a navigation: the visible page (in the scrolled layout the visible
+    /// virtual pages, 08-continuous-scroll §8.1).
+    private struct NavigationPlace: Equatable {
+        var spineIndex: Int
+        var pageIndex: Int
+        var pages: [Int] = []
+    }
+
+    private var navigationPlace: NavigationPlace {
+        NavigationPlace(spineIndex: currentSpineIndex, pageIndex: currentPageIndex, pages: layout == .scrolled ? visiblePages : [])
     }
 
     /// Restores a position recorded earlier (`position`), for example at the next launch.
@@ -428,8 +538,10 @@ public final class ReaderSession {
     /// Snapshot of the current, next or previous page for the UI's page-turn effect. At a chapter boundary the
     /// neighbouring chapter's first / last page comes from the pre-pagination web view (02-rendering §8.3); nil when
     /// it has not been captured yet (the UI substitutes the background color).
+    ///
+    /// Scrolled layout: always nil (there is no page turn to draw).
     public func pageSnapshot(_ target: PageSnapshotTarget) async -> PageSnapshot? {
-        guard hasLoaded, !isLoading else { return nil }
+        guard hasLoaded, !isLoading, layout == .paged else { return nil }
         let visibleSlot = renderer.visibleSlot
         let pageIndex: Int
         let slot: Int
@@ -494,6 +606,11 @@ public final class ReaderSession {
 
     func loadChapter(_ spineIndex: Int, target: LoadTarget) async {
         guard publication.readingOrder.indices.contains(spineIndex), viewportSize.width > 0 else { return }
+        if resolvedLayout == .scrolled {
+            await loadScrolled(spineIndex, target: target)
+            return
+        }
+        leaveScrolledLayout()
         loadGeneration += 1
         let generation = loadGeneration
         isLoading = true
@@ -507,7 +624,7 @@ public final class ReaderSession {
             emit(.selectionChanged(nil))
         }
         applyPageSize()
-        schemeHandler.rootStyle = ContentInjector.rootStyle(settings: settings, pageSize: viewportSize, publicationID: container.id)
+        updateRootStyle()
         selectLayout()
         // The size the layout key and the spread plan were chosen for. Before the first load completes a resize only
         // updates the page size (`viewportSizeDidChange`), so a mismatch at the end re-selects the layout.
@@ -733,11 +850,12 @@ public final class ReaderSession {
             PublicationRegistry.shared.registerFont(resource, for: container.id)
         }
         renderer.setBackgroundColor(settings.theme.background)
-        schemeHandler.rootStyle = ContentInjector.rootStyle(settings: settings, pageSize: viewportSize, publicationID: container.id)
+        updateRootStyle()
         // The theme is not part of the layout key, so `selectLayout` does not reconfigure pre-pagination for it: its
-        // background and the neighbour snapshots (drawn in the old colours) are refreshed here.
-        if settings.theme != oldValue.theme, settings.layoutKey == oldValue.layoutKey {
-            paginationService.updateTheme(settings: settings)
+        // background and the neighbour snapshots (drawn in the old colours) are refreshed here. The scrolled layout
+        // does not use pre-pagination; it gets the theme when the book goes back to pages (`leaveScrolledLayout`).
+        if settings.theme != oldValue.theme, settings.layoutKey == oldValue.layoutKey, layout == .paged {
+            paginationService.updateTheme(settings: pagedSettings)
         }
         guard hasLoaded else { return }
         isLoading = true
@@ -748,8 +866,20 @@ public final class ReaderSession {
         }
     }
 
+    /// The insets changed: the page height P did, and with it the height limit of the images, so the scrolled layout
+    /// lays its chapters out again (08-continuous-scroll §11). The paged layout does not read them.
+    private func contentInsetsDidChange() {
+        guard resolvedLayout == .scrolled else { return }
+        updateRootStyle()
+        guard hasLoaded else { return }
+        let wasIdle = !isLoading
+        isLoading = true
+        if wasIdle { captureRelayoutSnapshotIfNeeded() }
+        enqueue { [weak self] in await self?.relayoutPreservingPosition() }
+    }
+
     private func viewportSizeDidChange() {
-        schemeHandler.rootStyle = ContentInjector.rootStyle(settings: settings, pageSize: viewportSize, publicationID: container.id)
+        updateRootStyle()
         guard hasLoaded else { applyPageSize(); return }
         // The web view keeps its old size (and layout) under the snapshot until the relayout runs, so the reader
         // never sees the document reflow at the wrong page size.
@@ -804,6 +934,10 @@ public final class ReaderSession {
                 relayoutSnapshot = nil
             }
         }
+        if layout == .scrolled || resolvedLayout == .scrolled {
+            await relayoutScrolledOrSwitch()
+            return
+        }
         selectLayout()
         do {
             let anchor = (try? await renderer.cfiForPage(currentPageIndex, margins: settings.pageMargins)) ?? position?.cfi
@@ -846,6 +980,366 @@ public final class ReaderSession {
             chapterPageCount = result.pageCount
             recordChapterMeasurement(unit: currentUnit, pageCount: result.pageCount)
             await refreshPosition()
+        } catch {
+            emit(.error(.scriptFailed(error.localizedDescription)))
+        }
+    }
+
+    // MARK: - Scrolled layout (docs/design/08-continuous-scroll.md)
+
+    /// The layout the book is shown in the next time something loads: the one asked for, unless the book cannot be
+    /// scrolled (§1).
+    private var resolvedLayout: ReaderLayout {
+        ScrollEligibility.layout(requested: settings.layout, publication: publication, sawVerticalChapter: sawVerticalChapter)
+    }
+
+    /// The page height P of the scrolled layout: the frame less the insets (§2).
+    private var scrollPageHeight: Double {
+        ScrollPaging.pageHeight(viewportHeight: Double(viewportSize.height), insets: contentInsets)
+    }
+
+    /// The `<style>` the scheme handler injects into every chapter. A chapter of the scrolled layout is laid out for
+    /// a page P tall (the height limit of its images), whatever the frame's height.
+    private func updateRootStyle() {
+        var pageSize = viewportSize
+        if resolvedLayout == .scrolled, pageSize.height > 0 { pageSize.height = scrollPageHeight }
+        schemeHandler.rootStyle = ContentInjector.rootStyle(settings: settings, pageSize: pageSize, publicationID: container.id)
+    }
+
+    /// Sets the web view up for scrolling. The hidden web view that measures the paged layout stops: the scrolled
+    /// layout estimates the chapters it has not shown (S1).
+    private func enterScrolledLayout() {
+        guard layout != .scrolled else { return }
+        layout = .scrolled
+        loadedAsWrapper = false
+        renderer.setZoomEnabled(false)
+        renderer.resetZoom()
+        renderer.setScrollMode(true)
+        renderer.setWritingMode(.horizontalTB)
+        writingMode = .horizontalTB
+        spreadPlan = SpreadBuilder.plan(for: publication, policy: .never, viewportSize: viewportSize)
+        paginationService.pause()
+    }
+
+    /// Back to the paged setup (the book cannot be scrolled after all, or the setting changed).
+    private func leaveScrolledLayout() {
+        guard layout == .scrolled else { return }
+        layout = .paged
+        estimatesTask?.cancel()
+        estimatesTask = nil
+        scrollDocumentIndices = []
+        scrollOffset = 0
+        scrollChapterHeight = 0
+        if !scrollVisible.isEmpty { scrollVisible = [] }
+        if scrollAtEnd { scrollAtEnd = false }
+        if scrollAtStart { scrollAtStart = false }
+        scrollGeneration += 1
+        renderer.setScrollMode(false)
+        // The theme may have changed meanwhile; a layout key selected before is not configured again.
+        paginationService.updateTheme(settings: pagedSettings)
+        paginationService.resume()
+        rebuildPagination()
+    }
+
+    /// A new layout of the scrolled document: a new number, and the heights of another layout are dropped (§6.3).
+    private func selectScrolledLayout() {
+        scrollGeneration += 1
+        let key = ScrollLayoutKey(width: Int(viewportSize.width.rounded()), pageHeight: Int(scrollPageHeight.rounded()), settings: settings.layoutKey)
+        if key != scrollLayoutKey {
+            scrollLayoutKey = key
+            scrollHeights = [:]
+        }
+        spreadPlan = SpreadBuilder.plan(for: publication, policy: .never, viewportSize: viewportSize)
+        rebuildPagination()
+    }
+
+    /// Height of every chapter of the loaded scroll document, in its order: measured, or estimated (§5.2).
+    private var scrollEstimates: [Double] {
+        ScrollPaging.heights(spineIndices: scrollDocumentIndices, measured: scrollHeights, pagination: pagination, pageHeight: scrollPageHeight)
+    }
+
+    private func scrollLayoutParameters(rootStyle: String?) -> LayoutParameters {
+        var parameters = LayoutParameters(pageSize: viewportSize, settings: settings, rootStyle: rootStyle)
+        parameters.scroll = ScrollLayoutParameters(
+            insets: contentInsets,
+            heights: scrollEstimates,
+            generation: scrollGeneration,
+            keepsFarChapters: ScreenReader.isRunning
+        )
+        return parameters
+    }
+
+    private func scrollPlace(for target: LoadTarget) -> ScrollTarget.Place {
+        switch target {
+        case .first: return .start
+        case .last: return .end
+        case .page(let index): return .offset(ScrollPaging.offset(ofPage: index, pageHeight: scrollPageHeight))
+        case .fragment(let fragment): return .fragment(fragment)
+        case .cfi(let cfi): return .cfi(cfi)
+        }
+    }
+
+    /// Loads the scroll document that holds `spineIndex` and puts `target` on the reading line (§4.1).
+    private func loadScrolled(_ spineIndex: Int, target: LoadTarget) async {
+        loadGeneration += 1
+        let generation = loadGeneration
+        isLoading = true
+        loadInProgress = (spineIndex, target)
+        defer { if generation == loadGeneration { loadInProgress = nil } }
+        renderer.setContentHidden(true)
+        transientHighlight = nil
+        if currentSelection != nil {
+            currentSelection = nil
+            emit(.selectionChanged(nil))
+        }
+        enterScrolledLayout()
+        applyPageSize()
+        updateRootStyle()
+        let layoutSize = viewportSize
+        let layoutInsets = contentInsets
+        let single = ScrollDocument.isSingle(publication: publication, spineIndex: spineIndex)
+        scrollDocumentIndices = ScrollDocument.spineIndices(publication: publication, start: spineIndex, single: single)
+        selectScrolledLayout()
+        logger.debug("load scrolled spine \(spineIndex) generation \(self.scrollGeneration)")
+        do {
+            let url = ScrollDocument.url(publicationID: container.id, start: spineIndex, single: single)
+            _ = try await withReady(generation: generation) { renderer.load(url) }
+            guard generation == loadGeneration else { return }
+            _ = try await renderer.layout(scrollLayoutParameters(rootStyle: nil))
+            guard generation == loadGeneration else { return }
+            let shown = try await renderer.showLocation(ScrollTarget(spineIndex: spineIndex, place: scrollPlace(for: target)))
+            guard generation == loadGeneration else { return }
+            let location: ScrollLocation
+            switch shown {
+            case .shown(let value):
+                location = value
+            case .vertical:
+                // A chapter in vertical writing: this book is paged (§1). The same target is opened that way.
+                sawVerticalChapter = true
+                await loadChapter(spineIndex, target: target)
+                return
+            case .missing:
+                throw ReaderError.loadFailed(spineIndex: spineIndex, underlying: "the scroll document does not hold the item")
+            }
+            await applyHighlights(isLoadingScrollDocument: true)
+            guard generation == loadGeneration else { return }
+            applyScrollLocation(location)
+            let changedDuringLoad = (viewportSize != layoutSize || contentInsets != layoutInsets || resolvedLayout != .scrolled) && pendingResize == nil
+            isLoading = pendingResize != nil || changedDuringLoad
+            hasLoaded = true
+            hasEverLoaded = true
+            initialCFI = nil
+            renderer.setContentHidden(false)
+            publishScrollPosition(cfi: location.cfi, force: true)
+            if changedDuringLoad {
+                // A new size or new insets, or a neighbour chapter turned out to be in vertical writing.
+                enqueue { [weak self] in await self?.relayoutPreservingPosition() }
+            }
+        } catch {
+            guard generation == loadGeneration else { return }
+            isLoading = false
+            if hasLoaded { renderer.setContentHidden(false) }
+            if case .webContentTerminated? = error as? ReaderError { return }
+            if let readerError = error as? ReaderError {
+                emit(.error(readerError))
+            } else {
+                emit(.error(.loadFailed(spineIndex: spineIndex, underlying: error.localizedDescription)))
+            }
+        }
+    }
+
+    /// A jump in the scrolled layout (§8.1): the reader's scrolling is stopped, then the target goes to the reading
+    /// line. A chapter outside the window gets a new window under a picture of the screen; a chapter the scroll
+    /// document does not hold (a non-linear item, or the way back from one) loads another document.
+    private func scrollTo(spineIndex: Int, target: LoadTarget) async {
+        guard publication.readingOrder.indices.contains(spineIndex) else { return }
+        guard layout == .scrolled, hasLoaded, scrollDocumentIndices.contains(spineIndex) else {
+            await loadChapter(spineIndex, target: target)
+            return
+        }
+        await renderer.stopScrolling()
+        await clearTransientHighlightIfNeeded()
+        let inWindow = (try? await renderer.scrollWindowContains(spineIndex: spineIndex)) ?? false
+        let wasLoading = isLoading
+        if !inWindow {
+            isLoading = true
+            captureRelayoutSnapshotIfNeeded()
+            await relayoutSnapshotTask?.value
+            // The window is rebuilt: the selection goes with its chapter (§10).
+            if currentSelection != nil {
+                currentSelection = nil
+                emit(.selectionChanged(nil))
+            }
+        }
+        defer {
+            if !inWindow, !wasLoading, pendingResize == nil {
+                isLoading = false
+                relayoutSnapshot = nil
+            }
+        }
+        let generation = loadGeneration
+        do {
+            let shown = try await renderer.showLocation(ScrollTarget(spineIndex: spineIndex, place: scrollPlace(for: target)))
+            guard generation == loadGeneration, layout == .scrolled else { return }
+            switch shown {
+            case .shown(let location):
+                guard location.generation == scrollGeneration else { return }
+                applyScrollLocation(location)
+                publishScrollPosition(cfi: location.cfi, force: true)
+            case .vertical:
+                sawVerticalChapter = true
+                await loadChapter(spineIndex, target: target)
+            case .missing:
+                await loadChapter(spineIndex, target: target)
+            }
+        } catch {
+            emit(.error(.scriptFailed(error.localizedDescription)))
+        }
+    }
+
+    /// `goForward()` / `goBackward()` in the scrolled layout (§8.2): one screen, animated; reported as a page turn
+    /// when the position moved.
+    private func scrollByScreens(_ screens: Int) async {
+        guard hasLoaded, !isLoading else { return }
+        await renderer.stopScrolling()
+        await clearTransientHighlightIfNeeded()
+        let from = position
+        let generation = loadGeneration
+        do {
+            guard let location = try await renderer.scrollBy(pages: screens, lines: 0, animated: true) else { return }
+            guard generation == loadGeneration, layout == .scrolled, location.generation == scrollGeneration else { return }
+            applyScrollLocation(location)
+            publishScrollPosition(cfi: location.cfi, force: true)
+            guard location.moved, let to = position else { return }
+            emit(.navigated(ReaderNavigation(cause: .pageTurn, from: from, to: to)))
+        } catch {
+            emit(.error(.scriptFailed(error.localizedDescription)))
+        }
+    }
+
+    /// Scrolls a few lines of text (↑ ↓ on macOS, §8.2). Not queued behind other operations and not awaited: key
+    /// repeat adds up in the scroll controller, and the position arrives with its `scrolled` messages.
+    @_spi(EPUBUI) public func scrollByLines(_ lines: Int) {
+        guard layout == .scrolled, hasLoaded, !isLoading, lines != 0 else { return }
+        Task { @MainActor [weak self] in
+            do { _ = try await self?.renderer.scrollBy(pages: 0, lines: lines, animated: true) } catch { self?.logger.debug("scrollBy failed: \(error.localizedDescription)") }
+        }
+    }
+
+    /// Home / End on macOS in the scrolled layout (§8.2): the start or the end of the chapter at the reading line.
+    @_spi(EPUBUI) public func goToChapterEdge(end: Bool) async {
+        await run { [self] in
+            await reportingNavigation(.jump) { [self] in
+                guard layout == .scrolled, hasLoaded else { return }
+                await scrollTo(spineIndex: currentSpineIndex, target: end ? .last : .first)
+            }
+        }
+    }
+
+    /// Takes over what the scroll controller says about the reading line.
+    private func applyScrollLocation(_ location: ScrollLocation) {
+        let pageHeight = scrollPageHeight
+        let height = location.chapterHeight > 0 ? location.chapterHeight : pageHeight
+        let place = ScrollPaging.place(offset: location.offset, chapterHeight: height, pageHeight: pageHeight, isAtEnd: location.isAtEnd)
+        scrollOffset = location.offset
+        scrollChapterHeight = height
+        if currentSpineIndex != location.spineIndex || currentUnit == nil {
+            currentSpineIndex = location.spineIndex
+            currentUnit = .reflowable(spineIndex: location.spineIndex, twoPages: false)
+        }
+        if currentPageIndex != place.pageIndex { currentPageIndex = place.pageIndex }
+        if chapterPageCount != place.chapterPageCount { chapterPageCount = place.chapterPageCount }
+        if scrollVisible != location.visible { scrollVisible = location.visible }
+        if scrollAtEnd != location.isAtEnd { scrollAtEnd = location.isAtEnd }
+        if scrollAtStart != location.isAtStart { scrollAtStart = location.isAtStart }
+    }
+
+    /// Publishes `position` for the reading line (§7): at most once a second while the scrolling goes on, always
+    /// (`force`) when it has stopped or a move has ended (§3.3).
+    private func publishScrollPosition(cfi: CFI?, force: Bool) {
+        let spineIndex = currentSpineIndex
+        let own = cfi.flatMap { publication.spineIndex(of: $0) == spineIndex ? $0 : nil }
+        // A reading line without text (an image, a chapter still loading) keeps the chapter's last position, or
+        // falls back to the chapter's body element.
+        let fallback = position.flatMap { $0.spineIndex == spineIndex ? $0.cfi : nil }
+        let published = own ?? fallback ?? CFI(spineSteps: publication.cfiSpineSteps(forSpineIndex: spineIndex), steps: [CFI.Step(index: 4)])
+        let updated = ReadingPosition(
+            cfi: published,
+            spineIndex: spineIndex,
+            chapterTitle: chapterTitle(forSpineIndex: spineIndex),
+            progressionInChapter: chapterProgression,
+            totalProgression: totalProgression
+        )
+        guard updated != position else { return }
+        let now = ContinuousClock.now
+        if !force, let last = lastScrollPositionEmit, now - last < .seconds(1) { return }
+        lastScrollPositionEmit = now
+        position = updated
+        emit(.positionChanged(updated))
+    }
+
+    /// The display web view measured a chapter: its virtual pages are known, and the estimates of the others (which
+    /// learn from the measured ones) go back to the scroll controller, a few changes at a time (§6.2).
+    private func scrollHeightsDidChange() {
+        rebuildPagination()
+        guard estimatesTask == nil else { return }
+        estimatesTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(for: .milliseconds(200))
+            guard let self, !Task.isCancelled else { return }
+            self.estimatesTask = nil
+            guard self.layout == .scrolled, self.hasLoaded else { return }
+            do { try await self.renderer.setEstimates(self.scrollEstimates) } catch { self.logger.debug("setEstimates failed: \(error.localizedDescription)") }
+        }
+    }
+
+    /// The relayout of the scrolled layout, and the switch between the two layouts (§11): the reader's scrolling is
+    /// stopped, the text at the reading line (or at the page's start) is remembered as a CFI, and it is put back in
+    /// the new layout. Called by `relayoutPreservingPosition`, which holds the picture that covers the web view.
+    private func relayoutScrolledOrSwitch() async {
+        var anchor: CFI?
+        if layout == .scrolled {
+            await renderer.stopScrolling()
+            if let location = (try? await renderer.locationAtReadingLine()) ?? nil, location.generation == scrollGeneration {
+                applyScrollLocation(location)
+                anchor = location.cfi
+            }
+            anchor = anchor ?? position.flatMap { $0.spineIndex == currentSpineIndex ? $0.cfi : nil }
+        } else {
+            anchor = (try? await renderer.cfiForPage(currentPageIndex, margins: settings.pageMargins)) ?? position?.cfi
+        }
+        let spineIndex = anchor.flatMap { publication.spineIndex(of: $0) }.flatMap { isShowing(spineIndex: $0) ? $0 : nil } ?? currentSpineIndex
+        let target: LoadTarget = anchor.map { .cfi($0) } ?? .page(currentPageIndex)
+        guard layout == .scrolled, resolvedLayout == .scrolled else {
+            // The other document is loaded and the position restored in it.
+            await loadChapter(spineIndex, target: target)
+            return
+        }
+        // The chapters are laid out again in place: a selection does not survive it (§10).
+        if currentSelection != nil {
+            currentSelection = nil
+            emit(.selectionChanged(nil))
+            try? await renderer.clearSelection()
+        }
+        await clearTransientHighlightIfNeeded()
+        applyPageSize()
+        updateRootStyle()
+        selectScrolledLayout()
+        let generation = loadGeneration
+        do {
+            _ = try await renderer.applySettings(scrollLayoutParameters(rootStyle: schemeHandler.rootStyle))
+            guard generation == loadGeneration else { return }
+            let shown = try await renderer.showLocation(ScrollTarget(spineIndex: spineIndex, place: scrollPlace(for: target)))
+            guard generation == loadGeneration, layout == .scrolled else { return }
+            switch shown {
+            case .shown(let location):
+                applyScrollLocation(location)
+                publishScrollPosition(cfi: location.cfi, force: true)
+            case .vertical:
+                sawVerticalChapter = true
+                await loadChapter(spineIndex, target: target)
+            case .missing:
+                await loadChapter(spineIndex, target: target)
+            }
         } catch {
             emit(.error(.scriptFailed(error.localizedDescription)))
         }
@@ -899,9 +1393,12 @@ public final class ReaderSession {
 
     /// Draws the highlights of the documents on `unit` (default: the visible face), replacing the previous set.
     /// Publication annotations go first so that the app's are drawn above them.
-    private func applyHighlights(for unit: SpreadPlan.Unit? = nil) async {
-        if unit == nil { guard hasLoaded else { return } }
-        let indices = unit?.spineIndices ?? currentUnit?.spineIndices ?? [currentSpineIndex]
+    ///
+    /// Scrolled layout: the scroll controller gets the highlights of every chapter its document holds and draws a
+    /// chapter's part when the chapter enters the window (08-continuous-scroll §10).
+    private func applyHighlights(for unit: SpreadPlan.Unit? = nil, isLoadingScrollDocument: Bool = false) async {
+        if unit == nil, !isLoadingScrollDocument { guard hasLoaded else { return } }
+        let indices = layout == .scrolled ? scrollDocumentIndices : (unit?.spineIndices ?? currentUnit?.spineIndices ?? [currentSpineIndex])
         let theme = settings.theme
         var drawings: [HighlightDrawing] = []
         if showsPublicationAnnotations {
@@ -969,7 +1466,7 @@ public final class ReaderSession {
 
     /// Reads the CFI of the visible page's first text and publishes it as `position` / `positionChanged`.
     private func refreshPosition() async {
-        guard hasLoaded else { return }
+        guard hasLoaded, layout == .paged else { return }
         let spineIndex = currentSpineIndex
         let pageIndex = currentPageIndex
         let cfi: CFI?
@@ -1024,11 +1521,20 @@ public final class ReaderSession {
     private func selectLayout() {
         guard viewportSize.width > 0, viewportSize.height > 0 else { return }
         spreadPlan = SpreadBuilder.plan(for: publication, policy: settings.spreadPolicy, viewportSize: viewportSize)
-        let key = LayoutKey(pageSize: viewportSize, settings: settings, isSpread: spreadPlan.hasTwoPageReflow)
+        // A book that asked for the scrolled layout and cannot have it is keyed (and pre-paginated) as the paged
+        // layout it is shown in.
+        let key = LayoutKey(pageSize: viewportSize, settings: pagedSettings, isSpread: spreadPlan.hasTwoPageReflow)
         if paginationCache.select(key) {
-            paginationService.configure(pageSize: viewportSize, settings: settings, plan: spreadPlan, generation: paginationCache.generation, currentSpineIndex: hasLoaded ? currentSpineIndex : nil)
+            paginationService.configure(pageSize: viewportSize, settings: pagedSettings, plan: spreadPlan, generation: paginationCache.generation, currentSpineIndex: hasLoaded ? currentSpineIndex : nil)
             rebuildPagination()
         }
+    }
+
+    /// The settings with the paged layout: what the paged display of a book is keyed and measured with.
+    private var pagedSettings: ReaderSettings {
+        var paged = settings
+        paged.layout = .paged
+        return paged
     }
 
     /// The display web view's own measurement of a face counts as a measured value for the current layout. Each
@@ -1046,9 +1552,14 @@ public final class ReaderSession {
     private func rebuildPagination() {
         // A two-page face holds twice the text of a single page (M4).
         let perPage = BookPagination.defaultCharactersPerPage(writingMode: writingMode) * (spreadPlan.hasTwoPageReflow ? 2 : 1)
+        // Scrolled layout: the virtual pages of the chapters the display web view has laid out; the others are
+        // estimated from their character counts (08-continuous-scroll §6.1; measuring every chapter is S3).
+        let measured = layout == .scrolled
+            ? ScrollPaging.measuredPageCounts(heights: scrollHeights, pageHeight: scrollPageHeight)
+            : paginationCache.measured
         let updated = BookPagination.make(
             publication: publication,
-            measured: paginationCache.measured,
+            measured: measured,
             defaultCharactersPerPage: perPage
         )
         guard updated != pagination else { return }
@@ -1059,10 +1570,17 @@ public final class ReaderSession {
     /// iOS memory warning (02-rendering §8.4): stop pre-pagination for now (its neighbour snapshots go too), keep only
     /// the current layout's counts and drop the search index (rebuilt by the next search). Pre-pagination resumes
     /// with the next chapter change, settings change or resize.
+    ///
+    /// Scrolled layout: the window shrinks to the chapters in the viewport and their neighbours (08-continuous-scroll
+    /// §12). No scroll position is written, so it does not wait for the scrolling to stop.
     func didReceiveMemoryWarning() {
         paginationService.pause()
         paginationCache.dropOtherLayouts()
         searchService = nil
+        guard layout == .scrolled, hasLoaded else { return }
+        Task { @MainActor [weak self] in
+            do { try await self?.renderer.trimScrollWindow() } catch { self?.logger.debug("trimScrollWindow failed: \(error.localizedDescription)") }
+        }
     }
 
     // MARK: - Bridge messages
@@ -1092,7 +1610,8 @@ public final class ReaderSession {
             handleImageTap(src: src, alt: alt, rect: rect, x: x, y: y)
         case .tap(let x, let y):
             let point = pagePoint(x: x, y: y)
-            let zone: TapZone = viewportSize.width > 0
+            // The scrolled layout has no zones that turn pages: every tap is the app's (08-continuous-scroll §0).
+            let zone: TapZone = viewportSize.width > 0 && layout == .paged
                 ? (point.x < viewportSize.width * 0.25 ? .leading : (point.x >= viewportSize.width * 0.75 ? .trailing : .center))
                 : .center
             emit(.tapped(point, zone: zone))
@@ -1106,6 +1625,23 @@ public final class ReaderSession {
             guard selected != currentSelection else { return }
             currentSelection = selected
             emit(.selectionChanged(selected))
+        case .scrolled(let location):
+            // A message of a layout that is gone, or of the positions a jump passes through, says nothing.
+            guard layout == .scrolled, hasLoaded, !isLoading, location.generation == scrollGeneration else { return }
+            applyScrollLocation(location)
+            publishScrollPosition(cfi: location.cfi, force: location.isAtRest)
+        case .chapterHeight(let spineIndex, let height, let generation, _):
+            guard layout == .scrolled, generation == scrollGeneration, height > 0, scrollHeights[spineIndex] != height else { return }
+            scrollHeights[spineIndex] = height
+            scrollHeightsDidChange()
+        case .chapterWritingMode(_, let mode):
+            guard layout == .scrolled, mode.isVertical, !sawVerticalChapter else { return }
+            // The book is shown paged from now on (08-continuous-scroll §1). During a load the load itself notices
+            // (`loadScrolled`); afterwards the position is kept across the switch.
+            sawVerticalChapter = true
+            guard hasLoaded else { return }
+            isLoading = true
+            enqueue { [weak self] in await self?.relayoutPreservingPosition() }
         }
     }
 
@@ -1131,6 +1667,10 @@ public final class ReaderSession {
     /// Moves to a spine item (and the element its fragment names), then emits `internalLink`.
     private func followInternalLink(spineIndex: Int, path: String, fragment: String?) async {
         await reportingNavigation(.link) { [self] in
+            if layout == .scrolled, hasLoaded {
+                await scrollTo(spineIndex: spineIndex, target: fragment.map { .fragment($0) } ?? .first)
+                return
+            }
             if isShowing(spineIndex: spineIndex), hasLoaded {
                 // The same document (or the other page of the visible fixed-layout spread): only the page may change.
                 // A link without a fragment goes to the document's start, like a link into another document.
@@ -1223,7 +1763,9 @@ public final class ReaderSession {
 
     /// Whether `spineIndex` is one of the documents on the visible face.
     private func isShowing(spineIndex: Int) -> Bool {
-        currentUnit?.contains(spineIndex: spineIndex) ?? (spineIndex == currentSpineIndex)
+        // Scrolled layout: one of the chapters the scroll document holds (it may be outside the window).
+        if layout == .scrolled { return scrollDocumentIndices.contains(spineIndex) }
+        return currentUnit?.contains(spineIndex: spineIndex) ?? (spineIndex == currentSpineIndex)
     }
 
     /// The visible face is a spread wrapper document (fixed layout or vertical two-page), not the chapter itself (M4).

@@ -131,6 +131,7 @@ enum ContentInjector {
         declarations.append("--reader-margin-v: \(cssLength(settings.pageMargins.vertical))")
         declarations.append("--reader-font-size: \(settings.fontScale)")
         declarations.append("--reader-line-height: \(settings.lineHeight)")
+        declarations.append("--reader-scroll-text-width: \(settings.scrolledTextWidth)")
         declarations.append("--reader-fg: \(settings.theme.foreground.cssString)")
         declarations.append("--reader-bg: \(settings.theme.background.cssString)")
         declarations.append("--reader-link: \(settings.theme.link.cssString)")

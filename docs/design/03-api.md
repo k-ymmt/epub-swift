@@ -6,9 +6,10 @@
 M1 時点の実装状態を「M1 実装済み」「M3 で追加」のように記す。CFI に依存する API（位置、ハイライト、選択、検索）は
 M3 で入り、それまで `ReaderSession` は spine index とページ index を公開する。
 
-スクロール表示で足す API（`ReaderLayout`、`ReaderSettings.layout` / `scrolledTextWidth`、`ReaderSession.layout` /
-`contentInsets` / `isScrolling`、`ReaderEvent.scrolling`、`ReaderNavigation.Cause.scroll`、`readerContentInsets`）は
-`08-continuous-scroll.md` §3 にあり、未実装。実装したマイルストーンごとに、この文書へ移す。
+スクロール表示の API は `08-continuous-scroll.md` §3 に設計がある。S1（2026-11-14）で実装したのは `ReaderLayout`、
+`ReaderSettings.layout` / `scrolledTextWidth`、`ReaderSession.layout` / `contentInsets`、`ReaderInsets`、
+`readerContentInsets(top:bottom:)` で、下の該当箇所に書いてある。`ReaderSession.isScrolling`、`ReaderEvent.scrolling`、
+`ReaderNavigation.Cause.scroll` は S2 で足す（未実装）。
 
 ## 1. 使い方の全体像
 
@@ -157,6 +158,8 @@ public struct ReaderSettings: Codable, Hashable, Sendable {
     public var pageMargins: PageMargins = .init(horizontal: 24, vertical: 20)
     public var theme: ReaderTheme = .light
     public var spreadPolicy: SpreadPolicy = .auto   // auto / never / always
+    public var layout: ReaderLayout = .paged        // S1 で追加。ページ表示（既定）/ スクロール表示
+    public var scrolledTextWidth: Double = 36       // S1 で追加。スクロール表示の本文の最大幅（em）
     public var respectsPublisherFonts: Bool { font == .publisher }
 
     public enum FontChoice: Codable, Hashable, Sendable {
@@ -184,6 +187,20 @@ public struct ReaderTheme: Codable, Hashable, Sendable {
     public static let lightPalette, darkPalette: [HighlightColor: ReaderColor]   // M6 で追加。init の既定
 }
 ```
+
+スクロール表示の S1 で追加（08 §3.1）:
+
+```swift
+public enum ReaderLayout: String, Codable, Hashable, Sendable {
+    case paged          // ページ表示（既定）
+    case scrolled       // スクロール表示（縦の連続スクロール）
+}
+```
+
+- `layout` は希望で、実際の表示方式は `ReaderSession.layout`。固定レイアウトの章を含む本、`rtl` の本、縦書きの章のある本は、
+  `.scrolled` を選んでいてもページ表示で開く（08 §1）。`layout` の無い古い JSON は `.paged` で読む。
+- `scrolledTextWidth` は本文の文字サイズ（`fontScale` を掛けた後）の倍数。表示領域がそれより狭ければ、幅は表示領域から
+  `pageMargins.horizontal` を引いた値。スクロール表示では `spreadPolicy` を使わない。どちらも `layoutKey` に入る。
 
 M6 で追加: `init` の `annotationPalette` / `annotationFallbackColor` は省略でき、`isDark` に応じて `lightPalette` /
 `darkPalette` と灰色になる。M6 より前に保存したテーマ（パレットの無い JSON）も同じ既定で読める。
@@ -467,7 +484,35 @@ extension View {
 ```
 
 修飾子は SwiftUI の `Environment` で `EPUBReaderView` に届ける。既定は `.slide`、`.default` ジェスチャ、
-選択アクションなし。M1 実装済み。`selectionActions` は M3 実装済みで、`EPUBReaderView` が環境値を
+選択アクションなし。M1 実装済み。
+
+スクロール表示の S1 で追加（08 §3.2、§3.4）:
+
+```swift
+extension View {
+    public func readerContentInsets(top: Double, bottom: Double) -> some View   // 既定 0
+}
+
+extension ReaderSession {
+    public private(set) var layout: ReaderLayout     // 今この本を表示している方式
+    public var contentInsets: ReaderInsets           // EPUBReaderView が上の修飾子の値を入れる
+}
+
+public struct ReaderInsets: Hashable, Sendable {
+    public var top: Double
+    public var bottom: Double
+}
+```
+
+- スクロール表示では、アプリは `EPUBReaderView` をバーや安全領域の下まで広げ、隠れる分を `readerContentInsets` で渡す。
+  本文は枠の端まで流れ、読む行（位置を決める行）・位置の復元・1 ページの高さはインセットの内側で数える。ページ表示では使わない。
+- スクロール表示での `ReaderSession` の各プロパティの意味（`position` は読む行の最初の文字、`currentPage` は高さ P ごとの
+  仮想ページ、`isShowingSpread` / `isZoomed` は常に false、`pageSnapshot(_:)` は常に nil）と、`go(to:)` 系・`goForward()` /
+  `goBackward()` の動作は 08 §3.2。S1 では、読者のスクロールで出るイベントは `positionChanged` だけ。
+- `pageTransition`、`ReaderGestures` の `swipeEnabled` / `tapToTurnEnabled` / `tapZones` はスクロール表示では効かない
+  （タップは常に `tapped(_, zone: .center)`、`imageTapped` は常にアプリへ）。`keyboardEnabled` は効き、対応は ↑ ↓ = 3 行分、
+  space / PageDown / → = 1 画面進む、⇧space / PageUp / ← = 戻る、Home / End = 章の先頭 / 末尾（`ReaderKeyAction` の
+  `linesForward` / `linesBackward` を足した）。`selectionActions` は M3 実装済みで、`EPUBReaderView` が環境値を
 `ReaderSession.selectionActions` に転送する（§4.4）。
 
 ### 4.2 `PageTransition`

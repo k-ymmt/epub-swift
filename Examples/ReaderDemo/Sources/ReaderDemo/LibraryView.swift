@@ -54,6 +54,18 @@ struct LibraryView: View {
             .toolbar {
                 Button("Open…", systemImage: "folder") { importing = true }
             }
+            .task {
+                // Recording mode from the environment (`ScrollRecorder.Launch`): open the named book right away.
+                guard path.isEmpty, let name = ScrollRecorder.Launch.current.book else { return }
+                if let book = Library.bundled.first(where: { $0.id == name }) {
+                    path = [book]
+                } else if FileManager.default.fileExists(atPath: name) {
+                    let url = URL(fileURLWithPath: name)
+                    let book = Book(id: url.path, title: url.deletingPathExtension().lastPathComponent, url: url)
+                    opened.append(book)
+                    path = [book]
+                }
+            }
             .fileImporter(isPresented: $importing, allowedContentTypes: [.epub]) { result in
                 guard case .success(let url) = result else { return }
                 _ = url.startAccessingSecurityScopedResource()

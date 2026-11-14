@@ -34,6 +34,15 @@ final class ReaderWebView: WKWebView {
         super.smartMagnify(with: event)
         onMagnificationChanged?(magnification)
     }
+
+    /// Scrolled layout (08-continuous-scroll §5.6): sees every scroll-wheel event before the web view does and
+    /// decides whether the web view gets it (`false` withholds the rest of a gesture that was stopped).
+    var onScrollWheel: (@MainActor (NSEvent) -> Bool)?
+
+    override func scrollWheel(with event: NSEvent) {
+        if let onScrollWheel, !onScrollWheel(event) { return }
+        super.scrollWheel(with: event)
+    }
     #endif
 
     private func menuEntries() -> (actions: [SelectionAction], selection: SelectedText)? {

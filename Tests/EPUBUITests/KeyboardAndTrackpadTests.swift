@@ -30,6 +30,27 @@ import AppKit
         }
     }
 
+    /// The scrolled layout (docs/design/08-continuous-scroll.md §0): ↑ ↓ scroll a few lines, space / PageDown / → one
+    /// screen forward, ⇧space / PageUp / ← one back, Home / End the chapter's start / end.
+    @Test func inTheScrolledLayoutTheArrowsScrollLinesAndThePageKeysScreens() {
+        func action(_ key: ReaderKey) -> ReaderKeyAction { key.action(isRightToLeft: false, isScrolled: true) }
+        #expect(action(.down) == .linesForward)
+        #expect(action(.up) == .linesBackward)
+        #expect(action(.space) == .forward)
+        #expect(action(.pageDown) == .forward)
+        #expect(action(.right) == .forward)
+        #expect(action(.shiftSpace) == .backward)
+        #expect(action(.pageUp) == .backward)
+        #expect(action(.left) == .backward)
+        #expect(action(.home) == .chapterStart)
+        #expect(action(.end) == .chapterEnd)
+        #expect(ReaderKeyAction.linesPerArrowKey == 3)
+        // The paged table never scrolls lines.
+        for key in [ReaderKey.left, .right, .up, .down, .pageUp, .pageDown, .space, .shiftSpace, .home, .end] {
+            #expect(![ReaderKeyAction.linesForward, .linesBackward].contains(key.action(isRightToLeft: false)))
+        }
+    }
+
     #if canImport(AppKit)
     @Test func keyEventsMapToReaderKeys() {
         func key(_ code: Int, _ flags: NSEvent.ModifierFlags = []) -> ReaderKey? {

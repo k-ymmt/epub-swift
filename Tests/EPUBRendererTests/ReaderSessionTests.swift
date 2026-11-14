@@ -16,9 +16,10 @@ final class SessionHost {
     let window: NSWindow
     #endif
 
-    init(url: URL, settings: ReaderSettings = ReaderSettings(), size: CGSize = CGSize(width: 400, height: 600), initialPosition: ReadingPosition? = nil) async throws {
+    init(url: URL, settings: ReaderSettings = ReaderSettings(), size: CGSize = CGSize(width: 400, height: 600), initialPosition: ReadingPosition? = nil, insets: ReaderInsets = ReaderInsets()) async throws {
         let container = try await EPUBContainer(url: url)
         session = ReaderSession(container: container, settings: settings, initialPosition: initialPosition)
+        session.contentInsets = insets
         #if canImport(AppKit)
         window = NSWindow(contentRect: CGRect(origin: CGPoint(x: 50, y: 50), size: size), styleMask: [.titled], backing: .buffered, defer: false)
         window.contentView = session.platformView

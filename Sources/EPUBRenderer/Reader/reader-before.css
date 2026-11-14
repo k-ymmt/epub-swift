@@ -99,6 +99,42 @@ img {
   height: auto;
 }
 
+/* Scrolled layout (docs/design/08-continuous-scroll.md §4.2; reader.js sets the attribute on a chapter of the scroll
+   wrapper). No columns: the document is as tall as its content, and the frame that shows it takes that height. The
+   text is one centered column, at most `--reader-scroll-text-width` times the root's font size wide (`em` on the root:
+   its own font size after the reader's scale; WebKit resolves `rem` in the root's own `max-width` against the size
+   before the scale), with the horizontal margin on both sides and twice the vertical margin above
+   and below the chapter. The box is the root, as in the paged layout, so the publisher's `body` rules still apply
+   inside it. After the vertical-writing rules above: same specificity, and these must win. */
+:root {
+  --reader-scroll-text-width: 36;
+}
+
+html[data-reader-layout="scrolled"] {
+  width: auto !important;
+  height: auto !important;
+  max-width: calc(var(--reader-scroll-text-width) * 1em) !important;
+  margin: 0 auto !important;
+  padding: calc(2 * var(--reader-margin-v)) var(--reader-margin-h) !important;
+  column-width: auto !important;
+  column-count: auto !important;
+  column-gap: normal !important;
+}
+
+html[data-reader-layout="scrolled"]::after {
+  display: none !important;
+}
+
+/* A picture fits one page of the scrolled layout (`--reader-page-height` is the page height P there). */
+html[data-reader-layout="scrolled"] img,
+html[data-reader-layout="scrolled"] svg,
+html[data-reader-layout="scrolled"] video,
+html[data-reader-layout="scrolled"] canvas,
+html[data-reader-layout="scrolled"] object {
+  max-width: 100%;
+  max-height: var(--reader-page-height);
+}
+
 table {
   max-width: 100%;
 }

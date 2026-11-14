@@ -48,6 +48,7 @@ final class PublicationRegistry {
 
 /// Serves `epub://<publicationID>/<path>` straight from the ZIP (docs/design/02-rendering.md §2).
 ///
+/// - `_reader/spread?…`, `_reader/scroll?…` → the generated wrapper documents (`SpreadDocument`, `ScrollDocument`)
 /// - `_reader/css/<name>.css` → the bundled stylesheets
 /// - `_reader/fonts/<family>` → a custom font registered through `ReaderSettings.FontChoice.custom`
 /// - spine XHTML → the (possibly repaired) document with the viewport meta and stylesheets injected
@@ -106,6 +107,10 @@ final class EPUBSchemeHandler: NSObject, WKURLSchemeHandler {
             serveSpreadDocument(url: url, container: container, task: urlSchemeTask, taskID: taskID)
             return
         }
+        if path == ScrollDocument.path {
+            serveScrollDocument(url: url, container: container, task: urlSchemeTask, taskID: taskID)
+            return
+        }
         if path.hasPrefix("_reader/") {
             serveReaderResource(path: path, url: url, publicationID: publicationID, task: urlSchemeTask, taskID: taskID)
             return
@@ -156,6 +161,19 @@ final class EPUBSchemeHandler: NSObject, WKURLSchemeHandler {
     private func serveSpreadDocument(url: URL, container: EPUBContainer, task: any WKURLSchemeTask, taskID: ObjectIdentifier) {
         guard let parsed = SpreadDocument.parse(query: URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems),
               let html = SpreadDocument.html(publication: container.publication, publicationID: container.id, kind: parsed.kind, pages: parsed.pages, rootStyle: rootStyle) else {
+            finish(task, taskID: taskID, response: Self.errorResponse(url: url, status: 404), data: nil)
+            return
+        }
+        let data = Data(html.utf8)
+        finish(task, taskID: taskID, response: Self.response(url: url, mediaType: "text/html", length: data.count), data: data)
+    }
+
+    // MARK: - Scroll wrapper (08-continuous-scroll §4.1)
+
+    /// `_reader/scroll?start=12`: the wrapper document of the scrolled layout (`ScrollDocument`).
+    private func serveScrollDocument(url: URL, container: EPUBContainer, task: any WKURLSchemeTask, taskID: ObjectIdentifier) {
+        guard let parsed = ScrollDocument.parse(query: URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems),
+              let html = ScrollDocument.html(publication: container.publication, publicationID: container.id, start: parsed.start, single: parsed.single, rootStyle: rootStyle) else {
             finish(task, taskID: taskID, response: Self.errorResponse(url: url, status: 404), data: nil)
             return
         }

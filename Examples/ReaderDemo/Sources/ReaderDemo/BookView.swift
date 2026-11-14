@@ -89,6 +89,15 @@ struct BookView: View {
                         guard let session else { return }
                         Task { readThrough = await ReadThroughResult.run(session) }
                     }
+                    Divider()
+                    // 08-continuous-scroll §13: scroll while it records, then read the file with
+                    // Spikes/scripts/analyse-fling.py.
+                    Button("Record scrolling for 20 s") { record(seconds: 20, fling: false) }
+                        .disabled(session?.layout != .scrolled)
+                    #if os(macOS)
+                    Button("Record 20 s of trackpad flings") { record(seconds: 20, fling: true) }
+                        .disabled(session?.layout != .scrolled)
+                    #endif
                 }
                 .disabled(session == nil)
             }
@@ -187,13 +196,47 @@ struct BookView: View {
                 }
                 let store = BookStore(bookID: book.id, publication: container.publication)
                 // The session opens at the saved position once the view has a size.
-                let session = ReaderSession(container: container, initialPosition: store.position)
+                let launch = ScrollRecorder.Launch.current
+                var settings = ReaderSettings()
+                if let layout = launch.layout { settings.layout = layout }
+                let session = ReaderSession(container: container, settings: settings, initialPosition: launch.start == nil ? store.position : nil)
                 session.annotations = store.annotations
                 self.store = store
                 self.session = session
+                if launch.start != nil || launch.seconds != nil { await runLaunchScript(launch, session) }
             } catch {
                 loadError = String(describing: error)
             }
+        }
+    }
+
+    private func record(seconds: Double, fling: Bool) {
+        guard let session else { return }
+        status = "Recording for \(Int(seconds)) s: scroll now"
+        Task {
+            do {
+                let result = try await ScrollRecorder.record(session, seconds: seconds, name: book.id, fling: fling)
+                status = "Recorded \(result.samples) samples (\(result.moving) moving): \(result.url.path)"
+            } catch {
+                status = "Recording failed: \(error)"
+            }
+        }
+    }
+
+    /// The environment asked for a place and a recording (`ScrollRecorder.Launch`): goes there once the book is
+    /// shown, then records.
+    private func runLaunchScript(_ launch: ScrollRecorder.Launch, _ session: ReaderSession) async {
+        for _ in 0..<200 where session.position == nil { try? await Task.sleep(for: .milliseconds(50)) }
+        if let start = launch.start { await session.go(toSpineIndex: start) }
+        guard let seconds = launch.seconds else { return }
+        try? await Task.sleep(for: .milliseconds(1500))
+        status = "Recording for \(Int(seconds)) s: scroll now"
+        do {
+            let result = try await ScrollRecorder.record(session, seconds: seconds, name: book.id, fling: launch.fling)
+            status = "Recorded \(result.samples) samples (\(result.moving) moving): \(result.url.lastPathComponent)"
+        } catch {
+            status = "Recording failed: \(error)"
+            print("RECORD FAILED \(error)")
         }
     }
 
@@ -409,7 +452,11 @@ struct StatusBar: View {
                 }
                 Spacer()
                 // M4: the face kind (spread of which spine items, fixed layout, zoom).
-                if session.isShowingSpread {
+                if session.layout == .scrolled {
+                    // 08-continuous-scroll: the chapters on screen.
+                    Text("scroll \(session.visibleSpineIndices.map(String.init).joined(separator: "+"))")
+                        .foregroundStyle(.secondary)
+                } else if session.isShowingSpread {
                     Text("spread \(session.visibleSpineIndices.map(String.init).joined(separator: "+"))")
                         .foregroundStyle(.secondary)
                 } else {
@@ -535,13 +582,26 @@ struct SettingsView: View {
                     ForEach(ThemeOption.allCases) { Text($0.rawValue).tag($0) }
                 }
                 .pickerStyle(.segmented)
-                // M4: auto = two pages when the viewport is landscape (and the book allows it); never / always force it.
-                Picker("Spread", selection: $settings.spreadPolicy) {
-                    Text("Auto").tag(ReaderSettings.SpreadPolicy.auto)
-                    Text("Never").tag(ReaderSettings.SpreadPolicy.never)
-                    Text("Always").tag(ReaderSettings.SpreadPolicy.always)
+                // 08-continuous-scroll: pages, or one scrolling document (a book that cannot scroll stays in pages:
+                // fixed layout, right-to-left, vertical writing).
+                Picker("Layout", selection: $settings.layout) {
+                    Text("Pages").tag(ReaderLayout.paged)
+                    Text("Scroll").tag(ReaderLayout.scrolled)
                 }
                 .pickerStyle(.segmented)
+                if settings.layout == .scrolled {
+                    LabeledContent("Text width \(Int(settings.scrolledTextWidth)) em") {
+                        Slider(value: $settings.scrolledTextWidth, in: 20...60, step: 2)
+                    }
+                } else {
+                    // M4: auto = two pages when the viewport is landscape (and the book allows it); never / always force it.
+                    Picker("Spread", selection: $settings.spreadPolicy) {
+                        Text("Auto").tag(ReaderSettings.SpreadPolicy.auto)
+                        Text("Never").tag(ReaderSettings.SpreadPolicy.never)
+                        Text("Always").tag(ReaderSettings.SpreadPolicy.always)
+                    }
+                    .pickerStyle(.segmented)
+                }
                 Button("Reset") { settings = ReaderSettings() }
             }
             .navigationTitle("Settings")

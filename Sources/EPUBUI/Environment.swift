@@ -22,6 +22,10 @@ private struct SelectionActionsKey: EnvironmentKey {
     static let defaultValue: [SelectionAction] = []
 }
 
+private struct ReaderContentInsetsKey: EnvironmentKey {
+    static let defaultValue = ReaderInsets()
+}
+
 extension EnvironmentValues {
     var pageTransition: AnyPageTransition {
         get { self[PageTransitionKey.self] }
@@ -42,6 +46,11 @@ extension EnvironmentValues {
         get { self[SelectionActionsKey.self] }
         set { self[SelectionActionsKey.self] = newValue }
     }
+
+    var readerContentInsets: ReaderInsets {
+        get { self[ReaderContentInsetsKey.self] }
+        set { self[ReaderContentInsetsKey.self] = newValue }
+    }
 }
 
 extension View {
@@ -59,6 +68,16 @@ extension View {
     /// Forwarded to `ReaderSession.selectionActions`. Default: none.
     public func selectionActions(_ actions: [SelectionAction]) -> some View {
         environment(\.selectionActions, actions)
+    }
+
+    /// What bars and safe areas cover at the top and the bottom of the `EPUBReaderView` inside this view, in points
+    /// (docs/design/08-continuous-scroll.md §3.4). Forwarded to `ReaderSession.contentInsets`. Default: 0.
+    ///
+    /// The scrolled layout is meant to be placed under the bars: the text runs to the frame's edges, and the reading
+    /// line, the restored position and the height of one page are counted inside these insets. Changing them lays
+    /// the text out again, so they should not follow bars that come and go. The paged layout ignores them.
+    public func readerContentInsets(top: Double, bottom: Double) -> some View {
+        environment(\.readerContentInsets, ReaderInsets(top: top, bottom: bottom))
     }
 
     /// Receives `ReaderEvent`s from the `EPUBReaderView` inside this view.

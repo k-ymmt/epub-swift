@@ -58,10 +58,12 @@ final class WebViewSpineRenderer: NSObject, SpineRenderer {
         configuration.dataDetectorTypes = []
         #endif
         let controller = WKUserContentController()
-        if let scriptURL = Bundle.module.url(forResource: "reader", withExtension: "js", subdirectory: "Reader") ?? Bundle.module.url(forResource: "reader", withExtension: "js"),
-           let source = try? String(contentsOf: scriptURL, encoding: .utf8) {
-            // Also in the iframes of a spread wrapper (M4); a framed document does not talk to Swift directly.
-            controller.addUserScript(WKUserScript(source: source, injectionTime: .atDocumentEnd, forMainFrameOnly: false, in: Self.readerWorld))
+        // scroll-core.js first: reader.js's scroll controller uses it. Both also run in the iframes of a wrapper (M4,
+        // 08-continuous-scroll); a framed document does not talk to Swift directly.
+        for name in ["scroll-core", "reader"] {
+            if let scriptURL = Self.readerScriptURL(named: name), let source = try? String(contentsOf: scriptURL, encoding: .utf8) {
+                controller.addUserScript(WKUserScript(source: source, injectionTime: .atDocumentEnd, forMainFrameOnly: false, in: Self.readerWorld))
+            }
         }
         configuration.userContentController = controller
 
@@ -122,6 +124,11 @@ final class WebViewSpineRenderer: NSObject, SpineRenderer {
         #endif
     }
 
+    /// The bundled script `name`.js (`reader`, `scroll-core`).
+    nonisolated static func readerScriptURL(named name: String) -> URL? {
+        Bundle.module.url(forResource: name, withExtension: "js", subdirectory: "Reader") ?? Bundle.module.url(forResource: name, withExtension: "js")
+    }
+
     // MARK: - Zoom (fixed layout, 02-rendering §6.3)
 
     func setZoomEnabled(_ enabled: Bool) {
@@ -154,7 +161,7 @@ final class WebViewSpineRenderer: NSObject, SpineRenderer {
     func resetZoom() {
         #if canImport(UIKit)
         if webView.scrollView.zoomScale != 1 { webView.scrollView.setZoomScale(1, animated: false) }
-        webView.scrollView.isScrollEnabled = false
+        if !isScrollMode { webView.scrollView.isScrollEnabled = false }
         #else
         if webView.magnification != 1 { webView.magnification = 1 }
         #endif
@@ -185,7 +192,7 @@ final class WebViewSpineRenderer: NSObject, SpineRenderer {
         // WebKit moves the scale around while it lays a document out; only a user zoom on a zoomable face counts.
         let zoomed = isZoomEnabled && scale > 1.01
         #if canImport(UIKit)
-        if webView.scrollView.isScrollEnabled != zoomed {
+        if !isScrollMode, webView.scrollView.isScrollEnabled != zoomed {
             webView.scrollView.isScrollEnabled = zoomed
             if !zoomed { syncNativeScroll(to: CGPoint(x: slotRect(visibleSlot).minX, y: slotRect(visibleSlot).minY)) }
         }
@@ -214,7 +221,10 @@ final class WebViewSpineRenderer: NSObject, SpineRenderer {
     /// Three slots along the paging axis; the visible slot is pulled into the clip view (02-rendering §1.2).
     private func layoutWebViewFrame() {
         guard pageSize.width > 0, pageSize.height > 0 else { return }
-        if writingMode.isVertical {
+        if isScrollMode {
+            // The frame is the visible area: the document scrolls inside it (08-continuous-scroll §4.1).
+            webView.frame = CGRect(origin: .zero, size: pageSize)
+        } else if writingMode.isVertical {
             webView.frame = CGRect(x: 0, y: -CGFloat(visibleSlot) * pageSize.height, width: pageSize.width, height: pageSize.height * CGFloat(Self.slotCount))
         } else {
             webView.frame = CGRect(x: -CGFloat(visibleSlot) * pageSize.width, y: 0, width: pageSize.width * CGFloat(Self.slotCount), height: pageSize.height)
@@ -228,6 +238,7 @@ final class WebViewSpineRenderer: NSObject, SpineRenderer {
 
     /// Frame rectangle (in the web view's coordinates) of the page in `slot`.
     func slotRect(_ slot: Int) -> CGRect {
+        if isScrollMode { return CGRect(origin: .zero, size: pageSize) }
         if writingMode.isVertical {
             return CGRect(x: 0, y: CGFloat(slot) * pageSize.height, width: pageSize.width, height: pageSize.height)
         }
@@ -370,6 +381,185 @@ final class WebViewSpineRenderer: NSObject, SpineRenderer {
         )
     }
 
+    // MARK: - Scrolled layout (08-continuous-scroll §4, §5.6)
+
+    private(set) var isScrollMode = false
+    var onScrollInteractionChanged: (@MainActor (Bool) -> Void)?
+    /// The reader's hands are scrolling, as last told to the document.
+    private(set) var isScrollInteractionActive = false
+    #if canImport(UIKit)
+    private var interactionPoll: Timer?
+    private var panTargetInstalled = false
+    #else
+    private(set) var wheel = WheelInteraction()
+    private var wheelDeadline: Timer?
+    #endif
+
+    func setScrollMode(_ enabled: Bool) {
+        guard enabled != isScrollMode else { return }
+        isScrollMode = enabled
+        visibleSlot = 0
+        #if canImport(UIKit)
+        let scrollView = webView.scrollView
+        scrollView.isScrollEnabled = enabled
+        scrollView.bounces = enabled
+        scrollView.alwaysBounceHorizontal = false
+        scrollView.isDirectionalLockEnabled = enabled
+        scrollView.showsVerticalScrollIndicator = false
+        scrollView.showsHorizontalScrollIndicator = false
+        scrollView.scrollsToTop = false
+        scrollView.delegate = enabled ? self : nil
+        if enabled, !panTargetInstalled {
+            scrollView.panGestureRecognizer.addTarget(self, action: #selector(panDidChange(_:)))
+            panTargetInstalled = true
+        }
+        if !enabled { scrollView.setContentOffset(.zero, animated: false) }
+        #else
+        if enabled {
+            webView.onScrollWheel = { [weak self] (event: NSEvent) -> Bool in
+                guard let self else { return true }
+                return self.handleWheel(event)
+            }
+        } else {
+            webView.onScrollWheel = nil
+        }
+        wheel = WheelInteraction()
+        wheelDeadline?.invalidate()
+        wheelDeadline = nil
+        #endif
+        if !enabled { setInteractionActive(false, tellDocument: false) }
+        layoutWebViewFrame()
+    }
+
+    private func setInteractionActive(_ active: Bool, tellDocument: Bool = true) {
+        guard active != isScrollInteractionActive else { return }
+        isScrollInteractionActive = active
+        if tellDocument {
+            // Calls reach the document in the order they are made, so a call that follows sees this state.
+            webView.callAsyncJavaScript(
+                "if (window.__epubReader && window.__epubReader.setInteraction) { window.__epubReader.setInteraction({active: active}); }",
+                arguments: ["active": active], in: nil, in: Self.readerWorld, completionHandler: nil
+            )
+        }
+        onScrollInteractionChanged?(active)
+    }
+
+    #if canImport(UIKit)
+    /// Reads the scroll view's flags; while they say "active" a timer keeps reading them, because no delegate call
+    /// marks every way an interaction ends (a touch that stops the momentum and lifts without dragging).
+    private func evaluateInteraction() {
+        let scrollView = webView.scrollView
+        let active = isScrollMode && ScrollViewInteraction.isActive(isTracking: scrollView.isTracking, isDragging: scrollView.isDragging, isDecelerating: scrollView.isDecelerating)
+        setInteractionActive(active)
+        if active, interactionPoll == nil {
+            let timer = Timer(timeInterval: 0.05, repeats: true) { [weak self] _ in
+                MainActor.assumeIsolated { self?.evaluateInteraction() }
+            }
+            RunLoop.main.add(timer, forMode: .common)
+            interactionPoll = timer
+        } else if !active {
+            interactionPoll?.invalidate()
+            interactionPoll = nil
+        }
+    }
+
+    @objc private func panDidChange(_ recognizer: UIPanGestureRecognizer) {
+        evaluateInteraction()
+    }
+    #else
+    /// One scroll-wheel event of the scrolled layout. Returns whether the web view gets it.
+    private func handleWheel(_ event: NSEvent) -> Bool {
+        handleWheel(WheelInteraction.Event(phase: Self.phase(event.phase), momentumPhase: Self.phase(event.momentumPhase), time: event.timestamp))
+    }
+
+    /// The same for an event described by its phases (tests drive the state without real events).
+    @discardableResult
+    func handleWheel(_ event: WheelInteraction.Event) -> Bool {
+        let deliver = wheel.handle(event)
+        syncWheelInteraction(at: event.time)
+        return deliver
+    }
+
+    private func syncWheelInteraction(at time: TimeInterval) {
+        wheel.expireWithholding(at: time)
+        setInteractionActive(wheel.isActive(at: time))
+        wheelDeadline?.invalidate()
+        wheelDeadline = nil
+        guard let deadline = wheel.deadline(after: time) else { return }
+        let timer = Timer(timeInterval: max(0.01, deadline - time + 0.005), repeats: false) { [weak self] _ in
+            MainActor.assumeIsolated { self?.syncWheelInteraction(at: ProcessInfo.processInfo.systemUptime) }
+        }
+        RunLoop.main.add(timer, forMode: .common)
+        wheelDeadline = timer
+    }
+
+    private static func phase(_ phase: NSEvent.Phase) -> WheelInteraction.Phase {
+        if phase.contains(.began) { return .began }
+        if phase.contains(.changed) || phase.contains(.stationary) { return .changed }
+        if phase.contains(.ended) { return .ended }
+        if phase.contains(.cancelled) { return .cancelled }
+        if phase.contains(.mayBegin) { return .mayBegin }
+        return .none
+    }
+    #endif
+
+    func stopScrolling() async {
+        guard isScrollMode else { return }
+        #if canImport(UIKit)
+        let scrollView = webView.scrollView
+        if ScrollViewInteraction.isActive(isTracking: scrollView.isTracking, isDragging: scrollView.isDragging, isDecelerating: scrollView.isDecelerating) {
+            scrollView.stopScrollingAndZooming()
+            if scrollView.isTracking || scrollView.isDragging {
+                // A finger is down: ending the recognizer ends the tracking.
+                scrollView.panGestureRecognizer.isEnabled = false
+                scrollView.panGestureRecognizer.isEnabled = true
+            }
+            for _ in 0..<25 {
+                if !ScrollViewInteraction.isActive(isTracking: scrollView.isTracking, isDragging: scrollView.isDragging, isDecelerating: scrollView.isDecelerating) { break }
+                try? await Task.sleep(for: .milliseconds(10))
+            }
+        }
+        evaluateInteraction()
+        #else
+        let now = ProcessInfo.processInfo.systemUptime
+        wheel.stop(at: now)
+        syncWheelInteraction(at: now)
+        #endif
+        // The document hears "not active" before whatever the caller does next.
+        _ = try? await call("return window.__epubReader && window.__epubReader.setInteraction ? window.__epubReader.setInteraction({active: active}) : false", arguments: ["active": isScrollInteractionActive])
+    }
+
+    func showLocation(_ target: ScrollTarget) async throws -> ScrollShowResult {
+        let result = try await call("return window.__epubReader.showLocation(target)", arguments: ["target": target.dictionary])
+        guard let dict = result as? [String: Any] else { throw ReaderError.scriptFailed("showLocation returned \(String(describing: result))") }
+        if dict["missing"] as? Bool == true { return .missing }
+        if dict["vertical"] as? Bool == true { return .vertical(spineIndex: dict["spineIndex"] as? Int ?? target.spineIndex) }
+        guard let location = ScrollLocation(dict) else { throw ReaderError.scriptFailed("showLocation returned \(dict)") }
+        return .shown(location)
+    }
+
+    func scrollBy(pages: Int, lines: Int, animated: Bool) async throws -> ScrollLocation? {
+        let result = try await call("return window.__epubReader.scrollBy(step)", arguments: ["step": ["pages": pages, "lines": lines, "animated": animated]])
+        return ScrollLocation(result)
+    }
+
+    func locationAtReadingLine() async throws -> ScrollLocation? {
+        ScrollLocation(try await call("return window.__epubReader.locationAtReadingLine ? window.__epubReader.locationAtReadingLine() : null"))
+    }
+
+    func setEstimates(_ heights: [Double]) async throws {
+        _ = try await call("return window.__epubReader.setEstimates ? window.__epubReader.setEstimates(heights) : false", arguments: ["heights": heights])
+    }
+
+    func scrollWindowContains(spineIndex: Int) async throws -> Bool {
+        let result = try await call("return window.__epubReader.windowContains ? window.__epubReader.windowContains(index) : false", arguments: ["index": spineIndex])
+        return result as? Bool ?? false
+    }
+
+    func trimScrollWindow() async throws {
+        _ = try await call("return window.__epubReader.trimWindow ? window.__epubReader.trimWindow() : 0")
+    }
+
     // MARK: - Snapshots
 
     func snapshot(slot: Int) async throws -> (image: CGImage, scale: CGFloat)? {
@@ -387,6 +577,18 @@ final class WebViewSpineRenderer: NSObject, SpineRenderer {
         return (cgImage, CGFloat(cgImage.width) / pageSize.width)
     }
 }
+
+#if canImport(UIKit)
+// MARK: - UIScrollViewDelegate (scrolled layout, 08-continuous-scroll §5.6)
+
+extension WebViewSpineRenderer: UIScrollViewDelegate {
+    func scrollViewWillBeginDragging(_ scrollView: UIScrollView) { evaluateInteraction() }
+    func scrollViewDidEndDragging(_ scrollView: UIScrollView, willDecelerate decelerate: Bool) { evaluateInteraction() }
+    func scrollViewWillBeginDecelerating(_ scrollView: UIScrollView) { evaluateInteraction() }
+    func scrollViewDidEndDecelerating(_ scrollView: UIScrollView) { evaluateInteraction() }
+    func scrollViewDidEndScrollingAnimation(_ scrollView: UIScrollView) { evaluateInteraction() }
+}
+#endif
 
 // MARK: - WKNavigationDelegate
 

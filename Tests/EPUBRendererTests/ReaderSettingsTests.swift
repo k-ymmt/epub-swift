@@ -22,6 +22,42 @@ import Testing
         #expect(a.layoutKey != b.layoutKey)
     }
 
+    @Test func theLayoutIsPagedUnlessAskedOtherwiseAndOldSettingsDecodeAsPaged() throws {
+        let s = ReaderSettings()
+        #expect(s.layout == .paged)
+        #expect(s.scrolledTextWidth == 36)
+        // Settings saved before the scrolled layout existed have neither key (08-continuous-scroll §3.1).
+        var object = try #require(JSONSerialization.jsonObject(with: JSONEncoder().encode(s)) as? [String: Any])
+        object["layout"] = nil
+        object["scrolledTextWidth"] = nil
+        let old = try JSONDecoder().decode(ReaderSettings.self, from: JSONSerialization.data(withJSONObject: object))
+        #expect(old == s)
+        var scrolled = s
+        scrolled.layout = .scrolled
+        scrolled.scrolledTextWidth = 30
+        #expect(try JSONDecoder().decode(ReaderSettings.self, from: JSONEncoder().encode(scrolled)) == scrolled)
+    }
+
+    @Test func theLayoutKeyHoldsOnlyWhatTheLayoutInUseReads() {
+        var paged = ReaderSettings()
+        var scrolled = ReaderSettings()
+        scrolled.layout = .scrolled
+        #expect(paged.layoutKey != scrolled.layoutKey)
+        // The text width changes the scrolled layout only.
+        var wide = scrolled
+        wide.scrolledTextWidth = 44
+        #expect(wide.layoutKey != scrolled.layoutKey)
+        var pagedWide = paged
+        pagedWide.scrolledTextWidth = 44
+        #expect(pagedWide.layoutKey == paged.layoutKey)
+        // The spread policy changes the paged layout only.
+        var never = scrolled
+        never.spreadPolicy = .never
+        #expect(never.layoutKey == scrolled.layoutKey)
+        paged.spreadPolicy = .never
+        #expect(paged.layoutKey != ReaderSettings().layoutKey)
+    }
+
     @Test func roundTripsThroughCodable() throws {
         var s = ReaderSettings()
         s.font = .system(name: "Hiragino Mincho ProN")
