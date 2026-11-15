@@ -2046,7 +2046,12 @@
       el.setAttribute("data-spine-steps", item.s || "");
       // One page tall until the content is known: `100vh` in the chapter then means one page (§4.2).
       el.style.height = sc.page + "px";
-      el.style.visibility = "hidden";
+      // Not painted and not touched until its content has been laid out. `opacity`, not `visibility: hidden`: a frame
+      // that was hidden when the accessibility tree was read keeps an empty web area after it becomes visible
+      // (iOS 27.2: XCUITest, and so VoiceOver, saw the frame of a chapter loaded above the reading line without any
+      // of its text, for as long as the chapter stayed in the window).
+      el.style.opacity = "0";
+      el.style.pointerEvents = "none";
       const view = {
         pos: pos, spineIndex: item.i, stepsString: item.s || "", spineSteps: parseSpineSteps(item.s || ""),
         el: el, height: sc.page, first: sc.page, loaded: false, failed: false, fixed: false, vertical: false,
@@ -2101,7 +2106,8 @@
           if (sc.transient) { setTransientHighlight(sc.transient); }
         }
       }
-      view.el.style.visibility = "visible";
+      view.el.style.opacity = "";
+      view.el.style.pointerEvents = "";
       log("loaded", { index: view.spineIndex, height: view.height });
       if (!sc.showing) {
         autoWindow();

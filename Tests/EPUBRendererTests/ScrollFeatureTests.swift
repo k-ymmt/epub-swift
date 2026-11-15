@@ -319,6 +319,43 @@ extension EventRecorder {
 
     // MARK: Annotations (§10)
 
+    /// A chapter that joins the window is kept out of sight until it has been laid out, by `opacity` and not by
+    /// `visibility: hidden`: the accessibility tree read while a frame was hidden kept that chapter's web area empty
+    /// after the frame became visible (iOS 27.2, seen through XCUITest in Laperm: the frame of the chapter above the
+    /// reading line was there without any of its text, in about one run of four). Once laid out, nothing hides it.
+    @Test func aChapterJoiningTheWindowIsHiddenByOpacityNotVisibility() async throws {
+        let host = try await SessionHost.scrolled(url: Self.sample)
+        await host.session.loadIfNeeded()
+        try await host.waitForScrollRest()
+        try #require(try await !host.scrollState().spineIndices.contains(3))
+        // Record how each frame is styled at the moment it is added (before its document loads).
+        _ = try await host.js("""
+            window.__joined = [];
+            new MutationObserver(function (records) {
+              for (const record of records) {
+                for (const node of record.addedNodes) {
+                  if (node.tagName === "IFRAME") {
+                    window.__joined.push([node.getAttribute("data-spine-index"), node.style.visibility, node.style.opacity, node.style.pointerEvents].join("|"));
+                  }
+                }
+              }
+            }).observe(document.getElementById("__reader_stage"), { childList: true });
+            return true;
+            """)
+        await host.session.go(toSpineIndex: 3)
+        try await host.waitForScrollRest()
+        let joined = try #require(try await host.js("return window.__joined;") as? [String])
+        #expect(joined.contains("3||0|none"), "the chapter joins unpainted and untouchable, and not hidden: \(joined)")
+        #expect(joined.allSatisfy { $0.split(separator: "|", omittingEmptySubsequences: false)[1].isEmpty }, "no frame is `visibility: hidden`: \(joined)")
+        let shown = try await host.js("""
+            return Array.from(document.querySelectorAll("#__reader_stage > iframe")).map(function (frame) {
+              const style = getComputedStyle(frame);
+              return [style.visibility, style.opacity, style.pointerEvents].join("|");
+            });
+            """) as? [String]
+        #expect(shown?.isEmpty == false && shown?.allSatisfy { $0 == "visible|1|auto" } == true, "laid out, every chapter is shown: \(shown ?? [])")
+    }
+
     @Test func highlightsAreDrawnInTheChaptersOfTheWindowAndInAChapterThatJoinsIt() async throws {
         let host = try await SessionHost.scrolled(url: Self.sample)
         await host.session.loadIfNeeded()
