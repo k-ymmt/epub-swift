@@ -604,26 +604,51 @@ final class WebViewSpineRenderer: NSObject, SpineRenderer {
         layoutWebViewFrame()
     }
 
+    /// Numbers the measurements of this web view: the document tells them apart by it, also after it was loaded again.
+    private var measurementSerial = 0
+
     /// Loads one chapter into the scroll document this web view holds, lays it out like a chapter of the window and
     /// returns its height. The document has been laid out (`layout`) and shows no window.
     func measureScrollChapter(spineIndex: Int) async throws -> ScrollMeasurement {
-        var result = try await call("return window.__epubReader.measureChapter ? window.__epubReader.measureChapter(index) : null", arguments: ["index": spineIndex])
-        // The first answer is the height after the first layout. Each further call is a turn of the page's event
-        // loop: the fonts and pictures that layout asked for have begun to load by then, and the call waits for them
-        // (§6.2).
-        for _ in 0..<12 {
-            guard let dict = result as? [String: Any] else {
-                throw ReaderError.scriptFailed("measureChapter returned \(String(describing: result))")
+        measurementSerial += 1
+        let id = measurementSerial
+        do {
+            var result = try await call(
+                "return window.__epubReader.measureChapter ? window.__epubReader.measureChapter(index, id) : null",
+                arguments: ["index": spineIndex, "id": id]
+            )
+            // The first answer is the height after the first layout. Each further call is a turn of the page's event
+            // loop: the fonts and pictures that layout asked for have begun to load by then, and the call waits for
+            // them (§6.2).
+            for _ in 0..<12 {
+                guard let dict = result as? [String: Any] else {
+                    throw ReaderError.scriptFailed("measureChapter returned \(String(describing: result))")
+                }
+                if dict["vertical"] as? Bool == true { return .vertical }
+                // No height: the chapter did not load, or the measurement is no longer this one (its frame is gone).
+                guard let height = dict["height"] as? Double, height > 0 else { return .failed }
+                if dict["settled"] as? Bool == true { return .height(height, isFixed: dict["fixed"] as? Bool ?? false) }
+                // A caller that was given up meanwhile makes no further call for its chapter.
+                try Task.checkCancellation()
+                result = try await call("return window.__epubReader.settleMeasuredChapter(id)", arguments: ["id": id])
             }
-            if dict["vertical"] as? Bool == true { return .vertical }
-            guard let height = dict["height"] as? Double, height > 0, let id = dict["id"] as? Int else { return .failed }
-            if dict["settled"] as? Bool == true { return .height(height, isFixed: dict["fixed"] as? Bool ?? false) }
-            // A caller that was given up meanwhile makes no further call; one that slips through names its own
-            // measurement (`id`), so it cannot settle the chapter the next caller is measuring.
-            try Task.checkCancellation()
-            result = try await call("return window.__epubReader.settleMeasuredChapter(id)", arguments: ["id": id])
+            abandonMeasurement(id)
+            return .failed
+        } catch {
+            abandonMeasurement(id)
+            throw error
         }
-        return .failed
+    }
+
+    /// Takes the frame of a measurement that will not be settled out of the document (if it is still that
+    /// measurement's: the next one has taken it out otherwise). Not waited for: the caller is on its way out.
+    private func abandonMeasurement(_ id: Int) {
+        Task { @MainActor [weak self] in
+            _ = try? await self?.call(
+                "return window.__epubReader && window.__epubReader.abandonMeasuredChapter ? window.__epubReader.abandonMeasuredChapter(id) : false",
+                arguments: ["id": id]
+            )
+        }
     }
 
     // MARK: - Snapshots

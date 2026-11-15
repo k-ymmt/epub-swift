@@ -28,8 +28,8 @@ SwiftUI は import せず、UIKit / AppKit の WKWebView を扱う。
 - 章の文書には `layout({scrolled: true, …})` を渡す。`reader.js` が `<html data-reader-layout="scrolled">` を付け、
   `reader-before.css` が多段組（§3.4）を外して本文の箱を作る（08 §4.2）。章の CSS にある `vh` などビューポートの高さに
   よる長さは、1 ページの高さ P の px に書き換える（iframe は章と同じ高さなので、そのままだと `100vh` が章の高さになる）。
-  `loading="lazy"` の画像は `layout` のときに読み込み、`content-visibility` は `reader-after.css` で `visible` に戻す
-  （章は、読者がどこにいても内容の全部の高さを持つ。08 §4.2）。
+  `loading="lazy"` の画像（`width` と `height` の両方の属性を持つものを除く）は `layout` のときに読み込み、章の CSS の
+  `content-visibility: auto` は `visible` に書き換える（章は、読者がどこにいても内容の全部の高さを持つ。08 §4.2）。
 - ページめくりの演出（§7）、隣接章のスナップショット（§8.3）、3 ページ幅のフレーム（§1.2）は使わない。`relayoutSnapshot` は
   再レイアウトと窓の作り直しの間に使う。
 - 読者のスクロールが進んでいるかは Swift が調べてコントローラに伝える（iOS: スクロールビューの状態を 0.05 秒ごとに読む。

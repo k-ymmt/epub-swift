@@ -365,20 +365,26 @@ import EPUBCore
 
     // MARK: The measured heights arrive (§6.2, S3)
 
-    /// Starts the hidden web view's measurement a moment from now, when the trial is sampling.
+    /// Starts the hidden web view's measurement once the trial is sampling (its operation says so).
     func startMeasuring(_ host: SessionHost) -> Task<Void, Never> {
         let service = host.session.paginationService
         return Task { @MainActor in
-            try? await Task.sleep(for: .milliseconds(400))
+            let deadline = ContinuousClock.now + .seconds(30)
+            while ContinuousClock.now < deadline {
+                if (try? await host.js("return window.__testSampling === true")) as? Bool == true { break }
+                try? await Task.sleep(for: .milliseconds(20))
+            }
             service.measuresScrolledLayout = true
             service.pause()
             service.resume()
         }
     }
 
-    /// Waits until the blocks that stand in for the chapters outside the window have changed, and for more of it.
+    /// Tells `startMeasuring` that the trial is watching, then waits until the blocks that stand in for the chapters
+    /// outside the window have changed, and for more of it.
     static let measuredHeightsArrive = """
         const s0 = dbg.state(), pad0 = s0.pad - s0.neg, tail0 = s0.tail;
+        window.__testSampling = true;
         await until("the measured heights", function () { const s = dbg.state(); return s.pad - s.neg !== pad0 || s.tail !== tail0; }, 40000);
         await new Promise(function (r) { setTimeout(r, 2500); });
         """

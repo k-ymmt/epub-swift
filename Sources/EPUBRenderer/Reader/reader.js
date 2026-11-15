@@ -27,8 +27,8 @@
 // laid out with `layout({scrolled: true})` has no columns and is as tall as its content; it gives the controller the
 // `scroll` functions (content height, the text at a height, where a CFI is). Added for the controller:
 //   Swift -> JS: showLocation, scrollBy, locationAtReadingLine, setEstimates, trimWindow, setInteraction,
-//                measureChapter, settleMeasuredChapter (the hidden web view: a chapter's height without a
-//                window, §6.2)
+//                measureChapter, settleMeasuredChapter, abandonMeasuredChapter (the hidden web view: a
+//                chapter's height without a window, §6.2)
 //   JS -> Swift: scrolled {spineIndex, offset, chapterHeight, visible, atEnd, atStart, cfi, rest, generation},
 //                chapterHeight {spineIndex, height, generation, fixed}, chapterWritingMode {spineIndex, writingMode}
 (function () {
@@ -234,19 +234,9 @@
   // are kept: another page height writes them again, and the paged layout puts them back.
   const VIEWPORT_LENGTH = /(?<![\w-])(-?(?:\d+\.?\d*|\.\d+)(?:e[-+]?\d+)?)[dsl]?(vh|vb|vmin|vmax)\b/gi;
   let viewportLengths = null;
-  function collectViewportLengths() {
-    const uses = [];
-    function take(style) {
-      if (!style) { return; }
-      for (let i = 0; i < style.length; i++) {
-        const name = style[i];
-        const value = style.getPropertyValue(name);
-        // A length inside a URL is a file name.
-        if (!value || value.indexOf("url(") >= 0) { continue; }
-        VIEWPORT_LENGTH.lastIndex = 0;
-        if (VIEWPORT_LENGTH.test(value)) { uses.push({ style: style, name: name, value: value, priority: style.getPropertyPriority(name) }); }
-      }
-    }
+  // Every style declaration block of the chapter: the rules of its style sheets (imported and nested ones too) and
+  // the `style` attributes.
+  function eachStyle(take) {
     function walk(rules) {
       for (const rule of rules) {
         if (rule.style) { take(rule.style); }
@@ -257,7 +247,20 @@
     for (const sheet of document.styleSheets) {
       try { walk(sheet.cssRules); } catch (e) { /* a sheet that cannot be read */ }
     }
-    for (const el of document.querySelectorAll("[style]")) { take(el.style); }
+    for (const el of document.querySelectorAll("[style]")) { if (el.style) { take(el.style); } }
+  }
+  function collectViewportLengths() {
+    const uses = [];
+    eachStyle(function (style) {
+      for (let i = 0; i < style.length; i++) {
+        const name = style[i];
+        const value = style.getPropertyValue(name);
+        // A length inside a URL is a file name.
+        if (!value || value.indexOf("url(") >= 0) { continue; }
+        VIEWPORT_LENGTH.lastIndex = 0;
+        if (VIEWPORT_LENGTH.test(value)) { uses.push({ style: style, name: name, value: value, priority: style.getPropertyPriority(name) }); }
+      }
+    });
     return uses;
   }
   function applyViewportLengths(pageWidth, pageHeight) {
@@ -282,15 +285,44 @@
     }
   }
 
-  // Apply layout parameters and measure. Returns {pageCount, writingMode}.
-  // A chapter of the scrolled layout is as tall as all of its content, wherever the reader is in it: a picture that
-  // is loaded only once it comes near the screen (`loading="lazy"`) has no height until then, the chapter would grow
-  // while it is read, and in the frame that measures the chapter (the hidden web view, 08-continuous-scroll §6.2)
-  // the picture would never load. They load with the layout. (`content-visibility` is undone in reader-after.css.)
+  // --- content that has no height until it is near the screen (08-continuous-scroll §4.2) ---
+  // A chapter of the scrolled layout is as tall as all of its content, wherever the reader is in it. Two things have
+  // no height until they come near the screen: the chapter would grow while it is read, and in the frame that
+  // measures the chapter (the hidden web view, §6.2) they would never get their height.
+  //
+  // A picture with `loading="lazy"` and no size of its own: it loads with the layout. One whose `width` and `height`
+  // attributes give its place stays lazy (the chapter's height does not wait for it).
   function loadLazyContent() {
-    const lazy = document.querySelectorAll('img[loading="lazy"], iframe[loading="lazy"]');
-    for (let i = 0; i < lazy.length; i += 1) { lazy[i].setAttribute("loading", "eager"); }
+    const lazy = document.querySelectorAll('img[loading="lazy"]');
+    for (let i = 0; i < lazy.length; i += 1) {
+      if (lazy[i].hasAttribute("width") && lazy[i].hasAttribute("height")) { continue; }
+      lazy[i].setAttribute("loading", "eager");
+    }
   }
+  // `content-visibility: auto`: written as `visible` where the chapter's style sheets and `style` attributes say
+  // `auto`, and put back for the paged layout. Only `auto`: what the publication hides (`hidden`, and
+  // `hidden="until-found"`) stays hidden.
+  let autoVisibility = null;
+  function applyContentVisibility() {
+    if (!state.scrolled) {
+      if (autoVisibility) {
+        for (const use of autoVisibility) { use.style.setProperty("content-visibility", "auto", use.priority); }
+        autoVisibility = null;
+      }
+      return;
+    }
+    if (autoVisibility) { return; }
+    const uses = [];
+    eachStyle(function (style) {
+      if (style.getPropertyValue("content-visibility").trim() !== "auto") { return; }
+      const use = { style: style, priority: style.getPropertyPriority("content-visibility") };
+      style.setProperty("content-visibility", "visible", use.priority);
+      uses.push(use);
+    });
+    autoVisibility = uses;
+  }
+
+  // Apply layout parameters and measure. Returns {pageCount, writingMode}.
 
   function layout(params) {
     applyParams(params);
@@ -303,6 +335,7 @@
     if (state.scrolled) { root().setAttribute("data-reader-layout", "scrolled"); }
     else { root().removeAttribute("data-reader-layout"); }
     applyViewportLengths(params && params.pageWidth, params && params.pageHeight);
+    applyContentVisibility();
     state.writingMode = detectWritingMode();
     if (state.scrolled) {
       loadLazyContent();
@@ -2645,15 +2678,18 @@
     // A font starts to load one turn of the event loop after the layout that asked for it. That turn is Swift's
     // next call, not a timer of the page: the timers of a page nobody sees are slowed down.
     //
-    // `measureChapter(spineIndex)` resolves with `{id, height, fixed, settled: false}` after the first layout;
+    // `measureChapter(spineIndex, id)` resolves with `{id, height, fixed, settled: false}` after the first layout;
     // `settleMeasuredChapter(id)` waits for the fonts and the pictures that are loading, fits again and resolves with
     // the same and `settled`: true once the height is final (the frame is gone then). Other answers:
     // `{vertical: true}` for a chapter in vertical writing, `{missing: true}` for a chapter this document does not
-    // hold or a measurement that is not the one in progress (`id`: a caller that was given up may still make its
-    // next call, and must not settle the chapter of the caller after it), `{failed: true}` for a chapter that did
-    // not load or whose measurement was replaced by the next one.
+    // hold or a measurement that is not the one in progress, `{failed: true}` for a chapter that did not load or
+    // whose measurement was replaced by the next one. `abandonMeasuredChapter(id)` takes the frame of a measurement
+    // its caller gave up.
+    //
+    // `id` is the caller's number for the measurement, never used twice (not in another document either: this
+    // document may have been loaded again since). A caller that was given up may still make its next call, and must
+    // not settle or end the chapter of the caller after it.
     let probe = null;
-    let probeSerial = 0;
     function endProbe() {
       if (!probe) { return; }
       const state = probe;
@@ -2671,7 +2707,8 @@
       const pending = [];
       try {
         const images = doc.images;
-        for (let i = 0; i < images.length; i += 1) { if (!images[i].complete) { pending.push(images[i]); } }
+        // (A picture that stays lazy has its place without loading, and does not load in a frame nobody sees.)
+        for (let i = 0; i < images.length; i += 1) { if (!images[i].complete && images[i].getAttribute("loading") !== "lazy") { pending.push(images[i]); } }
       } catch (e) { /* no document */ }
       return pending;
     }
@@ -2704,7 +2741,7 @@
       });
       if (result.fixed) { state.fixed = true; }
     }
-    function measureChapter(spineIndex) {
+    function measureChapter(spineIndex, id) {
       endProbe();
       const pos = posOf[spineIndex];
       if (pos === undefined || !sc.laidOut || sc.views.length) { return Promise.resolve({ missing: true }); }
@@ -2713,8 +2750,7 @@
       el.setAttribute("scrolling", "no");
       el.setAttribute("data-reader-measure", String(item.i));
       el.style.height = sc.page + "px";
-      probeSerial += 1;
-      const state = { id: probeSerial, el: el, stepsString: item.s || "", spineIndex: item.i, generation: sc.generation, frame: sc.page, first: 0, fixed: false, bridge: null, mode: "horizontal-tb", rounds: 0, timer: null, finish: null };
+      const state = { id: id, el: el, stepsString: item.s || "", spineIndex: item.i, generation: sc.generation, frame: sc.page, first: 0, fixed: false, bridge: null, mode: "horizontal-tb", rounds: 0, timer: null, finish: null };
       probe = state;
       return new Promise(function (resolve) {
         let done = false;
@@ -2772,6 +2808,11 @@
         if (probe === state) { endProbe(); }
         return { failed: true };
       });
+    }
+    function abandonMeasuredChapter(id) {
+      if (!probe || probe.id !== id) { return false; }
+      endProbe();
+      return true;
     }
 
     // Tests and the demo's recording mode.
@@ -2848,6 +2889,7 @@
       holds: function (spineIndex) { return posOf[spineIndex] !== undefined; },
       measureChapter: measureChapter,
       settleMeasuredChapter: settleMeasuredChapter,
+      abandonMeasuredChapter: abandonMeasuredChapter,
       cfi: CFI,
       pageCount: function () { return 1; },
       debug: debug,
