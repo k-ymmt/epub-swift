@@ -1098,6 +1098,10 @@ extension EventRecorder {
         await host.session.go(toSpineIndex: 6)
         try await host.scrollDocument(by: 1234)
         try await host.waitForScrollRest()
+        // The position carries the part of the book read: compared across the reload once no page is an estimate.
+        try await host.waitForMeasurement()
+        try await host.scrollDocument(by: 1)
+        try await host.waitForScrollRest()
         let before = try #require(host.session.position)
         let page = host.session.currentPageIndex
         #expect(page == 2)
@@ -1199,6 +1203,9 @@ extension EventRecorder {
         try #require(RecoveryTests.crashWebContent(of: host.renderer), "the WebContent process could not be killed")
         await host.session.goForward()
         try await host.waitUntil(timeout: .seconds(15)) { !recorder.errors.isEmpty && host.session.hasLoaded && !host.session.isLoading }
+        // The crash queues the reload: until that has run, the session is "loaded and not loading" with the dead
+        // page, and a script call to it fails (WKError 5). The new document answers once it is there.
+        try await host.waitUntil(timeout: .seconds(15)) { (try? await host.scrollState()) != nil && !host.session.isLoading }
         try await host.waitForScrollRest()
         #expect(recorder.errors.count == 1, "\(recorder.errors)")
         #expect(recorder.errors.contains { if case .webContentTerminated = $0 { true } else { false } })

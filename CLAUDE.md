@@ -16,8 +16,8 @@ Read `docs/design/` before changing architecture. The documents are written in J
 - `05-spike-results.md`: results of the pre-M1 spikes (what held, what did not, and the design changes made)
 - `06-annotations.md`: highlights and bookmarks as EPUB Annotations 1.0 (M6)
 - `07-continuous-scroll-spike.md`: measurements for the scrolled layout (the spike, and §4 the product code after S1)
-- `08-continuous-scroll.md`: the scrolled layout (continuous vertical scroll): design, milestones S1–S4, what S1 and
-  S2 implemented and where they depart from the design (§16, §17)
+- `08-continuous-scroll.md`: the scrolled layout (continuous vertical scroll): design, milestones S1–S4, what S1,
+  S2 and S3 implemented and where they depart from the design (§16, §17, §18)
 
 ## Layout
 

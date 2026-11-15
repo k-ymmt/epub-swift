@@ -98,6 +98,9 @@ struct BookView: View {
                     Button("Record 20 s of trackpad flings") { record(seconds: 20, fling: true) }
                         .disabled(session?.layout != .scrolled)
                     #endif
+                    // 08-continuous-scroll §6.2: what the hidden web view measured against what the display shows.
+                    Button("Compare measured and shown heights") { checkHeights() }
+                        .disabled(session?.layout != .scrolled)
                 }
                 .disabled(session == nil)
             }
@@ -203,7 +206,7 @@ struct BookView: View {
                 session.annotations = store.annotations
                 self.store = store
                 self.session = session
-                if launch.start != nil || launch.seconds != nil { await runLaunchScript(launch, session) }
+                if launch.start != nil || launch.seconds != nil || launch.heights { await runLaunchScript(launch, session) }
             } catch {
                 loadError = String(describing: error)
             }
@@ -223,11 +226,30 @@ struct BookView: View {
         }
     }
 
+    private func checkHeights() {
+        guard let session else { return }
+        status = "Comparing heights: every chapter is shown once"
+        Task { await runHeightCheck(session) }
+    }
+
+    private func runHeightCheck(_ session: ReaderSession) async {
+        do {
+            status = try await HeightCheck.run(session, name: book.id).summary
+        } catch {
+            status = "Height check failed: \(error)"
+            print("HEIGHTS FAILED \(error)")
+        }
+    }
+
     /// The environment asked for a place and a recording (`ScrollRecorder.Launch`): goes there once the book is
     /// shown, then records.
     private func runLaunchScript(_ launch: ScrollRecorder.Launch, _ session: ReaderSession) async {
         for _ in 0..<200 where session.position == nil { try? await Task.sleep(for: .milliseconds(50)) }
         if let start = launch.start { await session.go(toSpineIndex: start) }
+        if launch.heights {
+            status = "Comparing heights: every chapter is shown once"
+            await runHeightCheck(session)
+        }
         guard let seconds = launch.seconds else { return }
         try? await Task.sleep(for: .milliseconds(1500))
         status = "Recording for \(Int(seconds)) s: scroll now"

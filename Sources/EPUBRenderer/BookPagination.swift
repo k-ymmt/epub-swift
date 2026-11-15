@@ -65,19 +65,27 @@ public struct BookPagination: Sendable, Hashable {
 
     /// Builds the numbering from the measured chapter page counts (`spineIndex → pageCount`).
     public static func make(publication: Publication, measured: [Int: Int], defaultCharactersPerPage: Double = 600) -> BookPagination {
+        make(publication: publication, measured: measured, extents: [:], defaultCharactersPerPage: defaultCharactersPerPage)
+    }
+
+    /// The same, for a layout that knows a measured chapter's length more finely than in whole pages (the scrolled
+    /// layout: its height over the page height, docs/design/08-continuous-scroll.md §6.2). `extents` is that length
+    /// in pages (`spineIndex → pages`); where there is one it teaches the characters-per-page ratio in place of the
+    /// count, which is rounded up chapter by chapter and would make every estimate too long.
+    static func make(publication: Publication, measured: [Int: Int], extents: [Int: Double], defaultCharactersPerPage: Double = 600) -> BookPagination {
         let linear = publication.linearReadingOrder
         var measuredCharacters = 0
-        var measuredPages = 0
+        var measuredPages = 0.0
         for item in linear {
             // Chapters with hardly any text (cover, title page: an image and a few words on one or two pages) would
             // drag the ratio down and inflate every estimate, so only text chapters teach it.
             if let pages = measured[item.index], let characters = item.characterCount, pages > 0, characters >= minimumTeachingCharacters {
                 measuredCharacters += characters
-                measuredPages += pages
+                if let extent = extents[item.index], extent.isFinite, extent > 0 { measuredPages += extent } else { measuredPages += Double(pages) }
             }
         }
         let ratio: Double = measuredPages > 0 && measuredCharacters > 0
-            ? min(maximumCharactersPerPage, max(minimumCharactersPerPage, Double(measuredCharacters) / Double(measuredPages)))
+            ? min(maximumCharactersPerPage, max(minimumCharactersPerPage, Double(measuredCharacters) / measuredPages))
             : max(1, defaultCharactersPerPage)
 
         var chapters: [Chapter] = []

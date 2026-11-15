@@ -289,10 +289,10 @@ public final class ReaderSession {
     /// Number of the scrolled layout in effect: `scrolled` / `chapterHeight` messages that carry another one come
     /// from a layout that is gone (§4.3).
     @ObservationIgnored private(set) var scrollGeneration = 0
-    /// Heights of the chapters the display web view has laid out in the layout `scrollLayoutKey` names. Chapters that
-    /// are not in it are estimated from their character counts (S1; the measurement of every chapter is S3).
-    @ObservationIgnored private(set) var scrollHeights: [Int: Double] = [:]
-    @ObservationIgnored private var scrollLayoutKey: ScrollLayoutKey?
+    /// Heights of the chapters of the scrolled layout in effect: laid out by the display web view, or measured by the
+    /// hidden one (`PaginationService`). They are kept by layout in the pagination cache (§6.3); chapters that are
+    /// not in it yet are estimated from their character counts.
+    var scrollHeights: [Int: Double] { layout == .scrolled ? paginationCache.heights : [:] }
     /// The chapters the loaded scroll document holds: the linear reading order, or one non-linear item alone.
     @ObservationIgnored private var scrollDocumentIndices: [Int] = []
     @ObservationIgnored private var lastScrollPositionEmit: ContinuousClock.Instant?
@@ -306,13 +306,6 @@ public final class ReaderSession {
     /// WebContent crashes so far: a script call that fails across one is the crash, not an error of its own.
     @ObservationIgnored private var terminationCount = 0
     @ObservationIgnored private var estimatesTask: Task<Void, Never>?
-
-    /// What the heights of the scrolled layout depend on (08-continuous-scroll §6.3).
-    private struct ScrollLayoutKey: Equatable {
-        var width: Int
-        var pageHeight: Int
-        var settings: ReaderSettings.LayoutKey
-    }
 
     static let loadTimeout: Duration = .seconds(10)
     /// Window resizes on macOS come as a stream of sizes; the relayout waits for them to settle (03-api §4.5).
@@ -377,7 +370,11 @@ public final class ReaderSession {
                 }
             }
         }
-        paginationService.onChapterMeasured = { [weak self] _, _ in self?.rebuildPagination() }
+        paginationService.onChapterMeasured = { [weak self] _, _ in
+            guard let self else { return }
+            if self.layout == .scrolled { self.scrollHeightsDidChange() } else { self.rebuildPagination() }
+        }
+        paginationService.onVerticalChapter = { [weak self] _ in self?.verticalChapterWasSeen() }
         rebuildPagination()
         #if canImport(UIKit)
         memoryWarningObserver = NotificationCenter.default.addObserver(forName: UIApplication.didReceiveMemoryWarningNotification, object: nil, queue: .main) { [weak self] _ in
@@ -1058,8 +1055,8 @@ public final class ReaderSession {
         schemeHandler.rootStyle = ContentInjector.rootStyle(settings: settings, pageSize: pageSize, publicationID: container.id)
     }
 
-    /// Sets the web view up for scrolling. The hidden web view that measures the paged layout stops: the scrolled
-    /// layout estimates the chapters it has not shown (S1).
+    /// Sets the web view up for scrolling. `selectScrolledLayout` follows and gives the hidden web view the scrolled
+    /// layout to measure.
     private func enterScrolledLayout() {
         guard layout != .scrolled else { return }
         layout = .scrolled
@@ -1070,10 +1067,11 @@ public final class ReaderSession {
         renderer.setWritingMode(.horizontalTB)
         writingMode = .horizontalTB
         spreadPlan = SpreadBuilder.plan(for: publication, policy: .never, viewportSize: viewportSize)
-        paginationService.pause()
     }
 
-    /// Back to the paged setup (the book cannot be scrolled after all, or the setting changed).
+    /// Back to the paged setup (the book cannot be scrolled after all, or the setting changed). `selectLayout` follows:
+    /// the paged layout's key is another one, so the hidden web view is configured for it (with the theme of now)
+    /// and the numbering is rebuilt from its page counts.
     private func leaveScrolledLayout() {
         guard layout == .scrolled else { return }
         abandonReaderScrolling()
@@ -1089,22 +1087,37 @@ public final class ReaderSession {
         if scrollAtStart { scrollAtStart = false }
         scrollGeneration += 1
         renderer.setScrollMode(false)
-        // The theme may have changed meanwhile; a layout key selected before is not configured again.
-        paginationService.updateTheme(settings: pagedSettings)
-        paginationService.resume()
+    }
+
+    /// A new layout of the scrolled document: a new number. The heights belong to the layout's key (§6.3): another
+    /// key starts the measurement of every chapter in the hidden web view (§6.2), a key seen before has its heights
+    /// back at once.
+    private func selectScrolledLayout() {
+        scrollGeneration += 1
+        spreadPlan = SpreadBuilder.plan(for: publication, policy: .never, viewportSize: viewportSize)
+        let key = LayoutKey(scrolledWidth: Double(viewportSize.width), pageHeight: scrollPageHeight, settings: settings)
+        if paginationCache.select(key) {
+            paginationService.configure(
+                pageSize: viewportSize,
+                settings: settings,
+                plan: spreadPlan,
+                generation: paginationCache.generation,
+                currentSpineIndex: hasLoaded ? currentSpineIndex : nil,
+                scrolledInsets: contentInsets
+            )
+        }
         rebuildPagination()
     }
 
-    /// A new layout of the scrolled document: a new number, and the heights of another layout are dropped (§6.3).
-    private func selectScrolledLayout() {
-        scrollGeneration += 1
-        let key = ScrollLayoutKey(width: Int(viewportSize.width.rounded()), pageHeight: Int(scrollPageHeight.rounded()), settings: settings.layoutKey)
-        if key != scrollLayoutKey {
-            scrollLayoutKey = key
-            scrollHeights = [:]
-        }
-        spreadPlan = SpreadBuilder.plan(for: publication, policy: .never, viewportSize: viewportSize)
-        rebuildPagination()
+    /// A chapter in vertical writing turned up (in the display's window, or in the hidden web view's measurement):
+    /// the book is shown paged from now on (§1). During a load the load itself notices (`loadScrolled`); afterwards
+    /// the position is kept across the switch.
+    private func verticalChapterWasSeen() {
+        guard layout == .scrolled, !sawVerticalChapter else { return }
+        sawVerticalChapter = true
+        guard hasLoaded else { return }
+        isLoading = true
+        enqueue { [weak self] in await self?.relayoutPreservingPosition() }
     }
 
     /// Height of every chapter of the loaded scroll document, in its order: measured, or estimated (§5.2).
@@ -1394,6 +1407,8 @@ public final class ReaderSession {
         scrollChapterHeight = height
         scrollLineCFI = location.cfi
         if currentSpineIndex != location.spineIndex { currentSpineIndex = location.spineIndex }
+        // The hidden web view measures the chapters around the reading line first (§6.2).
+        paginationService.setCurrentSpineIndex(location.spineIndex)
         // Also when the chapter is the one a paged spread showed: the scrolled layout has no spread (§3.2).
         let unit = SpreadPlan.Unit.reflowable(spineIndex: location.spineIndex, twoPages: false)
         if currentUnit != unit { currentUnit = unit }
@@ -1430,8 +1445,9 @@ public final class ReaderSession {
         emit(.positionChanged(updated))
     }
 
-    /// The display web view measured a chapter: its virtual pages are known, and the estimates of the others (which
-    /// learn from the measured ones) go back to the scroll controller, a few changes at a time (§6.2).
+    /// A chapter's height became known (the display web view laid it out, or the hidden one measured it): its virtual
+    /// pages are known, and the heights of the chapters outside the window (measured, or estimates that learn from
+    /// the measured ones) go back to the scroll controller, a few changes at a time (§6.2).
     private func scrollHeightsDidChange() {
         rebuildPagination()
         guard estimatesTask == nil else { return }
@@ -1704,16 +1720,19 @@ public final class ReaderSession {
     private func rebuildPagination() {
         // A two-page face holds twice the text of a single page (M4).
         let perPage = BookPagination.defaultCharactersPerPage(writingMode: writingMode) * (spreadPlan.hasTwoPageReflow ? 2 : 1)
-        // Scrolled layout: the virtual pages of the chapters the display web view has laid out; the others are
-        // estimated from their character counts (08-continuous-scroll §6.1; measuring every chapter is S3).
-        let measured = layout == .scrolled
-            ? ScrollPaging.measuredPageCounts(heights: scrollHeights, pageHeight: scrollPageHeight)
-            : paginationCache.measured
-        let updated = BookPagination.make(
-            publication: publication,
-            measured: measured,
-            defaultCharactersPerPage: perPage
-        )
+        // Scrolled layout: the virtual pages of the chapters whose height is known (08-continuous-scroll §6.1); the
+        // others are estimated from their character counts until the hidden web view has measured them (§6.2). The
+        // heights teach the estimate in fractions of a page.
+        let heights = scrollHeights
+        let pageHeight = scrollPageHeight
+        let updated = layout == .scrolled
+            ? BookPagination.make(
+                publication: publication,
+                measured: ScrollPaging.measuredPageCounts(heights: heights, pageHeight: pageHeight),
+                extents: ScrollPaging.extents(heights: heights, pageHeight: pageHeight),
+                defaultCharactersPerPage: perPage
+            )
+            : BookPagination.make(publication: publication, measured: paginationCache.measured, defaultCharactersPerPage: perPage)
         guard updated != pagination else { return }
         pagination = updated
         emit(.paginationUpdated(updated))
@@ -1783,17 +1802,13 @@ public final class ReaderSession {
             applyScrollLocation(location)
             publishScrollPosition(cfi: location.cfi, force: location.isAtRest)
         case .chapterHeight(let spineIndex, let height, let generation, _):
-            guard layout == .scrolled, generation == scrollGeneration, height > 0, scrollHeights[spineIndex] != height else { return }
-            scrollHeights[spineIndex] = height
-            scrollHeightsDidChange()
+            // What the display shows counts over what the hidden web view measured (08-continuous-scroll §6.2).
+            guard layout == .scrolled, generation == scrollGeneration else { return }
+            if paginationCache.storeHeight(spineIndex: spineIndex, height: height, source: .display, generation: paginationCache.generation) {
+                scrollHeightsDidChange()
+            }
         case .chapterWritingMode(_, let mode):
-            guard layout == .scrolled, mode.isVertical, !sawVerticalChapter else { return }
-            // The book is shown paged from now on (08-continuous-scroll §1). During a load the load itself notices
-            // (`loadScrolled`); afterwards the position is kept across the switch.
-            sawVerticalChapter = true
-            guard hasLoaded else { return }
-            isLoading = true
-            enqueue { [weak self] in await self?.relayoutPreservingPosition() }
+            if mode.isVertical { verticalChapterWasSeen() }
         case .scrolling(let active, let generation, let location):
             // Also during a jump that rebuilds the window (`isLoading`): the scrolling it ended must be closed.
             guard layout == .scrolled, hasLoaded else { return }

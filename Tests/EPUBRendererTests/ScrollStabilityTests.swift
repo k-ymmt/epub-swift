@@ -174,7 +174,8 @@ import EPUBCore
     /// is on screen. WebKit has a switch for exactly this, used by its own tests: with the detection of window
     /// occlusion off, a web view in an ordered-in window is visible. Without the switch the trial fails as hidden.
     func visibleHost(url: URL = ScrollLayoutTests.mobyDick, insets: ReaderInsets = ReaderInsets()) async throws -> SessionHost {
-        let host = try await SessionHost.scrolled(url: url, insets: insets)
+        // The runway is tested with chapters whose height is not known: the hidden web view does not measure.
+        let host = try await SessionHost.scrolled(url: url, insets: insets, measures: false)
         #if canImport(AppKit)
         let webView = host.renderer.webView
         let selector = Selector(("_setWindowOcclusionDetectionEnabled:"))

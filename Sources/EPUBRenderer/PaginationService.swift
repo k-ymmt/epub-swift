@@ -10,6 +10,11 @@ import WebKit
 /// and keeps snapshots of the first page of the next chapter and the last page of the previous chapter for the
 /// page-turn effect across chapter boundaries (§8.3). Order: next → previous → from the start; the current chapter
 /// is measured by the display web view. One chapter per `await`, so display navigation gets in between.
+///
+/// Scrolled layout (docs/design/08-continuous-scroll.md §6.2): the hidden web view holds the scroll document of the
+/// linear reading order without a window, and each chapter is loaded into a frame of it, laid out by the rules of
+/// the display's window and measured (`measureChapter` in reader.js). What is stored is the chapter's height; there
+/// are no snapshots (the scrolled layout has no page turn).
 @MainActor
 final class PaginationService {
     /// Snapshots of a chapter's first and last page, for the chapters adjacent to the current one.
@@ -26,6 +31,10 @@ final class PaginationService {
 
     private var pageSize: CGSize = .zero
     private var settings = ReaderSettings()
+    /// The insets of the scrolled layout being measured; nil while the paged layout is.
+    private var scrolledInsets: ReaderInsets?
+    /// The hidden web view holds the scroll document, laid out for the current layout.
+    private var scrollDocumentIsLaidOut = false
     /// The faces of the current layout (M4): a fixed-layout spread is measured as one wrapper document; its pages
     /// are one book page each. Spine indices in the queue and the snapshots are the faces' leading indices.
     private var plan = SpreadPlan(units: [])
@@ -55,6 +64,13 @@ final class PaginationService {
     var onSnapshotsChanged: (@MainActor () -> Void)?
     /// Called when a chapter could not be laid out (spine index, error). It is not retried for this layout.
     var onChapterFailed: (@MainActor (Int, any Error) -> Void)?
+    /// Called when a chapter measured for the scrolled layout is in vertical writing (spine index): the book cannot
+    /// be scrolled (08-continuous-scroll §1).
+    var onVerticalChapter: (@MainActor (Int) -> Void)?
+    /// False keeps the hidden web view from measuring the scrolled layout: the heights are then the display's own
+    /// and estimates, as they are in the first seconds after a book opens. For the tests of the scroll controller's
+    /// runway, which need chapters whose height is not known.
+    var measuresScrolledLayout = true
     /// Spine indices that failed for the current layout (tests, diagnostics).
     var failedSpineIndices: Set<Int> { failed }
     /// `true` while a chapter is being laid out or more chapters are queued (tests).
@@ -92,12 +108,20 @@ final class PaginationService {
 
     /// (Re)starts for a layout. Results of loads that started under an earlier generation are dropped by the cache;
     /// the running load is cancelled here. Snapshots belong to one layout, so they are cleared.
-    func configure(pageSize: CGSize, settings: ReaderSettings, plan: SpreadPlan, generation: Int, currentSpineIndex: Int?) {
+    ///
+    /// - Parameter scrolledInsets: the insets of the scrolled layout, when that is the layout to measure: `pageSize`
+    ///   is then the frame, and the chapters' heights are stored (`PaginationCache.storeHeight`).
+    func configure(pageSize: CGSize, settings: ReaderSettings, plan: SpreadPlan, generation: Int, currentSpineIndex: Int?, scrolledInsets: ReaderInsets? = nil) {
         self.pageSize = pageSize
         self.settings = settings
         self.plan = plan
         self.generation = generation
         self.currentSpineIndex = currentSpineIndex
+        self.scrolledInsets = scrolledInsets
+        // The scroll document is laid out once per layout; a paged chapter replaces it.
+        scrollDocumentIsLaidOut = false
+        renderer.setMeasuringScrollFrame(scrolledInsets != nil)
+        if scrolledInsets != nil { renderer.setWritingMode(.horizontalTB) }
         renderer.setPageSize(pageSize)
         renderer.setBackgroundColor(settings.theme.background)
         failed = []
@@ -202,6 +226,8 @@ final class PaginationService {
 
     private func needsWork(_ index: Int) -> Bool {
         guard !failed.contains(index) else { return false }
+        // Scrolled layout: a chapter the display has laid out is known too, and there are no snapshots.
+        if scrolledInsets != nil { return cache.height(ofSpineIndex: index) == nil }
         if unit(containing: index).spineIndices.contains(where: { cache.pageCount(ofSpineIndex: $0) == nil }) { return true }
         if let current = currentSpineIndex, neighbours(of: current).contains(index), snapshots[index] == nil { return true }
         return false
@@ -216,6 +242,7 @@ final class PaginationService {
 
     private func startWorkerIfNeeded() {
         guard worker == nil, pageSize.width > 0, pageSize.height > 0, generation >= 0, !isPaused else { return }
+        guard scrolledInsets == nil || measuresScrolledLayout else { return }
         workerToken += 1
         let token = workerToken
         worker = Task { @MainActor [weak self] in
@@ -244,12 +271,18 @@ final class PaginationService {
             // The whole chapter (load, layout, snapshots) is bounded: a bridge call on a document that is being
             // replaced must not stall the queue.
             try await withTimeout(Self.loadTimeout * 2) { [self] in
-                try await layOut(spineIndex: spineIndex, generation: generation, token: token)
+                if let insets = scrolledInsets {
+                    try await measureHeight(spineIndex: spineIndex, insets: insets, generation: generation, token: token)
+                } else {
+                    try await layOut(spineIndex: spineIndex, generation: generation, token: token)
+                }
             }
         } catch is CancellationError {
             return
         } catch {
             guard generation == self.generation, token == workerToken else { return }
+            // Whatever went wrong, the scroll document is not trusted to be there for the next chapter.
+            scrollDocumentIsLaidOut = false
             if processTerminated || Self.isProcessTermination(error) {
                 processTerminated = false
                 let retries = crashRetries[spineIndex, default: 0]
@@ -302,6 +335,51 @@ final class PaginationService {
             onSnapshotsChanged?()
         }
         onChapterMeasured?(leading, pageCount)
+    }
+
+    // MARK: - Measuring one chapter of the scrolled layout
+
+    /// The page height P of the scrolled layout being measured.
+    private func scrolledPageHeight(insets: ReaderInsets) -> Double {
+        ScrollPaging.pageHeight(viewportHeight: Double(pageSize.height), insets: insets)
+    }
+
+    /// Loads the scroll document of the linear reading order and lays it out without a window (§6.2).
+    private func layOutScrollDocument(insets: ReaderInsets, generation: Int) async throws {
+        guard let start = publication.linearReadingOrder.first?.index else { throw CancellationError() }
+        let url = ScrollDocument.url(publicationID: container.id, start: start, single: false)
+        _ = try await withReady { renderer.load(url) }
+        // The style of this layout goes to every chapter with its layout call: what the scheme handler injects is
+        // the display's style of the moment, which is already the next layout's while a change waits to be applied.
+        var chapterPage = pageSize
+        chapterPage.height = scrolledPageHeight(insets: insets)
+        let rootStyle = ContentInjector.rootStyle(settings: settings, pageSize: chapterPage, publicationID: container.id)
+        var parameters = LayoutParameters(pageSize: pageSize, settings: settings, rootStyle: rootStyle)
+        parameters.scroll = ScrollLayoutParameters(insets: insets, heights: [], generation: generation)
+        _ = try await renderer.layout(parameters)
+    }
+
+    private func measureHeight(spineIndex: Int, insets: ReaderInsets, generation: Int, token: Int) async throws {
+        func stillCurrent() -> Bool { token == workerToken && generation == self.generation && !Task.isCancelled }
+        guard stillCurrent() else { throw CancellationError() }
+        if !scrollDocumentIsLaidOut {
+            try await layOutScrollDocument(insets: insets, generation: generation)
+            guard stillCurrent() else { throw CancellationError() }
+            scrollDocumentIsLaidOut = true
+        }
+        let measurement = try await renderer.measureScrollChapter(spineIndex: spineIndex)
+        guard stillCurrent() else { throw CancellationError() }
+        switch measurement {
+        case .height(let height, _):
+            // The display may have laid the chapter out meanwhile: its value stays the one in use.
+            cache.storeHeight(spineIndex: spineIndex, height: height, source: .measurement, generation: generation)
+            onChapterMeasured?(spineIndex, ScrollPaging.pageCount(height: height, pageHeight: scrolledPageHeight(insets: insets)))
+        case .vertical:
+            failed.insert(spineIndex)
+            onVerticalChapter?(spineIndex)
+        case .failed:
+            throw ReaderError.loadFailed(spineIndex: spineIndex, underlying: "the chapter could not be measured")
+        }
     }
 
     /// The error of a load or script call whose WebContent process died.

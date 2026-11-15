@@ -163,8 +163,15 @@ enum ScrollPaging {
         }
     }
 
-    /// Page counts for `BookPagination.make` from the heights the display web view measured.
+    /// Page counts for `BookPagination.make` from the measured heights (the hidden web view's and the display's).
     static func measuredPageCounts(heights: [Int: Double], pageHeight: Double) -> [Int: Int] {
         heights.mapValues { pageCount(height: $0, pageHeight: pageHeight) }
+    }
+
+    /// The measured chapters' lengths in pages, not rounded: what teaches `BookPagination` how many characters fill
+    /// a page (§6.2).
+    static func extents(heights: [Int: Double], pageHeight: Double) -> [Int: Double] {
+        guard pageHeight > 0 else { return [:] }
+        return heights.mapValues { $0 / pageHeight }
     }
 }

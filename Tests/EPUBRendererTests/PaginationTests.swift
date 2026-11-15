@@ -46,6 +46,75 @@ import EPUBCore
         cache.select(key(width: 400, scale: 1.5))
         #expect(cache.measured.isEmpty)
     }
+
+    // MARK: The scrolled layout (08-continuous-scroll §6.3)
+
+    private func scrolledKey(width: Double = 400, height: Double = 600, insets: ReaderInsets = ReaderInsets(), configure: (inout ReaderSettings) -> Void = { _ in }) -> LayoutKey {
+        var settings = ReaderSettings()
+        settings.layout = .scrolled
+        configure(&settings)
+        return LayoutKey(scrolledWidth: width, pageHeight: ScrollPaging.pageHeight(viewportHeight: height, insets: insets), settings: settings)
+    }
+
+    @Test func theScrolledKeyIsTheWidthThePageHeightAndTheSettings() {
+        let key = scrolledKey()
+        // The page height P is the frame inside the insets: other insets are another P, and another key (the height
+        // limit of the pictures is P).
+        #expect(scrolledKey(insets: ReaderInsets(top: 40, bottom: 20)) != key)
+        #expect(scrolledKey(height: 640) != key)
+        // The same P from another frame and other insets lays the chapters out the same way.
+        #expect(scrolledKey(height: 660, insets: ReaderInsets(top: 40, bottom: 20)) == key)
+        #expect(scrolledKey(width: 500) != key)
+        #expect(scrolledKey(width: 400.3, height: 599.8) == key)
+        #expect(scrolledKey { $0.fontScale = 1.2 } != key)
+        #expect(scrolledKey { $0.scrolledTextWidth = 30 } != key)
+        #expect(scrolledKey { $0.theme = .dark } == key)
+        // What only the paged layout reads does not count.
+        #expect(scrolledKey { $0.spreadPolicy = .always } == key)
+        // Never the key of the paged layout of the same frame.
+        #expect(LayoutKey(pageSize: CGSize(width: 400, height: 600), settings: ReaderSettings()) != key)
+        var asked = ReaderSettings()
+        asked.layout = .scrolled
+        #expect(LayoutKey(pageSize: CGSize(width: 400, height: 600), settings: asked) != key)
+    }
+
+    @Test func heightsAreKeptPerLayoutAndTheDisplaysValueWins() {
+        let cache = PaginationCache(publicationID: PublicationID())
+        cache.select(scrolledKey())
+        let g1 = cache.generation
+        #expect(cache.storeHeight(spineIndex: 3, height: 1200, source: .measurement, generation: g1))
+        #expect(!cache.storeHeight(spineIndex: 3, height: 1200, source: .measurement, generation: g1))   // unchanged
+        #expect(cache.height(ofSpineIndex: 3) == 1200)
+        #expect(cache.heights == [3: 1200])
+        // The display web view laid the chapter out too: what the reader sees is what counts.
+        #expect(cache.storeHeight(spineIndex: 3, height: 1210, source: .display, generation: g1))
+        #expect(cache.height(ofSpineIndex: 3) == 1210)
+        #expect(!cache.storeHeight(spineIndex: 3, height: 1200, source: .measurement, generation: g1), "a measurement does not take the display's value back")
+        #expect(cache.height(ofSpineIndex: 3) == 1210)
+        #expect(cache.chapterHeight(ofSpineIndex: 3) == PaginationCache.ChapterHeight(measured: 1200, displayed: 1210))
+        // Nothing of another generation, nothing that is not a height.
+        #expect(!cache.storeHeight(spineIndex: 4, height: 900, source: .display, generation: g1 - 1))
+        #expect(!cache.storeHeight(spineIndex: 4, height: 0, source: .display, generation: g1))
+        #expect(!cache.storeHeight(spineIndex: 4, height: .nan, source: .measurement, generation: g1))
+        #expect(cache.height(ofSpineIndex: 4) == nil)
+        // Page counts are another table: a scrolled key has none.
+        #expect(cache.measured.isEmpty)
+        #expect(!cache.store(spineIndex: 3, pageCount: 0, generation: g1))
+
+        // Another page height: nothing is known, and the old layout's late results are dropped.
+        #expect(cache.select(scrolledKey(insets: ReaderInsets(top: 50))))
+        #expect(cache.heights.isEmpty)
+        #expect(!cache.storeHeight(spineIndex: 5, height: 700, source: .measurement, generation: g1))
+        #expect(cache.storeHeight(spineIndex: 5, height: 700, source: .measurement, generation: cache.generation))
+        // Back: the heights are there at once.
+        cache.select(scrolledKey())
+        #expect(cache.heights == [3: 1210])
+        #expect(cache.layoutCount == 2)
+        cache.dropOtherLayouts()
+        #expect(cache.layoutCount == 1)
+        cache.select(scrolledKey(insets: ReaderInsets(top: 50)))
+        #expect(cache.heights.isEmpty)
+    }
 }
 
 /// `PaginationService` with a real hidden WKWebView (docs/design/02-rendering.md §8).

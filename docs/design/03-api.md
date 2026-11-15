@@ -10,7 +10,9 @@ M3 で入り、それまで `ReaderSession` は spine index とページ index �
 `ReaderSettings.layout` / `scrolledTextWidth`、`ReaderSession.layout` / `contentInsets`、`ReaderInsets`、
 `readerContentInsets(top:bottom:)` で、下の該当箇所に書いてある。S2（同日）で `ReaderSession.isScrolling`、
 `ReaderEvent.scrolling`、`ReaderNavigation.Cause.scroll` を足し、選択・注釈・検索結果の表示・脚注・画像・リンク・復旧を
-スクロール表示でもページ表示と同じ API で動くようにした（08 §10、§12、§17）。
+スクロール表示でもページ表示と同じ API で動くようにした（08 §10、§12、§17）。S3（2026-11-15）は API を足していない:
+スクロール表示の `pagination` が、非表示の WebView で測った章の高さから決まるようになった（開いてから全章の計測が済むまでは
+推定を含むのはページ表示と同じ。08 §6、§18）。
 
 ## 1. 使い方の全体像
 
@@ -694,6 +696,9 @@ extension ReaderSession {
 - **macOS のキー。** `EPUBReaderView` はウィンドウのキーをローカルモニタで受ける（§4.3）ので、フォーカスのあるビューより先に
   ← → を取る。同じセッションのスライダーにフォーカスがある間は、リーダーはキーを取らない（`ProgressSliderFocus`、`internal`）。
 - ページ数は `ReaderSession.pagination` のもので、全章の計測が済むまでは推定を含む。計測が進むと、つまみと印が少し動く。
+- スクロール表示でも同じ部品がそのまま動く（08 §3.4）。ページは仮想ページ（高さ P ごと）で、`visiblePages` は読む行から
+  下の 1 ページ分の帯にかかるページ（ページの上端にいるとき以外は 2 つ）。1 回の増減は帯の外へ出るので、100 ページ未満の
+  本（1 回 = 1 ページ）では、進むときは帯にかかっている次のページの、さらに次のページの上端へ行く（08 §18.4）。
 - 算術（ページ ⇄ 位置、1 回の押下の結果）は `ProgressSliderGeometry` / `ProgressSliderInteraction`（`internal`）に分け、
   `EPUBUITests/ProgressSliderTests` で検証する。ビューそのものの自動テストは無い（ReaderDemo と、組み込み先の UI テストで見る）。
 - 既知の制限: ドラッグの途中でページ数が測り直されると、次に指が動くまでつまみとラベルが少しずれる（離したときの行き先は、

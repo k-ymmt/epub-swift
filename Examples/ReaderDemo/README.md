@@ -44,6 +44,7 @@ controller's log (chapters added and removed, heights, corrections taken out of 
   | `READERDEMO_RECORD_DIR` | where the file goes (default: the app's Documents) |
   | `READERDEMO_RECORD_FRAMES` | `1`: also saves the pictures around samples that do not match their scroll, in `frames/` |
   | `READERDEMO_FLOAT` | `1`: macOS keeps the window above other apps' windows |
+  | `READERDEMO_HEIGHTS` | `1`: runs the height check (below) once the book is open |
 
 ```bash
 SIMCTL_CHILD_READERDEMO_BOOK=moby-dick SIMCTL_CHILD_READERDEMO_LAYOUT=scrolled SIMCTL_CHILD_READERDEMO_START=40 \
@@ -63,3 +64,20 @@ The file is `scroll-recording-ios.json` / `scroll-recording-macos.json`. Reading
 - On macOS the picture comes from `WKWebView.takeSnapshot`, which lays the page out when asked and can show a state
   no frame shows, and the page's `scrollY` lags the picture; judge macOS recordings by the picture's own movement,
   not by the SLIPPED count (docs/design/07-continuous-scroll-spike.md §4.2).
+
+### Height check
+
+The scrolled layout numbers its pages from the chapters' heights, which a hidden web view measures for every chapter
+right after the book opens (docs/design/08-continuous-scroll.md §6.2, §18). The status bar's second line says
+`(estimating n of m chapters)` until that is done, then `(measured)`.
+
+Debug menu, "Compare measured and shown heights" (or `READERDEMO_HEIGHTS=1` at launch): waits for the measurement,
+shows every chapter once, and writes `scroll-heights-ios.json` / `scroll-heights-macos.json` next to the recordings:
+per chapter the height the hidden web view measured and the height the display laid it out with, and how often the
+page numbers moved while the chapters were shown. The status line says the same in short. Both heights should be
+equal and the page numbers should not move.
+
+```bash
+SIMCTL_CHILD_READERDEMO_BOOK=moby-dick SIMCTL_CHILD_READERDEMO_LAYOUT=scrolled SIMCTL_CHILD_READERDEMO_HEIGHTS=1 \
+  xcrun simctl launch --terminate-running-process booted net.kymmt.epub.ReaderDemo
+```

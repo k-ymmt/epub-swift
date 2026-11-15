@@ -26,7 +26,9 @@
 // document (the scroll controller, `installScrollController` below) and in the chapter iframes it stacks. A chapter
 // laid out with `layout({scrolled: true})` has no columns and is as tall as its content; it gives the controller the
 // `scroll` functions (content height, the text at a height, where a CFI is). Added for the controller:
-//   Swift -> JS: showLocation, scrollBy, locationAtReadingLine, setEstimates, trimWindow, setInteraction
+//   Swift -> JS: showLocation, scrollBy, locationAtReadingLine, setEstimates, trimWindow, setInteraction,
+//                measureChapter, settleMeasuredChapter (the hidden web view: a chapter's height without a
+//                window, §6.2)
 //   JS -> Swift: scrolled {spineIndex, offset, chapterHeight, visible, atEnd, atStart, cfi, rest, generation},
 //                chapterHeight {spineIndex, height, generation, fixed}, chapterWritingMode {spineIndex, writingMode}
 (function () {
@@ -2622,6 +2624,110 @@
       return true;
     }
 
+    // --- measuring a chapter (§6.2) ---
+    // The hidden web view that measures the book holds this document without a window: no `showLocation`, no frames
+    // in `sc.views`. A chapter is loaded into a frame like the window's, laid out and fitted by the same rules
+    // (`childParams`, `core.fit`), and taken out again.
+    //
+    // The fonts: the layout asks for the fonts the text uses, and they change the height when they arrive (07 §2.2).
+    // The frames of the window follow with their `ResizeObserver`; a document without a window gets no rendering
+    // updates, so the height is asked again once the fonts have come, until nothing is loading and the height stays.
+    // A font starts to load one turn of the event loop after the layout that asked for it. That turn is Swift's
+    // next call, not a timer of the page: the timers of a page nobody sees are slowed down.
+    //
+    // `measureChapter(spineIndex)` resolves with `{height, fixed, settled: false}` after the first layout;
+    // `settleMeasuredChapter()` waits for the fonts that are loading, fits again and resolves with the same and
+    // `settled`: true once the height is final (the frame is gone then). Other answers: `{vertical: true}` for a
+    // chapter in vertical writing, `{missing: true}` for a chapter this document does not hold (or no chapter being
+    // measured), `{failed: true}` for one that did not load.
+    let probe = null;
+    function endProbe() {
+      if (!probe) { return; }
+      clearTimeout(probe.timer);
+      probe.el.remove();
+      probe = null;
+    }
+    function fontsSettled(doc) {
+      try { return !doc.fonts || doc.fonts.status !== "loading"; } catch (e) { return true; }
+    }
+    function probeResult(state, settled) {
+      return { spineIndex: state.spineIndex, generation: state.generation, height: state.frame, fixed: state.fixed, writingMode: state.mode, rounds: state.rounds, settled: settled };
+    }
+    function fitProbe(state) {
+      if (state.fixed) { return; }
+      const result = core.fit(state.frame, state.first, function () { return state.bridge.scroll.contentHeight(); }, function (h) {
+        state.frame = h;
+        state.el.style.height = h + "px";
+      });
+      if (result.fixed) { state.fixed = true; }
+    }
+    function measureChapter(spineIndex) {
+      endProbe();
+      const pos = posOf[spineIndex];
+      if (pos === undefined || !sc.laidOut || sc.views.length) { return Promise.resolve({ missing: true }); }
+      const item = spine[pos];
+      const el = document.createElement("iframe");
+      el.setAttribute("scrolling", "no");
+      el.setAttribute("data-reader-measure", String(item.i));
+      el.style.height = sc.page + "px";
+      el.style.visibility = "hidden";
+      const state = { el: el, stepsString: item.s || "", spineIndex: item.i, generation: sc.generation, frame: sc.page, first: 0, fixed: false, bridge: null, mode: "horizontal-tb", rounds: 0, timer: null };
+      probe = state;
+      return new Promise(function (resolve) {
+        let done = false;
+        function finish(result) {
+          if (done) { return; }
+          done = true;
+          clearTimeout(state.timer);
+          if (result.failed || result.vertical) {
+            if (probe === state) { endProbe(); }
+            result = Object.assign({ spineIndex: item.i, generation: state.generation }, result);
+          }
+          resolve(result);
+        }
+        function fail() { finish({ failed: true }); }
+        el.addEventListener("load", function () {
+          let bridge = null;
+          try { bridge = (el.contentWindow && el.contentWindow.__epubReader) || null; } catch (e) { bridge = null; }
+          if (!bridge || !bridge.scroll || !bridge.whenReady) { fail(); return; }
+          bridge.whenReady().then(function () {
+            if (probe !== state) { return { failed: true }; }
+            state.bridge = bridge;
+            state.mode = bridge.layout(childParams(state)).writingMode || "horizontal-tb";
+            if (state.mode.indexOf("vertical") === 0 || state.mode.indexOf("sideways") === 0) { return { vertical: true, writingMode: state.mode }; }
+            state.first = bridge.scroll.contentHeight();
+            fitProbe(state);
+            return probeResult(state, false);
+          }).then(finish, fail);
+        }, { once: true });
+        // Swift has its own timeout for the whole chapter; this one lets the next chapter start.
+        state.timer = setTimeout(fail, 8000);
+        // The address before the frame goes in: a frame without one loads an empty document first, and tells so.
+        el.src = item.u;
+        dom.stage.appendChild(el);
+      });
+    }
+    function settleMeasuredChapter() {
+      const state = probe;
+      if (!state || !state.bridge) { return Promise.resolve({ missing: true }); }
+      const doc = state.el.contentDocument;
+      const fonts = fontsSettled(doc) ? Promise.resolve() : doc.fonts.ready.catch(function () {});
+      return fonts.then(function () {
+        if (probe !== state) { return { failed: true }; }
+        const before = state.frame;
+        fitProbe(state);
+        state.rounds += 1;
+        // A layout that changed the height may have asked for more fonts: that shows a turn later.
+        const settled = state.fixed || (state.frame === before && fontsSettled(doc)) || state.rounds >= 8;
+        const result = probeResult(state, settled);
+        if (settled) { endProbe(); }
+        return result;
+      }, function () {
+        if (probe === state) { endProbe(); }
+        return { failed: true };
+      });
+    }
+
     // Tests and the demo's recording mode.
     let mark = null;
     const debug = {
@@ -2694,6 +2800,8 @@
       endScrolling: endScrolling,
       windowContains: function (spineIndex) { const pos = posOf[spineIndex]; return pos !== undefined && !!viewAt(pos); },
       holds: function (spineIndex) { return posOf[spineIndex] !== undefined; },
+      measureChapter: measureChapter,
+      settleMeasuredChapter: settleMeasuredChapter,
       cfi: CFI,
       pageCount: function () { return 1; },
       debug: debug,

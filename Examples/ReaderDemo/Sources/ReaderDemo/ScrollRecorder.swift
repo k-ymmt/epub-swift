@@ -25,6 +25,8 @@ enum ScrollRecorder {
         var start: Int?
         var seconds: Double?
         var fling = false
+        /// `READERDEMO_HEIGHTS=1`: compare the measured heights with the displayed ones (`HeightCheck`).
+        var heights = false
 
         static let current: Launch = {
             let env = ProcessInfo.processInfo.environment
@@ -34,6 +36,7 @@ enum ScrollRecorder {
             launch.start = env["READERDEMO_START"].flatMap(Int.init)
             launch.seconds = env["READERDEMO_RECORD"].flatMap(Double.init)
             launch.fling = env["READERDEMO_FLING"] == "1"
+            launch.heights = env["READERDEMO_HEIGHTS"] == "1"
             return launch
         }()
     }
@@ -195,7 +198,7 @@ enum ScrollRecorder {
     }
 
     /// Where the recording goes: `READERDEMO_RECORD_DIR`, or the app's Documents.
-    private static func outputDirectory() -> URL {
+    static func outputDirectory() -> URL {
         ProcessInfo.processInfo.environment["READERDEMO_RECORD_DIR"].map { URL(fileURLWithPath: $0, isDirectory: true) }
             ?? FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first ?? FileManager.default.temporaryDirectory
     }

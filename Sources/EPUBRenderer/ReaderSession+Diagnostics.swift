@@ -33,6 +33,28 @@ import WebKit
         return (value[0], value[1] != 0)
     }
 
+    /// A chapter's height in the scrolled layout in effect, by who laid it out: the hidden web view that measures
+    /// every chapter (`measured`) and the display web view (`displayed`, for the chapters its window has held). The
+    /// page numbers use `displayed` where there is one (docs/design/08-continuous-scroll.md §6.2).
+    public struct ScrollChapterHeight: Sendable, Equatable {
+        public var spineIndex: Int
+        public var measured: Double?
+        public var displayed: Double?
+    }
+
+    /// The heights known for the scrolled layout in effect, in reading order. Empty in the paged layout.
+    public var scrollChapterHeights: [ScrollChapterHeight] {
+        guard layout == .scrolled else { return [] }
+        return paginationCache.chapterHeights
+            .map { ScrollChapterHeight(spineIndex: $0.key, measured: $0.value.measured, displayed: $0.value.displayed) }
+            .sorted { $0.spineIndex < $1.spineIndex }
+    }
+
+    /// The page height P of the scrolled layout: the frame less the insets.
+    public var scrollPageHeightForDiagnostics: Double {
+        ScrollPaging.pageHeight(viewportHeight: Double(viewportSize.height), insets: contentInsets)
+    }
+
     private func evaluateScrollDiagnostics(_ body: String) async throws -> Any? {
         guard layout == .scrolled, let webView = diagnosticsWebView else { return nil }
         let script = "const d = window.__epubReader && window.__epubReader.debug; if (!d) { return null; }\n" + body

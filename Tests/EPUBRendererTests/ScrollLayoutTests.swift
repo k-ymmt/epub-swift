@@ -41,11 +41,16 @@ struct ScrollDebugState: Decodable {
 }
 
 extension SessionHost {
-    static func scrolled(url: URL = ReaderSessionTests.mobyDick, size: CGSize = CGSize(width: 400, height: 600), insets: ReaderInsets = ReaderInsets(), initialPosition: ReadingPosition? = nil, configure: (inout ReaderSettings) -> Void = { _ in }) async throws -> SessionHost {
+    /// - Parameter measures: false keeps the hidden web view from measuring the chapters (S3): the chapters outside
+    ///   the window keep their estimates, which is what a test of the runway needs (a chapter whose height differs
+    ///   from what the document assumed), and no `setEstimates` arrives while the test compares positions. That is
+    ///   the state of a book in the seconds after it opens.
+    static func scrolled(url: URL = ReaderSessionTests.mobyDick, size: CGSize = CGSize(width: 400, height: 600), insets: ReaderInsets = ReaderInsets(), initialPosition: ReadingPosition? = nil, measures: Bool = true, configure: (inout ReaderSettings) -> Void = { _ in }) async throws -> SessionHost {
         var settings = ReaderSettings()
         settings.layout = .scrolled
         configure(&settings)
         let host = try await SessionHost(url: url, settings: settings, size: size, initialPosition: initialPosition, insets: insets)
+        host.session.paginationService.measuresScrolledLayout = measures
         return host
     }
 
@@ -366,6 +371,10 @@ extension SessionHost {
         await host.session.loadIfNeeded()
         try await host.waitForScrollRest()
         #expect(host.session.currentSpineIndex == 0)
+        // Every chapter is measured: from here on a position is reported because the reading line moved, not
+        // because a page number did.
+        try await host.waitForMeasurement()
+        let opened = host.session.position
         recorder.reset()
 
         // Scroll in steps, as a hand would, to just before the end of the cover chapter.
@@ -386,18 +395,23 @@ extension SessionHost {
         try await host.waitForScrollRest()
         #expect(host.session.currentSpineIndex == 0)
         #expect(host.session.visibleSpineIndices == [0, 1], "both chapters at the boundary are visible")
-        // While it scrolled the position came at most once a second; at rest it always comes.
+        // While it scrolled the position came at most once a second; at rest it comes when it is another one (the
+        // line may still be on the cover's page, below its only text).
         #expect(whileScrolling <= seconds + 1, "\(whileScrolling) positions in \(seconds) s of scrolling")
-        #expect(recorder.positions.count >= 1 && recorder.positions.count <= whileScrolling + 1)
-        #expect(recorder.positions.last == host.session.position)
+        #expect(recorder.positions.count <= whileScrolling + 1)
+        #expect((recorder.positions.last ?? opened) == host.session.position)
         // Scrolling by hand is reported as such (S2, `ScrollFeatureTests`), never as a jump or a page turn.
         try await host.waitUntil { recorder.navigations.count == 1 }
         #expect(recorder.navigations.map(\.cause) == [.scroll])
 
+        let reported = recorder.positions.count
         try await host.scrollDocument(by: 300)
         try await host.waitForScrollRest()
         #expect(host.session.currentSpineIndex == 1)
         #expect(host.session.position?.spineIndex == 1)
+        // The position at rest is always reported.
+        try await host.waitUntil { recorder.positions.count > reported }
+        #expect(recorder.positions.last == host.session.position)
         #expect(host.session.currentPageIndex == 0)
         #expect(!host.session.isAtStart)
     }
@@ -429,6 +443,8 @@ extension SessionHost {
         await host.session.loadIfNeeded()
         await host.session.go(toSpineIndex: 8)
         try await host.waitForScrollRest()
+        // (The page numbers are compared across a scroll: none of them is an estimate any more.)
+        try await host.waitForMeasurement()
         // The reading line is at a page top: the band below it is exactly that page.
         let page = try #require(host.session.currentPage)
         #expect(host.session.visiblePages == [page])

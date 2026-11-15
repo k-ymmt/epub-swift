@@ -582,6 +582,46 @@ final class WebViewSpineRenderer: NSObject, SpineRenderer {
         _ = try await call("return window.__epubReader.trimWindow ? window.__epubReader.trimWindow() : 0")
     }
 
+    // MARK: - Measuring the scrolled layout (08-continuous-scroll §6.2)
+
+    /// What the measuring scroll document answered for one chapter.
+    enum ScrollMeasurement: Sendable, Equatable {
+        /// The chapter's height in the scrolled layout. `isFixed`: it depends on the viewport and was pinned (§4.2).
+        case height(Double, isFixed: Bool)
+        /// The chapter is in vertical writing: the book is shown paged (§1).
+        case vertical
+        /// The chapter did not load, or the document does not hold it.
+        case failed
+    }
+
+    /// Gives the web view the frame of the scrolled layout (the visible area, not three page slots) without the
+    /// scrolling itself: the hidden web view that measures the chapters of the scrolled layout is never scrolled, so
+    /// it needs none of what `setScrollMode` sets up to follow the reader's hands.
+    func setMeasuringScrollFrame(_ enabled: Bool) {
+        guard enabled != isScrollMode else { return }
+        isScrollMode = enabled
+        visibleSlot = 0
+        layoutWebViewFrame()
+    }
+
+    /// Loads one chapter into the scroll document this web view holds, lays it out like a chapter of the window and
+    /// returns its height. The document has been laid out (`layout`) and shows no window.
+    func measureScrollChapter(spineIndex: Int) async throws -> ScrollMeasurement {
+        var result = try await call("return window.__epubReader.measureChapter ? window.__epubReader.measureChapter(index) : null", arguments: ["index": spineIndex])
+        // The first answer is the height after the first layout. Each further call is a turn of the page's event
+        // loop: the fonts that layout asked for have begun to load by then, and the call waits for them (§6.2).
+        for _ in 0..<12 {
+            guard let dict = result as? [String: Any] else {
+                throw ReaderError.scriptFailed("measureChapter returned \(String(describing: result))")
+            }
+            if dict["vertical"] as? Bool == true { return .vertical }
+            guard let height = dict["height"] as? Double, height > 0 else { return .failed }
+            if dict["settled"] as? Bool == true { return .height(height, isFixed: dict["fixed"] as? Bool ?? false) }
+            result = try await call("return window.__epubReader.settleMeasuredChapter()")
+        }
+        return .failed
+    }
+
     // MARK: - Snapshots
 
     func snapshot(slot: Int) async throws -> (image: CGImage, scale: CGFloat)? {

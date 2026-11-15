@@ -109,6 +109,29 @@ import EPUBCore
         #expect(ScrollPaging.measuredPageCounts(heights: [0: 1950.5, 2: 90], pageHeight: 700) == [0: 3, 2: 1])
     }
 
+    @Test func aChaptersLengthInPagesIsItsHeightOverThePageHeight() {
+        #expect(ScrollPaging.extents(heights: [0: 1750, 2: 70], pageHeight: 700) == [0: 2.5, 2: 0.1])
+        #expect(ScrollPaging.extents(heights: [0: 1750], pageHeight: 0).isEmpty)
+    }
+
+    /// The end of the measurement (08-continuous-scroll §13, S3): once every chapter has a height, the numbering is
+    /// the heights' alone, and nothing that is learned from them can move it.
+    @Test func withEveryChapterMeasuredThePagesAreTheHeightsAlone() {
+        let pub = BookPaginationTests.publication(counts: [1200, 6000, 6000])
+        let heights: [Int: Double] = [0: 600, 1: 1500.4, 2: 4199]
+        let pagination = BookPagination.make(
+            publication: pub, measured: ScrollPaging.measuredPageCounts(heights: heights, pageHeight: 700),
+            extents: ScrollPaging.extents(heights: heights, pageHeight: 700), defaultCharactersPerPage: 600
+        )
+        #expect(!pagination.isEstimated)
+        #expect(pagination.chapters.map(\.pageCount) == [1, 3, 6])
+        #expect(pagination.totalPages == 10)
+        // The last page of the book is where the reading line stops, one page above the end (§6.1).
+        #expect(ScrollPaging.currentPage(pagination: pagination, spineIndex: 2, pageIndex: 4, isAtEnd: true) == 9)
+        #expect(ScrollPaging.offset(ofPage: 5, pageHeight: 700) == 3500)
+        #expect(ScrollPaging.pageIndex(offset: 3500, height: 4199, pageHeight: 700) == 5)
+    }
+
     // MARK: Which books scroll
 
     @Test func onlyHorizontalReflowableBooksAreScrolled() {
