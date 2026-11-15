@@ -99,6 +99,8 @@ final class PaginationService {
             guard let self else { return }
             self.logger.debug("pre-pagination WebContent process terminated")
             self.processTerminated = true
+            // The scroll document the process held is gone, whether or not a chapter was being measured.
+            self.scrollDocumentIsLaidOut = false
             self.readyContinuation?.resume(throwing: ReaderError.webContentTerminated)
             self.readyContinuation = nil
         }

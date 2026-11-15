@@ -363,6 +363,57 @@ import EPUBCore
         #expect(outcome.finalDifference > 0.004)
     }
 
+    // MARK: The measured heights arrive (§6.2, S3)
+
+    /// Starts the hidden web view's measurement a moment from now, when the trial is sampling.
+    func startMeasuring(_ host: SessionHost) -> Task<Void, Never> {
+        let service = host.session.paginationService
+        return Task { @MainActor in
+            try? await Task.sleep(for: .milliseconds(400))
+            service.measuresScrolledLayout = true
+            service.pause()
+            service.resume()
+        }
+    }
+
+    /// Waits until the blocks that stand in for the chapters outside the window have changed, and for more of it.
+    static let measuredHeightsArrive = """
+        const s0 = dbg.state(), pad0 = s0.pad - s0.neg, tail0 = s0.tail;
+        await until("the measured heights", function () { const s = dbg.state(); return s.pad - s.neg !== pad0 || s.tail !== tail0; }, 40000);
+        await new Promise(function (r) { setTimeout(r, 2500); });
+        """
+
+    /// The hidden web view measures while the reader reads: the heights of the chapters before and after the window
+    /// change from estimates to what was measured, a few at a time. The text does not move.
+    @Test func theMeasuredHeightsArrivingAtRestMoveNothing() async throws {
+        let host = try await hostInsideChapter8()
+        let before = try await host.scrollState()
+        let known = host.session.scrollHeights.count
+        let start = startMeasuring(host)
+        let outcome = try await trial(host, Self.measuredHeightsArrive + " await settled();", timeout: .seconds(60))
+        await start.value
+        expectStill(outcome, "the measured heights arrived at rest")
+        // (How many arrive in the trial's seconds depends on what else the machine is doing; the trial itself waits
+        // for the first of them to reach the document.)
+        #expect(outcome.state.pad - outcome.state.neg != before.pad - before.neg || outcome.state.tail != before.tail, "the document got no measured height")
+        #expect(host.session.scrollHeights.count > known, "nothing was measured during the trial")
+    }
+
+    @Test func theMeasuredHeightsArrivingWhileTheReaderScrollsDoNotWriteTheScrollPosition() async throws {
+        let host = try await hostInsideChapter8()
+        let before = try await host.scrollState()
+        let known = host.session.scrollHeights.count
+        let start = startMeasuring(host)
+        let during = try await trial(host, "interact(true); " + Self.measuredHeightsArrive, timeout: .seconds(60))
+        await start.value
+        expectStill(during, "the measured heights arrived during an interaction")
+        #expect(during.state.interacting)
+        #expect(during.state.scrollY == before.scrollY, "nothing wrote the scroll position")
+        #expect(host.session.scrollHeights.count > known, "nothing was measured during the trial")
+        let after = try await trial(host, "interact(false); await settled();")
+        expectStill(after, "the settlement after the interaction")
+    }
+
     // MARK: A chapter is added above (§5.3)
 
     @Test func addingAChapterAboveMovesNothing() async throws {

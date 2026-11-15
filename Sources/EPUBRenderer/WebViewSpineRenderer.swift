@@ -609,15 +609,19 @@ final class WebViewSpineRenderer: NSObject, SpineRenderer {
     func measureScrollChapter(spineIndex: Int) async throws -> ScrollMeasurement {
         var result = try await call("return window.__epubReader.measureChapter ? window.__epubReader.measureChapter(index) : null", arguments: ["index": spineIndex])
         // The first answer is the height after the first layout. Each further call is a turn of the page's event
-        // loop: the fonts that layout asked for have begun to load by then, and the call waits for them (§6.2).
+        // loop: the fonts and pictures that layout asked for have begun to load by then, and the call waits for them
+        // (§6.2).
         for _ in 0..<12 {
             guard let dict = result as? [String: Any] else {
                 throw ReaderError.scriptFailed("measureChapter returned \(String(describing: result))")
             }
             if dict["vertical"] as? Bool == true { return .vertical }
-            guard let height = dict["height"] as? Double, height > 0 else { return .failed }
+            guard let height = dict["height"] as? Double, height > 0, let id = dict["id"] as? Int else { return .failed }
             if dict["settled"] as? Bool == true { return .height(height, isFixed: dict["fixed"] as? Bool ?? false) }
-            result = try await call("return window.__epubReader.settleMeasuredChapter()")
+            // A caller that was given up meanwhile makes no further call; one that slips through names its own
+            // measurement (`id`), so it cannot settle the chapter the next caller is measuring.
+            try Task.checkCancellation()
+            result = try await call("return window.__epubReader.settleMeasuredChapter(id)", arguments: ["id": id])
         }
         return .failed
     }

@@ -54,3 +54,11 @@ html[data-reader-theme="dark"] svg,
 html[data-reader-theme="dark"] video {
   filter: brightness(0.85);
 }
+
+/* Scrolled layout: a chapter is as tall as all of its content. Content that is laid out only near the screen
+   (`content-visibility: auto`) would make the chapter grow while it is read, and would not be laid out at all in the
+   frame that measures the chapter (08-continuous-scroll §6.2). */
+html[data-reader-layout="scrolled"] body,
+html[data-reader-layout="scrolled"] body * {
+  content-visibility: visible !important;
+}

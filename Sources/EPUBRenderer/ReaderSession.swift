@@ -902,7 +902,8 @@ public final class ReaderSession {
         updateRootStyle()
         // The theme is not part of the layout key, so `selectLayout` does not reconfigure pre-pagination for it: its
         // background and the neighbour snapshots (drawn in the old colours) are refreshed here. The scrolled layout
-        // does not use pre-pagination; it gets the theme when the book goes back to pages (`leaveScrolledLayout`).
+        // has no snapshots and its heights do not depend on the colours; the hidden web view gets the theme of the
+        // moment when the book goes back to pages (the paged key is another one, so `selectLayout` configures it).
         if settings.theme != oldValue.theme, settings.layoutKey == oldValue.layoutKey, layout == .paged {
             paginationService.updateTheme(settings: pagedSettings)
         }
@@ -1089,14 +1090,18 @@ public final class ReaderSession {
         renderer.setScrollMode(false)
     }
 
+    /// The key of the scrolled layout that the frame, the insets and the settings of now make (§6.3).
+    private var scrolledLayoutKey: LayoutKey {
+        LayoutKey(scrolledWidth: Double(viewportSize.width), pageHeight: scrollPageHeight, settings: settings)
+    }
+
     /// A new layout of the scrolled document: a new number. The heights belong to the layout's key (§6.3): another
     /// key starts the measurement of every chapter in the hidden web view (§6.2), a key seen before has its heights
     /// back at once.
     private func selectScrolledLayout() {
         scrollGeneration += 1
         spreadPlan = SpreadBuilder.plan(for: publication, policy: .never, viewportSize: viewportSize)
-        let key = LayoutKey(scrolledWidth: Double(viewportSize.width), pageHeight: scrollPageHeight, settings: settings)
-        if paginationCache.select(key) {
+        if paginationCache.select(scrolledLayoutKey) {
             paginationService.configure(
                 pageSize: viewportSize,
                 settings: settings,
@@ -1201,6 +1206,9 @@ public final class ReaderSession {
             initialCFI = nil
             renderer.setContentHidden(false)
             publishScrollPosition(cfi: location.cfi, force: true)
+            // The heights the hidden web view measured since the document was laid out: they are handed over only
+            // to a document that is loaded, and in a book of a few chapters no later change would bring them.
+            scheduleScrollEstimates()
             if changedDuringLoad {
                 // A new size, new insets or new settings, or a neighbour chapter turned out to be in vertical writing.
                 enqueue { [weak self] in await self?.relayoutPreservingPosition() }
@@ -1450,6 +1458,11 @@ public final class ReaderSession {
     /// the measured ones) go back to the scroll controller, a few changes at a time (§6.2).
     private func scrollHeightsDidChange() {
         rebuildPagination()
+        scheduleScrollEstimates()
+    }
+
+    /// Hands the heights of now to the scroll controller in a moment (one call for the changes of 200 ms).
+    private func scheduleScrollEstimates() {
         guard estimatesTask == nil else { return }
         estimatesTask = Task { @MainActor [weak self] in
             try? await Task.sleep(for: .milliseconds(200))
@@ -1803,7 +1816,11 @@ public final class ReaderSession {
             publishScrollPosition(cfi: location.cfi, force: location.isAtRest)
         case .chapterHeight(let spineIndex, let height, let generation, _):
             // What the display shows counts over what the hidden web view measured (08-continuous-scroll §6.2).
-            guard layout == .scrolled, generation == scrollGeneration else { return }
+            // Not while the frame, the insets or the settings are no longer the selected layout's (a change waits
+            // for its relayout, or came while the document loaded): chapters are then laid out with the new style,
+            // or with all of the new layout, under the number of the old one, and their heights are not the old
+            // layout's to keep. The relayout that follows tells them again.
+            guard layout == .scrolled, generation == scrollGeneration, paginationCache.selectedKey == scrolledLayoutKey else { return }
             if paginationCache.storeHeight(spineIndex: spineIndex, height: height, source: .display, generation: paginationCache.generation) {
                 scrollHeightsDidChange()
             }

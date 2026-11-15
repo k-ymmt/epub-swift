@@ -283,6 +283,15 @@
   }
 
   // Apply layout parameters and measure. Returns {pageCount, writingMode}.
+  // A chapter of the scrolled layout is as tall as all of its content, wherever the reader is in it: a picture that
+  // is loaded only once it comes near the screen (`loading="lazy"`) has no height until then, the chapter would grow
+  // while it is read, and in the frame that measures the chapter (the hidden web view, 08-continuous-scroll §6.2)
+  // the picture would never load. They load with the layout. (`content-visibility` is undone in reader-after.css.)
+  function loadLazyContent() {
+    const lazy = document.querySelectorAll('img[loading="lazy"], iframe[loading="lazy"]');
+    for (let i = 0; i < lazy.length; i += 1) { lazy[i].setAttribute("loading", "eager"); }
+  }
+
   function layout(params) {
     applyParams(params);
     if (params && typeof params.spineSteps === "string") {
@@ -296,6 +305,7 @@
     applyViewportLengths(params && params.pageWidth, params && params.pageHeight);
     state.writingMode = detectWritingMode();
     if (state.scrolled) {
+      loadLazyContent();
       // No columns and no page count: the controller makes the frame as tall as the content (`scroll.contentHeight`).
       state.pageCount = 1;
       applyExtent();
@@ -2635,23 +2645,56 @@
     // A font starts to load one turn of the event loop after the layout that asked for it. That turn is Swift's
     // next call, not a timer of the page: the timers of a page nobody sees are slowed down.
     //
-    // `measureChapter(spineIndex)` resolves with `{height, fixed, settled: false}` after the first layout;
-    // `settleMeasuredChapter()` waits for the fonts that are loading, fits again and resolves with the same and
-    // `settled`: true once the height is final (the frame is gone then). Other answers: `{vertical: true}` for a
-    // chapter in vertical writing, `{missing: true}` for a chapter this document does not hold (or no chapter being
-    // measured), `{failed: true}` for one that did not load.
+    // `measureChapter(spineIndex)` resolves with `{id, height, fixed, settled: false}` after the first layout;
+    // `settleMeasuredChapter(id)` waits for the fonts and the pictures that are loading, fits again and resolves with
+    // the same and `settled`: true once the height is final (the frame is gone then). Other answers:
+    // `{vertical: true}` for a chapter in vertical writing, `{missing: true}` for a chapter this document does not
+    // hold or a measurement that is not the one in progress (`id`: a caller that was given up may still make its
+    // next call, and must not settle the chapter of the caller after it), `{failed: true}` for a chapter that did
+    // not load or whose measurement was replaced by the next one.
     let probe = null;
+    let probeSerial = 0;
     function endProbe() {
       if (!probe) { return; }
-      clearTimeout(probe.timer);
-      probe.el.remove();
+      const state = probe;
       probe = null;
+      clearTimeout(state.timer);
+      state.el.remove();
+      // A caller still waiting for the chapter to load gets its answer.
+      if (state.finish) { state.finish({ failed: true }); }
     }
     function fontsSettled(doc) {
       try { return !doc.fonts || doc.fonts.status !== "loading"; } catch (e) { return true; }
     }
+    // The pictures of the chapter that have not loaded (or failed) yet: each changes the height when it does.
+    function pendingImages(doc) {
+      const pending = [];
+      try {
+        const images = doc.images;
+        for (let i = 0; i < images.length; i += 1) { if (!images[i].complete) { pending.push(images[i]); } }
+      } catch (e) { /* no document */ }
+      return pending;
+    }
+    function whenLoaded(image) {
+      return new Promise(function (resolve) {
+        if (image.complete) { resolve(); return; }
+        image.addEventListener("load", resolve, { once: true });
+        image.addEventListener("error", resolve, { once: true });
+      });
+    }
+    // What the chapter is waiting for, bounded: a font or a picture that never arrives must not keep the frame (and
+    // Swift's call) forever. Resolves with false when the time ran out.
+    function whenContentArrived(doc) {
+      const waits = pendingImages(doc).map(whenLoaded);
+      if (!fontsSettled(doc)) { waits.push(doc.fonts.ready.catch(function () {})); }
+      if (!waits.length) { return Promise.resolve(true); }
+      return new Promise(function (resolve) {
+        const timer = setTimeout(function () { resolve(false); }, 5000);
+        Promise.all(waits).then(function () { clearTimeout(timer); resolve(true); });
+      });
+    }
     function probeResult(state, settled) {
-      return { spineIndex: state.spineIndex, generation: state.generation, height: state.frame, fixed: state.fixed, writingMode: state.mode, rounds: state.rounds, settled: settled };
+      return { id: state.id, spineIndex: state.spineIndex, generation: state.generation, height: state.frame, fixed: state.fixed, writingMode: state.mode, rounds: state.rounds, settled: settled };
     }
     function fitProbe(state) {
       if (state.fixed) { return; }
@@ -2670,22 +2713,24 @@
       el.setAttribute("scrolling", "no");
       el.setAttribute("data-reader-measure", String(item.i));
       el.style.height = sc.page + "px";
-      el.style.visibility = "hidden";
-      const state = { el: el, stepsString: item.s || "", spineIndex: item.i, generation: sc.generation, frame: sc.page, first: 0, fixed: false, bridge: null, mode: "horizontal-tb", rounds: 0, timer: null };
+      probeSerial += 1;
+      const state = { id: probeSerial, el: el, stepsString: item.s || "", spineIndex: item.i, generation: sc.generation, frame: sc.page, first: 0, fixed: false, bridge: null, mode: "horizontal-tb", rounds: 0, timer: null, finish: null };
       probe = state;
       return new Promise(function (resolve) {
         let done = false;
         function finish(result) {
           if (done) { return; }
           done = true;
+          state.finish = null;
           clearTimeout(state.timer);
           if (result.failed || result.vertical) {
             if (probe === state) { endProbe(); }
-            result = Object.assign({ spineIndex: item.i, generation: state.generation }, result);
+            result = Object.assign({ id: state.id, spineIndex: item.i, generation: state.generation }, result);
           }
           resolve(result);
         }
         function fail() { finish({ failed: true }); }
+        state.finish = finish;
         el.addEventListener("load", function () {
           let bridge = null;
           try { bridge = (el.contentWindow && el.contentWindow.__epubReader) || null; } catch (e) { bridge = null; }
@@ -2707,18 +2752,19 @@
         dom.stage.appendChild(el);
       });
     }
-    function settleMeasuredChapter() {
+    function settleMeasuredChapter(id) {
       const state = probe;
-      if (!state || !state.bridge) { return Promise.resolve({ missing: true }); }
+      if (!state || !state.bridge || state.id !== id) { return Promise.resolve({ missing: true }); }
       const doc = state.el.contentDocument;
-      const fonts = fontsSettled(doc) ? Promise.resolve() : doc.fonts.ready.catch(function () {});
-      return fonts.then(function () {
+      return whenContentArrived(doc).then(function (arrived) {
         if (probe !== state) { return { failed: true }; }
         const before = state.frame;
         fitProbe(state);
         state.rounds += 1;
-        // A layout that changed the height may have asked for more fonts: that shows a turn later.
-        const settled = state.fixed || (state.frame === before && fontsSettled(doc)) || state.rounds >= 8;
+        // A layout that changed the height may have asked for more fonts: that shows a turn later. What did not
+        // arrive in time is not waited for again: the height is what the chapter has without it, and the display
+        // corrects it if the reader gets to see more (its value counts over this one).
+        const settled = state.fixed || !arrived || (state.frame === before && fontsSettled(doc) && !pendingImages(doc).length) || state.rounds >= 8;
         const result = probeResult(state, settled);
         if (settled) { endProbe(); }
         return result;

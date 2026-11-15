@@ -335,16 +335,212 @@ extension SessionHost {
         #expect(!session.pagination.isEstimated)
     }
 
+    /// The process of the hidden web view (0 when it has none).
+    static func processIdentifier(of renderer: WebViewSpineRenderer) -> Int32 {
+        renderer.webView.value(forKey: "_webProcessIdentifier") as? Int32 ?? 0
+    }
+
     @Test func aCrashOfTheHiddenWebViewDoesNotStopTheMeasurement() async throws {
         let host = try await SessionHost.scrolled()
         await host.session.loadIfNeeded()
         let session = host.session
         let service = session.paginationService
         try await host.waitUntil(timeout: .seconds(30)) { session.scrollHeights.count >= 12 }
-        #expect(service.isWorking)
-        RecoveryTests.crashWebContent(of: service.renderer)
+        // In the middle of the measurement: the process that dies is the one that holds the scroll document.
+        try #require(service.isWorking && session.scrollHeights.count < 142, "the measurement was over before the crash")
+        let process = Self.processIdentifier(of: service.renderer)
+        try #require(RecoveryTests.crashWebContent(of: service.renderer), "the WebContent process could not be killed")
         try await host.waitForMeasurement()
         #expect(!session.pagination.isEstimated)
         #expect(service.failedSpineIndices.isEmpty)
+        // The rest was measured in a document loaded again, in another process.
+        let after = Self.processIdentifier(of: service.renderer)
+        #expect(after > 0 && after != process)
+    }
+
+    /// The hidden web view's process can die while nothing is being measured (the measurement is paused, or between
+    /// two chapters): the scroll document it held is gone, and the next chapter loads it again instead of asking a
+    /// page that is not there (codex review of c529518).
+    @Test func aCrashWhileTheMeasurementIsPausedLosesNoChapter() async throws {
+        let host = try await SessionHost.scrolled()
+        await host.session.loadIfNeeded()
+        let session = host.session
+        let service = session.paginationService
+        try await host.waitUntil(timeout: .seconds(30)) { session.scrollHeights.count >= 12 }
+        session.didReceiveMemoryWarning()
+        #expect(service.isPaused)
+        // The chapter that was being measured when the pause came runs to its end.
+        try await Task.sleep(for: .milliseconds(500))
+        try #require(session.scrollHeights.count < 142, "the measurement was over before the pause")
+        try #require(RecoveryTests.crashWebContent(of: service.renderer), "the WebContent process could not be killed")
+        try await Task.sleep(for: .milliseconds(500))
+        await session.go(toSpineIndex: 20)
+        #expect(!service.isPaused)
+        try await host.waitUntil(timeout: .seconds(120)) { !service.isWorking }
+        #expect(service.failedSpineIndices.isEmpty, "failed: \(service.failedSpineIndices.sorted())")
+        #expect(host.linearIndices.allSatisfy { session.scrollHeights[$0] != nil })
+    }
+
+    // MARK: What the measured height must include (codex review of c529518)
+
+    /// Six chapters: three of plain text, one whose pictures are `loading="lazy"` and have no height of their own
+    /// until they load, one whose sections are `content-visibility: auto`, and one more of text.
+    static func lazyBook() throws -> URL {
+        func document(_ title: String, _ body: String) -> Data {
+            Data("""
+                <?xml version="1.0" encoding="UTF-8"?><html xmlns="http://www.w3.org/1999/xhtml"><head><title>\(title)</title></head><body><h1>\(title)</h1>\(body)</body></html>
+                """.utf8)
+        }
+        let sentence = "The quick brown fox jumps over the lazy dog and runs on through the long grass of the meadow. "
+        let text = (0..<40).map { "<p>\($0) " + String(repeating: sentence, count: 4) + "</p>" }.joined()
+        let pictures = (0..<24).map { #"<p><img loading="lazy" src="picture.svg" alt="picture \#($0)"/></p>"# }.joined()
+        let sections = (0..<30).map {
+            #"<section style="content-visibility: auto; contain-intrinsic-size: auto 10px"><p>\#($0) "# + String(repeating: sentence, count: 4) + "</p></section>"
+        }.joined()
+        let picture = Data(#"<svg xmlns="http://www.w3.org/2000/svg" width="200" height="200" viewBox="0 0 200 200"><rect width="200" height="200" fill="teal"/></svg>"#.utf8)
+        return try AnnotationPrerequisiteTests.writeEPUB(
+            [
+                ("one.xhtml", document("One", text)), ("two.xhtml", document("Two", text)), ("three.xhtml", document("Three", text)),
+                ("pictures.xhtml", document("Pictures", pictures)), ("sections.xhtml", document("Sections", sections)),
+                ("six.xhtml", document("Six", text)),
+            ],
+            resources: [("picture.svg", "image/svg+xml", picture)]
+        )
+    }
+
+    /// Pictures that load lazily never load in a frame nobody sees, and content with `content-visibility: auto` is
+    /// not laid out there: measured as they are, such chapters are a fraction of their height, and the page numbers
+    /// move when the reader gets to them. Both are laid out in full, in the hidden web view and in the display.
+    @Test(arguments: [3, 4]) func aChapterIsMeasuredWithItsLazyPicturesAndItsContentThatIsLaidOutOnDemand(chapter: Int) async throws {
+        let host = try await SessionHost.scrolled(url: try Self.lazyBook())
+        await host.session.loadIfNeeded()
+        try await host.waitForMeasurement()
+        let session = host.session
+        let cache = session.paginationCache
+        let pagination = session.pagination
+        let height = try #require(cache.chapterHeight(ofSpineIndex: chapter))
+        try #require(height.displayed == nil, "the chapter was in the display's window from the start")
+        let measured = try #require(height.measured)
+        // 24 pictures of 200 px, or 30 paragraphs of four sentences: several screens either way.
+        #expect(measured > 2400, "measured \(measured) px")
+
+        await session.go(toSpineIndex: chapter)
+        try await host.waitForScrollRest()
+        var displayed = 0.0
+        do {
+            try await host.waitUntil(timeout: .seconds(10)) {
+                displayed = cache.chapterHeight(ofSpineIndex: chapter)?.displayed ?? 0
+                return displayed == measured
+            }
+        } catch {
+            Issue.record("measured \(measured) px, displayed \(displayed) px")
+        }
+        // And to the chapter's end: nothing on the way changes its height.
+        await session.go(toSpineIndex: chapter + 1)
+        try await host.waitForScrollRest()
+        try await Task.sleep(for: .milliseconds(300))
+        #expect(cache.chapterHeight(ofSpineIndex: chapter)?.displayed == measured)
+        #expect(session.pagination == pagination)
+    }
+
+    // MARK: Heights and the layout they belong to (codex review of c529518)
+
+    /// The settings can change while the book is loading: the document is then laid out with the new settings, under
+    /// the number of the layout that was selected before. Its chapters' heights are not the first layout's.
+    @Test func aLayoutChangedWhileTheBookLoadsLeavesItsHeightsOutOfTheFirstLayout() async throws {
+        // What the first chapters measure in the default layout.
+        let reference = try await SessionHost.scrolled()
+        await reference.session.loadIfNeeded()
+        try await reference.waitForMeasurement()
+        let expected = reference.session.scrollHeights
+
+        let host = try await SessionHost.scrolled()
+        let session = host.session
+        let load = Task { await session.loadIfNeeded() }
+        let deadline = ContinuousClock.now + .seconds(5)
+        while !session.isLoading, ContinuousClock.now < deadline { await Task.yield() }
+        try #require(session.isLoading && !session.hasLoaded, "the load never began")
+        session.settings.fontScale = 1.5
+        await load.value
+        try await host.waitUntil(timeout: .seconds(15)) { session.hasLoaded && !session.isLoading }
+        try await host.waitForScrollRest()
+        // Far from the chapters the load showed, back to the first settings: what is known of those chapters in the
+        // first layout is what the first layout gives them.
+        await session.go(toSpineIndex: 60)
+        try await host.waitForScrollRest()
+        session.settings.fontScale = 1
+        try await host.waitUntil(timeout: .seconds(15)) { !session.isLoading }
+        try await host.waitForMeasurement()
+        for index in 0...3 {
+            #expect(session.scrollHeights[index] == expected[index], "chapter \(index)")
+        }
+        #expect(session.pagination == reference.session.pagination)
+    }
+
+    // MARK: The measuring document (codex review of c529518)
+
+    /// A measurement that was given up (its worker was restarted) may still make its next call. It finds its own
+    /// chapter gone; the chapter that is being measured now is not its to settle. And a measurement whose chapter is
+    /// replaced while it loads answers, instead of leaving its caller waiting.
+    @Test func aMeasurementThatWasReplacedDoesNotTouchTheNextOne() async throws {
+        let host = try await SessionHost.scrolled()
+        await host.session.loadIfNeeded()
+        try await host.waitForMeasurement()
+        let webView = host.session.paginationService.renderer.webView
+        func hidden(_ script: String) async throws -> [String: Any] {
+            let result = try await webView.callAsyncJavaScript(script, arguments: [:], in: nil, contentWorld: WebViewSpineRenderer.readerWorld)
+            return try #require(result as? [String: Any], "\(String(describing: result))")
+        }
+        let first = try await hidden("return window.__epubReader.measureChapter(5)")
+        let firstID = try #require(first["id"] as? Int)
+        let second = try await hidden("return window.__epubReader.measureChapter(9)")
+        let secondID = try #require(second["id"] as? Int)
+        #expect(firstID != secondID)
+        let stale = try await hidden("return window.__epubReader.settleMeasuredChapter(\(firstID))")
+        #expect(stale["missing"] as? Bool == true, "\(stale)")
+        var settled = second
+        for _ in 0..<12 where settled["settled"] as? Bool != true {
+            settled = try await hidden("return window.__epubReader.settleMeasuredChapter(\(secondID))")
+        }
+        #expect(settled["settled"] as? Bool == true, "\(settled)")
+        #expect(settled["spineIndex"] as? Int == 9)
+        #expect(settled["height"] as? Double == host.session.paginationCache.chapterHeight(ofSpineIndex: 9)?.measured)
+
+        let replaced = try await hidden("""
+            const reader = window.__epubReader;
+            const a = reader.measureChapter(20);
+            const b = reader.measureChapter(21);
+            const first = await Promise.race([a, new Promise(function (resolve) { setTimeout(function () { resolve({ hung: true }); }, 4000); })]);
+            const second = await b;
+            const settled = await reader.settleMeasuredChapter(second.id);
+            return { first: first, second: second, frames: document.querySelectorAll('#__reader_stage > iframe').length, settled: settled };
+            """)
+        let replacedFirst = try #require(replaced["first"] as? [String: Any])
+        #expect(replacedFirst["failed"] as? Bool == true, "\(replacedFirst)")
+        #expect((replaced["second"] as? [String: Any])?["spineIndex"] as? Int == 21)
+    }
+
+    /// The heights reach the scroll document however early the hidden web view is done: in a book of a few chapters
+    /// it has measured them all before the display has shown its first one.
+    @Test(arguments: ["scroll-sample.epub", "childrens-literature.epub"])
+    func theScrollDocumentOfASmallBookKnowsTheMeasuredHeights(book: String) async throws {
+        let host = try await SessionHost.scrolled(url: ReaderSessionTests.fixtures.appendingPathComponent(book))
+        await host.session.loadIfNeeded()
+        try await host.waitForMeasurement()
+        try await host.waitForScrollRest()
+        let indices = host.linearIndices
+        let heights = host.session.scrollHeights
+        var tail = 0.0, after = 0.0
+        do {
+            try await host.waitUntil(timeout: .seconds(3)) {
+                let state = try await host.scrollState()
+                guard let last = state.views.last else { return false }
+                tail = state.tail
+                after = indices.filter { $0 > last.spineIndex }.compactMap { heights[$0] }.reduce(0, +)
+                return abs(tail - after) < 1
+            }
+        } catch {
+            Issue.record("tail \(tail), the chapters after the window \(after)")
+        }
     }
 }

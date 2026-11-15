@@ -136,9 +136,11 @@ import AppKit
         #expect(r.documents + r.skipped.count == names.count)
     }
 
-    /// A stored (uncompressed) EPUB whose spine is `documents`, written to a temporary file.
-    static func writeEPUB(_ documents: [(name: String, data: Data)]) throws -> URL {
+    /// A stored (uncompressed) EPUB whose spine is `documents`, written to a temporary file. `resources` are in the
+    /// manifest only (pictures the documents show).
+    static func writeEPUB(_ documents: [(name: String, data: Data)], resources: [(name: String, mediaType: String, data: Data)] = []) throws -> URL {
         let manifest = documents.enumerated().map { #"<item id="d\#($0.offset)" href="\#($0.element.name)" media-type="application/xhtml+xml"/>"# }.joined()
+            + resources.enumerated().map { #"<item id="r\#($0.offset)" href="\#($0.element.name)" media-type="\#($0.element.mediaType)"/>"# }.joined()
         let spine = documents.indices.map { #"<itemref idref="d\#($0)"/>"# }.joined()
         var files: [(String, Data)] = [
             ("mimetype", Data("application/epub+zip".utf8)),
@@ -150,6 +152,7 @@ import AppKit
                 """.utf8)),
         ]
         files += documents.map { ("OEBPS/\($0.name)", $0.data) }
+        files += resources.map { ("OEBPS/\($0.name)", $0.data) }
 
         var archive = Data(), central = Data()
         func u16(_ v: Int) -> Data { withUnsafeBytes(of: UInt16(v).littleEndian) { Data($0) } }

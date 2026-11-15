@@ -16,6 +16,8 @@ enum HeightCheck {
         var chapters: Int
         /// Chapters with both heights.
         var compared: Int
+        /// Chapters the display never told a height for, although they were shown.
+        var notShown: Int
         var differing: Int
         var largestDifference: Double
         /// `paginationUpdated` events after the measurement was complete.
@@ -24,7 +26,7 @@ enum HeightCheck {
         var seconds: Double
 
         var summary: String {
-            "Heights: \(compared) of \(chapters) chapters compared, \(differing) differ (largest \(largestDifference.formatted(.number.precision(.fractionLength(0...2)))) px), "
+            "Heights: \(compared) of \(chapters) chapters compared\(notShown > 0 ? " (\(notShown) not shown)" : ""), \(differing) differ (largest \(largestDifference.formatted(.number.precision(.fractionLength(0...2)))) px), "
                 + "page numbers moved \(paginationUpdates) times, \(totalPages) pages, \(seconds.formatted(.number.precision(.fractionLength(1)))) s"
         }
     }
@@ -32,11 +34,16 @@ enum HeightCheck {
     enum Failure: Error, CustomStringConvertible {
         case notScrolled
         case notMeasured(estimated: Int)
+        case layoutChanged
+        case nothingCompared(chapters: Int, notShown: Int)
 
         var description: String {
             switch self {
             case .notScrolled: "the book is not in the scrolled layout"
             case .notMeasured(let estimated): "\(estimated) chapters were still estimated after two minutes"
+            case .layoutChanged: "the frame or the page height changed during the check: its heights are of two layouts"
+            case .nothingCompared(let chapters, let notShown):
+                "no chapter has both heights (\(chapters) chapters, \(notShown) never shown): nothing was compared"
             }
         }
     }
@@ -49,6 +56,7 @@ enum HeightCheck {
         guard !session.pagination.isEstimated else { throw Failure.notMeasured(estimated: session.pagination.estimatedChapterCount) }
         let measuredAfter = clock.now - start
         let before = session.pagination
+        let layout = (session.viewportSize, session.scrollPageHeightForDiagnostics)
 
         var updates = 0
         let stream = session.events
@@ -70,11 +78,16 @@ enum HeightCheck {
         if let origin { await session.go(to: origin.cfi) }
         try? await Task.sleep(for: .milliseconds(500))
 
+        guard session.layout == .scrolled, layout == (session.viewportSize, session.scrollPageHeightForDiagnostics) else { throw Failure.layoutChanged }
         let heights = session.scrollChapterHeights.filter { indices.contains($0.spineIndex) }
+        // A chapter the display has no height for was not compared, whatever the reason: the result says so, and a
+        // run that compared nothing is not a run that found no difference.
+        let notShown = indices.count - heights.filter { $0.displayed != nil }.count
         let differences = heights.compactMap { height -> Double? in
             guard let measured = height.measured, let displayed = height.displayed else { return nil }
             return abs(measured - displayed)
         }
+        guard !differences.isEmpty else { throw Failure.nothingCompared(chapters: indices.count, notShown: notShown) }
         let seconds = Double((clock.now - start).components.seconds) + Double((clock.now - start).components.attoseconds) / 1e18
         #if os(iOS)
         let platform = "ios"
@@ -88,6 +101,7 @@ enum HeightCheck {
             "pageHeight": session.scrollPageHeightForDiagnostics,
             "secondsUntilMeasured": Double(measuredAfter.components.seconds) + Double(measuredAfter.components.attoseconds) / 1e18,
             "paginationUpdatesAfterMeasurement": updates,
+            "chaptersNotShown": notShown,
             "totalPagesBefore": before.totalPages,
             "totalPagesAfter": session.pagination.totalPages,
             "chapters": heights.map { height -> [String: Any] in
@@ -100,7 +114,7 @@ enum HeightCheck {
         let url = ScrollRecorder.outputDirectory().appendingPathComponent("scroll-heights-\(platform).json")
         try JSONSerialization.data(withJSONObject: report, options: [.sortedKeys, .prettyPrinted]).write(to: url)
         let result = Result(
-            url: url, chapters: indices.count, compared: differences.count, differing: differences.filter { $0 > 0 }.count,
+            url: url, chapters: indices.count, compared: differences.count, notShown: notShown, differing: differences.filter { $0 > 0 }.count,
             largestDifference: differences.max() ?? 0, paginationUpdates: updates, totalPages: session.pagination.totalPages, seconds: seconds
         )
         print("HEIGHTS WRITTEN \(url.path) \(result.summary)")

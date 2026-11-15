@@ -75,7 +75,9 @@ Debug menu, "Compare measured and shown heights" (or `READERDEMO_HEIGHTS=1` at l
 shows every chapter once, and writes `scroll-heights-ios.json` / `scroll-heights-macos.json` next to the recordings:
 per chapter the height the hidden web view measured and the height the display laid it out with, and how often the
 page numbers moved while the chapters were shown. The status line says the same in short. Both heights should be
-equal and the page numbers should not move.
+equal and the page numbers should not move. A run that compared no chapter fails (a book whose chapters were all in
+the display's window before the hidden web view came to them has nothing to compare); `chaptersNotShown` counts the
+chapters the display told no height for.
 
 ```bash
 SIMCTL_CHILD_READERDEMO_BOOK=moby-dick SIMCTL_CHILD_READERDEMO_LAYOUT=scrolled SIMCTL_CHILD_READERDEMO_HEIGHTS=1 \
