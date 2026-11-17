@@ -54,6 +54,18 @@ import Testing
         #expect(Slider.description(title: "Chapter 3", progression: 1, separator: ", ") == "Chapter 3, 100%")
     }
 
+    /// The app's `pageTitle` is asked only about pages the book has: a mark past the end, or the target of a move
+    /// that was started before the book got shorter, is described as the page it is drawn at.
+    @Test func aPageOutsideTheBookIsTitledAsTheNearestPage() {
+        #expect(Slider.titledPage(4, totalPages: 20) == 4)
+        #expect(Slider.titledPage(0, totalPages: 20) == 0)
+        #expect(Slider.titledPage(19, totalPages: 20) == 19)
+        #expect(Slider.titledPage(90, totalPages: 20) == 19)
+        #expect(Slider.titledPage(-3, totalPages: 20) == 0)
+        #expect(Slider.titledPage(0, totalPages: 0) == nil)
+        #expect(Slider.titledPage(5, totalPages: -1) == nil)
+    }
+
     @Test func aPageWithoutATitleIsDescribedByThePartAlone() {
         #expect(Slider.description(title: nil, progression: 0.42, separator: " · ") == "42%")
         #expect(Slider.description(title: "", progression: 0.42, separator: " · ") == "42%")

@@ -69,6 +69,7 @@ public struct PageProgressSlider: View {
     private let marks: [Mark]
     private let label: String
     private let pageTitle: @MainActor (Int) -> String?
+    private let visiblePages: (@MainActor () -> [Int])?
     private let navigate: @MainActor (Destination) async -> Void
     private let onEditingChanged: @MainActor (Bool) -> Void
     private let onFocusChanged: @MainActor (Bool) -> Void
@@ -90,7 +91,13 @@ public struct PageProgressSlider: View {
     /// - Parameters:
     ///   - label: the slider's name for assistive technologies.
     ///   - pageTitle: what a page is called next to the part of the book ("Chapter 3 · 42%"): the chapter that holds
-    ///     it, for example. nil or empty shows the percentage alone.
+    ///     it, for example. nil or empty shows the percentage alone. It is only asked about pages of the book
+    ///     (`0..<pages.total`): a mark or a move in flight that points outside is described as the nearest page, which
+    ///     is also where it is drawn.
+    ///   - visiblePages: the pages on screen, read at the moment a step of the keyboard or of assistive technologies
+    ///     starts. nil (the default) uses `pages.visible`, which is what the view was last updated with: a step that
+    ///     arrives after `navigate` has returned and before SwiftUI has updated the view then starts from the pages
+    ///     of before the move. A reader whose state the closure can read directly passes it.
     ///   - navigate: performs the move. Moves are started one at a time, in the order of the releases: the next one
     ///     waits until this returns.
     ///   - onEditingChanged: `true` when a press starts, `false` when it ends (released or cancelled).
@@ -98,6 +105,7 @@ public struct PageProgressSlider: View {
     ///     away. A reader that handles the arrow keys itself leaves them to the slider while it has focus.
     public init(pages: Pages, marks: [Mark] = [], label: String = "Reading Progress",
                 pageTitle: @escaping @MainActor (Int) -> String? = { _ in nil },
+                visiblePages: (@MainActor () -> [Int])? = nil,
                 navigate: @escaping @MainActor (Destination) async -> Void,
                 onEditingChanged: @escaping @MainActor (Bool) -> Void = { _ in },
                 onFocusChanged: @escaping @MainActor (Bool) -> Void = { _ in })
@@ -106,6 +114,7 @@ public struct PageProgressSlider: View {
         self.marks = marks
         self.label = label
         self.pageTitle = pageTitle
+        self.visiblePages = visiblePages
         self.navigate = navigate
         self.onEditingChanged = onEditingChanged
         self.onFocusChanged = onFocusChanged
@@ -287,7 +296,16 @@ public struct PageProgressSlider: View {
 
     /// "Chapter · 42%": the page's title and the part of the book the page ends at.
     private func description(ofPage page: Int, in geometry: ProgressSliderGeometry, separator: String) -> String {
-        Self.description(title: pageTitle(page), progression: geometry.progression(ofPage: page), separator: separator)
+        let title = Self.titledPage(page, totalPages: geometry.totalPages).flatMap { pageTitle($0) }
+        return Self.description(title: title, progression: geometry.progression(ofPage: page), separator: separator)
+    }
+
+    /// The page whose title describes `page`: the nearest page of the book, like the place it is drawn at. A mark
+    /// can point past the end, and so can the page of a move in flight after the book got shorter; the app's
+    /// `pageTitle` (an array lookup, say) is never asked about a page that does not exist. nil: the book has no pages.
+    static func titledPage(_ page: Int, totalPages: Int) -> Int? {
+        guard totalPages > 0 else { return nil }
+        return min(max(page, 0), totalPages - 1)
     }
 
     static func description(title: String?, progression: Double, separator: String) -> String {
@@ -335,7 +353,7 @@ public struct PageProgressSlider: View {
     /// reading order for a positive `direction`. Returns whether there was somewhere to go.
     @discardableResult
     private func step(by direction: Int, geometry: ProgressSliderGeometry) -> Bool {
-        guard let origin = Self.stepOrigin(settlingPage: settlingPage, visible: pages.visible),
+        guard let origin = Self.stepOrigin(settlingPage: settlingPage, visible: visiblePages?() ?? pages.visible),
               let page = geometry.page(steppingFrom: origin, by: direction)
         else { return false }
         go(.page(page), showing: page)

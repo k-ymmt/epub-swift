@@ -83,6 +83,9 @@ public struct ReaderProgressSlider: View {
                 session.pagination.location(ofPageIndex: page)
                     .flatMap { session.publication.chapterTitle(forSpineIndex: $0.spineIndex) }
             },
+            // Read when a step starts, not when this view was last updated: a step right after a move must start
+            // from where the session is now
+            visiblePages: { session.visiblePages },
             navigate: { requested in
                 guard let destination = Self.destination(for: requested, among: marks) else { return }
                 if let navigate {

@@ -731,6 +731,7 @@ public struct PageProgressSlider: View {
     }
     public init(pages: Pages, marks: [Mark] = [], label: String = "Reading Progress",
                 pageTitle: @escaping @MainActor (Int) -> String? = { _ in nil },
+                visiblePages: (@MainActor () -> [Int])? = nil,
                 navigate: @escaping @MainActor (Destination) async -> Void,
                 onEditingChanged: @escaping @MainActor (Bool) -> Void = { _ in },
                 onFocusChanged: @escaping @MainActor (Bool) -> Void = { _ in })
@@ -741,7 +742,12 @@ public struct PageProgressSlider: View {
   1 つずつ順に行うことは §4.6 と同じ（同じコード）。
 - **アプリが渡すもの。** ページ数と今のページは値で渡す（部品は読むだけ。変われば載せる側のビューが描き直す）。
   `pageTitle` はページの呼び名（そのページのある章など）で、ドラッグ中のラベルと支援技術の値に「呼び名 · 割合」として出る。
-  nil か空なら割合だけ。
+  nil か空なら割合だけ。`pageTitle` に渡すのは本にあるページ（`0..<pages.total`）だけ: 本の外を指す印や、本が短くなる前に
+  始めた移動の行き先は、描く場所と同じく一番近いページとして呼ぶ（アプリの `pageTitle` が配列の添字でも落ちない）。
+- **`visiblePages`**（省略可）は、キーと支援技術の 1 歩が始まる瞬間に読む「見えているページ」。nil なら `pages.visible`
+  （ビューが最後に更新されたときの値）: `navigate` が戻ってから SwiftUI がビューを更新するまでの間に届いた 1 歩は、移動の前の
+  ページから数える。状態を直接読めるリーダーは渡す（`ReaderProgressSlider` は `session.visiblePages` を渡す: §4.7 を
+  切り出す前と同じく、その瞬間のセッションを見る）。
 - **`navigate` は必須。** 部品はセッションを知らないので、移動はアプリが行う。印は id で返る（`.mark(id:)`）。
 - **`Mark.page` が nil の印**は描かないが、`marks` の添字は詰めない: 支援技術の識別子が、ページの分からない印の有無で
   変わらない（EPUB では、読む順に無い spine item の位置がこれに当たる）。
