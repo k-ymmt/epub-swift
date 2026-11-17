@@ -19,6 +19,9 @@ import EPUBRenderer
 ///
 /// Pages are `ReaderSession.pagination`'s: estimates until every chapter has been measured, so the thumb and the
 /// marks can shift a little while a book is being paginated.
+///
+/// The control is `PageProgressSlider`, which takes page numbers instead of a session: a reader of another format
+/// uses that one directly.
 public struct ReaderProgressSlider: View {
     /// A place shown on the track.
     public struct Mark: Identifiable, Hashable, Sendable {
@@ -48,19 +51,8 @@ public struct ReaderProgressSlider: View {
     private let navigate: (@MainActor (Destination) async -> Void)?
     private let onEditingChanged: @MainActor (Bool) -> Void
 
-    @State private var interaction = ProgressSliderInteraction()
-    /// The page the thumb stays on between the release and the end of the move it started.
-    @State private var settlingPage: Int?
-    @State private var moveSerial = 0
-    /// The last move started; the next one waits for it, so moves happen in the order of the releases even when
-    /// the app's `navigate` awaits something of its own first.
-    @State private var lastMove: Task<Void, Never>?
-    /// Counts presses: a cancellation noticed for one press must not end the next.
-    @State private var pressSerial = 0
-    @State private var bubbleSize: CGSize = .zero
-    @GestureState private var isPressed = false
-    @FocusState private var isFocused: Bool
-    @Environment(\.colorScheme) private var colorScheme
+    /// Whether the slider has keyboard focus (what `PageProgressSlider` last reported).
+    @State private var isFocused = false
 
     /// - Parameters:
     ///   - label: the slider's name for assistive technologies.
@@ -78,254 +70,46 @@ public struct ReaderProgressSlider: View {
         self.onEditingChanged = onEditingChanged
     }
 
-    enum Metrics {
-        #if os(macOS)
-        static let height: CGFloat = 22
-        static let thumbDiameter: CGFloat = 16
-        static let thumbReach: CGFloat = 12
-        static let markDiameter: CGFloat = 7
-        static let markReach: CGFloat = 10
-        #else
-        static let height: CGFloat = 32
-        static let thumbDiameter: CGFloat = 24
-        static let thumbReach: CGFloat = 22
-        static let markDiameter: CGFloat = 8
-        static let markReach: CGFloat = 18
-        #endif
-        static let trackHeight: CGFloat = 4
-        static let bubbleGap: CGFloat = 10
-    }
-
-    struct PlacedMark: Equatable {
-        var index: Int
-        var mark: Mark
-        var page: Int
-        var x: CGFloat
-    }
-
     public var body: some View {
-        GeometryReader { proxy in
-            let geometry = ProgressSliderGeometry(totalPages: session.pagination.totalPages, width: proxy.size.width,
-                                                  inset: Metrics.thumbDiameter / 2, isRightToLeft: session.isRightToLeft)
-            let placed = placedMarks(in: geometry)
-            let page = interaction.pendingPage ?? settlingPage ?? session.currentPage
-            let middle = proxy.size.height / 2
-            ZStack(alignment: .topLeading) {
-                track(geometry: geometry, page: page, middle: middle)
-                // The slider itself, for assistive technologies: the whole track, adjusted in steps of a hundredth
-                Color.clear
-                    .accessibilityElement()
-                    .accessibilityLabel(Text(verbatim: label))
-                    .accessibilityValue(Text(verbatim: page.map { description(ofPage: $0, in: geometry, separator: ", ") } ?? ""))
-                    .accessibilityAdjustableAction { direction in
-                        switch direction {
-                        case .increment: step(by: 1, geometry: geometry)
-                        case .decrement: step(by: -1, geometry: geometry)
-                        @unknown default: break
-                        }
-                    }
-                    .accessibilityIdentifier("ReaderProgressSlider")
-                ForEach(placed, id: \.mark.id) { item in
-                    Circle()
-                        .fill(markColor)
-                        .frame(width: Metrics.markDiameter, height: Metrics.markDiameter)
-                        .frame(width: Metrics.markReach * 2, height: proxy.size.height)
-                        .contentShape(Rectangle())
-                        .accessibilityElement()
-                        .accessibilityLabel(Text(verbatim: item.mark.label))
-                        .accessibilityValue(Text(verbatim: description(ofPage: item.page, in: geometry, separator: ", ")))
-                        .accessibilityAddTraits(.isButton)
-                        .accessibilityAction { go(.mark(item.mark), showing: item.page) }
-                        .accessibilityIdentifier("ReaderProgressSliderMark-\(item.index)")
-                        .position(x: item.x, y: middle)
+        // The control itself is `PageProgressSlider`, which knows pages only: this view reads them from the session
+        // and turns what a release asks for back into a position of the book.
+        PageProgressSlider(
+            pages: .init(total: session.pagination.totalPages, current: session.currentPage, visible: session.visiblePages,
+                         isRightToLeft: session.isRightToLeft),
+            marks: marks.map { PageProgressSlider.Mark(id: $0.id, page: session.pageIndex(for: $0.position), label: $0.label) },
+            label: label,
+            pageTitle: { page in
+                // The chapter that holds the page
+                session.pagination.location(ofPageIndex: page)
+                    .flatMap { session.publication.chapterTitle(forSpineIndex: $0.spineIndex) }
+            },
+            navigate: { requested in
+                guard let destination = Self.destination(for: requested, among: marks) else { return }
+                if let navigate {
+                    await navigate(destination)
+                } else {
+                    await session.go(to: destination)
                 }
-                if let page {
-                    Circle()
-                        .fill(Color.white)
-                        .shadow(color: .black.opacity(0.3), radius: 2, y: 1)
-                        .frame(width: Metrics.thumbDiameter, height: Metrics.thumbDiameter)
-                        .position(x: geometry.x(ofPage: page), y: middle)
-                        .accessibilityHidden(true)
-                }
-                if interaction.isDragging, let pending = interaction.pendingPage {
-                    bubble(page: pending, geometry: geometry)
-                }
+            },
+            onEditingChanged: onEditingChanged,
+            onFocusChanged: { focused in
+                isFocused = focused
+                ProgressSliderFocus.set(focused, for: session)
+            })
+            .onChange(of: ObjectIdentifier(session)) { old, new in
+                // The same slider with another session (the app opened another book in place)
+                ProgressSliderFocus.set(false, for: old)
+                ProgressSliderFocus.set(isFocused, for: new)
             }
-            .contentShape(Rectangle())
-            .gesture(press(geometry: geometry, placed: placed), isEnabled: geometry.totalPages > 1)
-            .focusable(geometry.totalPages > 1, interactions: .activate)
-            .focused($isFocused)
-            .onKeyPress(keys: [.leftArrow, .rightArrow]) { press in
-                // Arrow keys follow the picture: left is towards the left edge, whichever way the book runs. A key
-                // that cannot move (no page shown: a non-linear item) is left to whoever else wants it.
-                let towardsRight = press.key == .rightArrow
-                return step(by: towardsRight != geometry.isRightToLeft ? 1 : -1, geometry: geometry) ? .handled : .ignored
-            }
-        }
-        .frame(height: Metrics.height)
-        // Positions are computed from the book's direction, not the interface's
-        .environment(\.layoutDirection, .leftToRight)
-        .accessibilityElement(children: .contain)
-        .onChange(of: isPressed) { _, pressed in
-            // A press the system took away (no `onEnded`). Checked one turn later: `onEnded` runs around the same time
-            // as this reset and must see the press first. Only the press that was taken away is ended: a new one
-            // may have started by then.
-            guard !pressed else { return }
-            let press = pressSerial
-            Task { @MainActor in
-                guard press == pressSerial else { return }
-                endPressWithoutMoving()
-            }
-        }
-        .onChange(of: isFocused) { _, focused in ProgressSliderFocus.set(focused, for: session) }
-        .onChange(of: ObjectIdentifier(session)) { old, new in
-            // The same slider with another session (the app opened another book in place)
-            ProgressSliderFocus.set(false, for: old)
-            ProgressSliderFocus.set(isFocused, for: new)
-        }
-        .onDisappear {
-            // Removed while pressed (the app hid its bar) or focused: neither `onEnded` nor the reset above runs
-            endPressWithoutMoving()
-            ProgressSliderFocus.set(false, for: session)
-        }
+            .onDisappear { ProgressSliderFocus.set(false, for: session) }
     }
 
-    private func endPressWithoutMoving() {
-        guard interaction.isActive else { return }
-        interaction.cancelled()
-        onEditingChanged(false)
-    }
-
-    // MARK: Drawing
-
-    /// The text colour, opaque: `Color.primary` is drawn translucent on a glass or material background (the track
-    /// showed through the marks).
-    private var markColor: Color {
-        colorScheme == .dark ? .white : .black
-    }
-
-    private func track(geometry: ProgressSliderGeometry, page: Int?, middle: CGFloat) -> some View {
-        let start = geometry.x(ofPage: 0)
-        let end = geometry.x(ofPage: max(0, geometry.totalPages - 1))
-        let thumb = page.map { geometry.x(ofPage: $0) } ?? start
-        return ZStack(alignment: .topLeading) {
-            Capsule()
-                .fill(Color.primary.opacity(0.18))
-                .frame(width: abs(end - start) + Metrics.trackHeight, height: Metrics.trackHeight)
-                .position(x: (start + end) / 2, y: middle)
-            Capsule()
-                .fill(.tint)
-                .frame(width: abs(thumb - start) + Metrics.trackHeight, height: Metrics.trackHeight)
-                .position(x: (start + thumb) / 2, y: middle)
-        }
-        .accessibilityHidden(true)
-    }
-
-    /// The label above the thumb while it is dragged, kept inside the slider's width.
-    private func bubble(page: Int, geometry: ProgressSliderGeometry) -> some View {
-        let half = bubbleSize.width / 2
-        let x = min(max(geometry.x(ofPage: page), half), max(half, geometry.width - half))
-        return Text(verbatim: description(ofPage: page, in: geometry, separator: " · "))
-            .font(.caption)
-            .monospacedDigit()
-            .lineLimit(1)
-            .padding(.horizontal, 10)
-            .padding(.vertical, 5)
-            .background(.regularMaterial, in: Capsule())
-            // As wide as its text, at most the slider's width (a long chapter title is truncated). `fixedSize` after
-            // the frame: without it the frame takes the whole proposed width, the measured width is the slider's,
-            // and the label sits in the middle of the track instead of above the thumb.
-            .frame(maxWidth: geometry.width)
-            .fixedSize()
-            .onGeometryChange(for: CGSize.self, of: { $0.size }) { bubbleSize = $0 }
-            .position(x: x, y: -(Metrics.bubbleGap + bubbleSize.height / 2))
-            .allowsHitTesting(false)
-            .accessibilityHidden(true)
-    }
-
-    // MARK: Pages
-
-    private func placedMarks(in geometry: ProgressSliderGeometry) -> [PlacedMark] {
-        guard geometry.totalPages > 0 else { return [] }
-        return marks.enumerated().compactMap { index, mark in
-            guard let page = session.pageIndex(for: mark.position) else { return nil }
-            return PlacedMark(index: index, mark: mark, page: page, x: geometry.x(ofPage: page))
-        }
-    }
-
-    /// "Chapter · 42%": the chapter that holds the page and the part of the book the page ends at.
-    private func description(ofPage page: Int, in geometry: ProgressSliderGeometry, separator: String) -> String {
-        let percent = geometry.progression(ofPage: page).formatted(.percent.precision(.fractionLength(0)))
-        let title = session.pagination.location(ofPageIndex: page)
-            .flatMap { session.publication.chapterTitle(forSpineIndex: $0.spineIndex) }
-        guard let title, !title.isEmpty else { return percent }
-        return title + separator + percent
-    }
-
-    // MARK: Moves
-
-    private func press(geometry: ProgressSliderGeometry, placed: [PlacedMark]) -> some Gesture {
-        DragGesture(minimumDistance: 0, coordinateSpace: .local)
-            .updating($isPressed) { _, pressed, _ in pressed = true }
-            .onChanged { value in
-                if !interaction.isActive {
-                    let thumb = (settlingPage ?? session.currentPage).map { geometry.x(ofPage: $0) }
-                    interaction.began(at: value.startLocation.x, thumbX: thumb, thumbReach: Metrics.thumbReach)
-                    pressSerial += 1
-                    onEditingChanged(true)
-                }
-                interaction.moved(to: value.location.x, geometry: geometry)
-            }
-            .onEnded { value in
-                guard interaction.isActive else { return }
-                let outcome = interaction.ended(at: value.location.x, geometry: geometry, currentPage: settlingPage ?? session.currentPage,
-                                                markXs: placed.map(\.x), markReach: Metrics.markReach)
-                onEditingChanged(false)
-                switch outcome {
-                case .none: break
-                case .page(let page): go(.page(page), showing: page)
-                case .mark(let index): go(.mark(placed[index].mark), showing: placed[index].page)
-                }
-            }
-    }
-
-    /// One step of the adjustable action and the arrow keys: a hundredth of the book, at least a page, forward in
-    /// reading order for a positive `direction`. Returns whether there was somewhere to go.
-    @discardableResult
-    private func step(by direction: Int, geometry: ProgressSliderGeometry) -> Bool {
-        // From the page a move in flight is heading for; otherwise from what is visible (both pages of a spread,
-        // so a step never lands on the page next to the one counted as current)
-        let visible: ClosedRange<Int>
-        if let settlingPage {
-            visible = settlingPage...settlingPage
-        } else {
-            let pages = session.visiblePages
-            guard let first = pages.first, let last = pages.last else { return false }
-            visible = first...last
-        }
-        guard let page = geometry.page(steppingFrom: visible, by: direction) else { return false }
-        go(.page(page), showing: page)
-        return true
-    }
-
-    /// Starts the move and keeps the thumb at its target until the session has arrived (or a newer move started).
-    /// Moves run one after the other, in the order they were started.
-    private func go(_ destination: Destination, showing page: Int) {
-        settlingPage = page
-        moveSerial += 1
-        let serial = moveSerial
-        let previous = lastMove
-        lastMove = Task { @MainActor in
-            await previous?.value
-            if let navigate {
-                await navigate(destination)
-            } else {
-                await session.go(to: destination)
-            }
-            if serial == moveSerial {
-                settlingPage = nil
-                lastMove = nil
-            }
+    /// What a release of the page slider means for a session: the page, or the mark with that id (nil when the mark
+    /// is not among `marks`: nothing to go to).
+    static func destination(for requested: PageProgressSlider.Destination, among marks: [Mark]) -> Destination? {
+        switch requested {
+        case .page(let page): .page(page)
+        case .mark(let id): marks.first { $0.id == id }.map(Destination.mark)
         }
     }
 }

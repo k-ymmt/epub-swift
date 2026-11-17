@@ -703,6 +703,52 @@ extension ReaderSession {
   `EPUBUITests/ProgressSliderTests` で検証する。ビューそのものの自動テストは無い（ReaderDemo と、組み込み先の UI テストで見る）。
 - 既知の制限: ドラッグの途中でページ数が測り直されると、次に指が動くまでつまみとラベルが少しずれる（離したときの行き先は、
   そのときのページ数で指の位置から決める）。`chapterTitle(forSpineIndex:)` は呼ぶたびに目次を走査する（索引は持たない）。
+- 2026-11-17 から、描く部品と押下の扱いは `PageProgressSlider`（§4.7）にあり、`ReaderProgressSlider` はその上の薄い包み:
+  セッションからページ数・今のページ・見えているページ・向きを読んで渡し、印の `position` を `pageIndex(for:)` でページに直し、
+  離したときの行き先（ページ、または印の id）を `Destination` に戻す。公開 API と振る舞いは変えていない。
+
+### 4.7 `PageProgressSlider`（2026-11-17 実装済み）
+
+§4.6 のスライダーの、EPUB の型（`ReaderSession`、`ReadingPosition`）に依らない入口。ページ番号だけで動くので、別の形式の
+リーダー（組み込み先の PDF リーダー）が同じ部品を使える。このファイルは SwiftUI だけを import する。
+
+```swift
+public struct PageProgressSlider: View {
+    public struct Pages: Equatable, Sendable {
+        public var total: Int               // ページ数。2 未満なら動かせない
+        public var current: Int?            // つまみのページ（0 始まり）。nil ならつまみを描かない
+        public var visible: [Int]           // 見えているページ（見開きなら 2 つ）。キーと支援技術の 1 歩の起点
+        public var isRightToLeft: Bool      // 右端が先頭
+    }
+    public struct Mark: Identifiable, Hashable, Sendable {
+        public var id: String
+        public var page: Int?               // nil の印は描かない（`marks` の添字は保つ）
+        public var label: String
+    }
+    public enum Destination: Hashable, Sendable {
+        case page(Int)
+        case mark(id: String)
+    }
+    public init(pages: Pages, marks: [Mark] = [], label: String = "Reading Progress",
+                pageTitle: @escaping @MainActor (Int) -> String? = { _ in nil },
+                navigate: @escaping @MainActor (Destination) async -> Void,
+                onEditingChanged: @escaping @MainActor (Bool) -> Void = { _ in },
+                onFocusChanged: @escaping @MainActor (Bool) -> Void = { _ in })
+}
+```
+
+- 見た目、押下の規則、支援技術の要素と識別子（`ReaderProgressSlider`、`ReaderProgressSliderMark-<marks の添字>`）、移動を
+  1 つずつ順に行うことは §4.6 と同じ（同じコード）。
+- **アプリが渡すもの。** ページ数と今のページは値で渡す（部品は読むだけ。変われば載せる側のビューが描き直す）。
+  `pageTitle` はページの呼び名（そのページのある章など）で、ドラッグ中のラベルと支援技術の値に「呼び名 · 割合」として出る。
+  nil か空なら割合だけ。
+- **`navigate` は必須。** 部品はセッションを知らないので、移動はアプリが行う。印は id で返る（`.mark(id:)`）。
+- **`Mark.page` が nil の印**は描かないが、`marks` の添字は詰めない: 支援技術の識別子が、ページの分からない印の有無で
+  変わらない（EPUB では、読む順に無い spine item の位置がこれに当たる）。
+- **`onFocusChanged`** はキーボードのフォーカスを得た・失ったとき、およびビューが外れたとき（false）に呼ぶ。自分でキーを
+  受けるリーダーは、フォーカスがある間 ← → をスライダーに任せる（`ReaderProgressSlider` はこれで §4.6 の「macOS のキー」を行う）。
+- テスト: `EPUBUITests/PageProgressSliderTests`（印の配置と添字、ページの呼び名、1 歩の起点、`ReaderProgressSlider` が
+  行き先を戻す対応）。算術は §4.6 と同じ `ProgressSliderTests`。
 
 ## 5. 公開しない型
 

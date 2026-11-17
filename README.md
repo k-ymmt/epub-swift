@@ -106,6 +106,8 @@ Common next steps:
 - Progress: `ReaderProgressSlider(session: session, marks: marks)` is a slider over the whole book (drag the thumb or
   tap the track; marks are places the app wants to return to). `.navigated(ReaderNavigation)` tells a page turn, a
   jump and a followed link apart and carries the position the reader came from.
+  `PageProgressSlider(pages:marks:pageTitle:navigate:)` is the same control without EPUB types (page numbers in,
+  a page or a mark's id out), for a reader of another format.
 
 The complete example is `Examples/ReaderDemo`, a SwiftUI app for iOS and macOS. It shows the table of contents,
 search, annotations (with `.annotations` export and import), settings, footnote popovers, an image viewer and link

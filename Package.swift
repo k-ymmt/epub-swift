@@ -58,7 +58,7 @@ let package = Package(
         ),
         .testTarget(
             name: "EPUBUITests",
-            dependencies: ["EPUBUI"],
+            dependencies: ["EPUBUI", "EPUBCore"],
             swiftSettings: swiftSettings
         ),
         .testTarget(

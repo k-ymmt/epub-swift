@@ -241,6 +241,11 @@ M2 以降、`Examples/ReaderDemo` で次を Instruments またはログで記録
   押している間に外されると `onEditingChanged(false)` が出なかった、読み直しの上限の後の移動に `navigated` が出なかった、
   ReaderDemo の戻りの印を移動の成功前に書き換えていた。見送り: ドラッグ中のページ数の測り直しへの追従、章名の索引化
   （03-api §4.6 の既知の制限）。
+- **2026-11-17: スライダーの、EPUB の型に依らない入口。** 組み込み先（Laperm）が PDF を EPUB と同じリーダーの土台で読む
+  ことにし（Laperm ADR 0059）、PDF リーダーからも同じスライダーを使えるように、EPUBUI に `PageProgressSlider`（03-api §4.7）を
+  足した: ページ数・今のページ・見えているページ・向きを値で受け、行き先をページか印の id で返す。描画と押下の扱いは
+  `ReaderProgressSlider` から移したもので、`ReaderProgressSlider` はその上の包みになった（公開 API と振る舞いは同じ）。
+  テストは `EPUBUITests/PageProgressSliderTests`。
 
 ## 4. スクロール表示（S1〜S3 実装済み、S4 は未実装）
 
